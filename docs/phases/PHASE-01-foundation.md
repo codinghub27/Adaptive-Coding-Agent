@@ -1,7 +1,7 @@
 # PHASE-01 — Project Foundation & Core Infrastructure
 
 ## Status
-Not Started
+Done (2026-09-23) — commit `39db1cf`
 
 ## Goal
 Stand up a clean, typed FastAPI application skeleton with configuration,
@@ -203,7 +203,7 @@ venv/Scripts/python.exe -m ruff check . && venv/Scripts/python.exe -m ruff forma
   project.
 
 ## Git Commit
-Not created yet.
+`39db1cf` — feat: project scaffold + phase 1 foundation (pushed to `origin/main`)
 
 ## Next Phase
 - PHASE-02 — Input Understanding & Multimodal Intent Classification.
