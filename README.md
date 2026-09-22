@@ -52,7 +52,7 @@ USER (text / code / image)
    → LangSmith evaluation
 ```
 
-The full diagram and specification are in [`docs/architecture.md`](../docs/architecture.md).
+The full diagram and specification are in [`docs/architecture.md`](docs/architecture.md).
 The whole flow is orchestrated with **LangGraph**, with each capability as a
 subgraph.
 
@@ -76,7 +76,7 @@ Built in phases; each is shippable and committed before the next begins.
 
 | Phase | Title | Status |
 |---|---|---|
-| 01 | Project Foundation & Core Infrastructure | Not Started |
+| 01 | Project Foundation & Core Infrastructure | Done |
 | 02 | Input Understanding & Multimodal Intent | Not Started |
 | 03 | Learner Profile, Memory & Learning Events | Not Started |
 | 04 | LangGraph Orchestration & Teaching Planner | Not Started |
@@ -85,28 +85,46 @@ Built in phases; each is shippable and committed before the next begins.
 | 07 | Specialized Agents (DSA / Debug / Explain) | Not Started |
 | 08 | Response Generation, Frontend & Evaluation | Not Started |
 
-Phase specs live in [`docs/phases/`](../docs/phases/).
+Phase specs live in [`docs/phases/`](docs/phases/).
 
 ---
 
 ## Getting started
 
-> Setup is finalized in Phase 01. Target flow:
+Requires Python 3.11+ and Docker.
 
 ```bash
 # 1. clone and enter
-git clone <repo-url> && cd coding-agents
+git clone https://github.com/codinghub27/Adaptive-Coding-Agent.git
+cd Adaptive-Coding-Agent
 
-# 2. env
-cp .env.example .env          # add LLM / DB / Qdrant / LangSmith keys
-python -m venv .venv && source .venv/bin/activate
+# 2. virtualenv + dependencies
+python -m venv venv
+source venv/Scripts/activate      # Windows (Git Bash); on macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. infra (Postgres + Qdrant)
+# 3. env: required: DATABASE_URL, QDRANT_URL, and GROQ_API_KEY (or
+#    OPENROUTER_API_KEY with LLM_PROVIDER=openrouter). The app refuses to
+#    start if any required value is missing.
+cp .env.example .env
+
+# 4. infra: Postgres (host port 5433) + Qdrant (6333)
 docker compose up -d
 
-# 4. run
+# 5. migrations
+alembic upgrade head
+
+# 6. run
 uvicorn app.main:app --reload
+curl http://127.0.0.1:8000/health   # {"status":"ok","db":"ok","qdrant":"ok"}
+```
+
+Checks:
+
+```bash
+pytest                  # unit + integration (integration auto-skips if infra is down)
+pyright                 # strict
+ruff check . && ruff format --check .
 ```
 
 ---

@@ -1,0 +1,25 @@
+# Secrets & local config
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+secrets/
+*.key
+*.pem
+
+# Token Savior local cache (regenerated via `ts init`)
+.token-savior-cache.json
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
