@@ -25,6 +25,7 @@
       "Edit(./frontend/**)",
       "Edit(./eval/**)",
       "Edit(./scripts/**)",
+      "Bash(pip install:*)",
       "Bash(pytest:*)",
       "Bash(python -m pytest:*)",
       "Bash(ruff:*)",
@@ -36,16 +37,17 @@
       "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(uv:*)",
+      "Bash(uvicorn app.main:app)"
     ],
     "ask": [
       "mcp__playwright",
-      "Bash(git push:*)",
       "Bash(docker:*)",
       "Bash(docker compose:*)",
-      "Bash(docker-compose:*)",
-      "Bash(pip install:*)",
-      "Bash(uv:*)"
+      "Bash(docker-compose:*)"
+
     ],
     "deny": [
       "Read(./.env)",
