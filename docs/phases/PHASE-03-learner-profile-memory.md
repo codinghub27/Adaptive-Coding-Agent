@@ -1,7 +1,7 @@
 # PHASE-03 — Learner Profile, Memory & Learning Events
 
 ## Status
-Not Started
+Done (2026-09-23), commit `a7573f5`
 
 ## Goal
 Give the agent memory: a structured, evolving learner profile, conversation
@@ -213,7 +213,7 @@ venv/Scripts/ruff check . && venv/Scripts/ruff format --check .
   is deferred to the knowledge/agent phases.
 
 ## Git Commit
-Not created yet.
+`a7573f5` — feat: phase 3 learner profile, memory, learning events
 
 ## Next Phase
 - PHASE-04 — LangGraph Orchestration & Teaching Planner.
