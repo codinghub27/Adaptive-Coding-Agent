@@ -31,6 +31,7 @@ class FakeChatModel(BaseChatModel):
     usage: dict[str, int] | None = None
     should_raise: bool = False
     seen_kwargs: list[dict[str, Any]] = []  # noqa: RUF012
+    seen_messages: list[list[BaseMessage]] = []  # noqa: RUF012
 
     @property
     def _llm_type(self) -> str:
@@ -46,18 +47,26 @@ class FakeChatModel(BaseChatModel):
         if self.should_raise:
             raise RuntimeError("boom-with-secret-key")
         self.seen_kwargs.append(kwargs)
+        self.seen_messages.append(messages)
         message = AIMessage(content=self.response_content, usage_metadata=self.usage)
         return LCChatResult(generations=[ChatGeneration(message=message)])
 
 
 def _client(
-    *, chat_model: BaseChatModel, tracer: Tracer | None = None, provider: str = "fake-provider"
+    *,
+    chat_model: BaseChatModel,
+    tracer: Tracer | None = None,
+    provider: str = "fake-provider",
+    vision_model: BaseChatModel | None = None,
+    vision_model_name: str | None = None,
 ) -> LangChainLLMClient:
     return LangChainLLMClient(
         chat_model=chat_model,
         provider=provider,
         model="fake-model",
         tracer=tracer or Tracer.disabled(),
+        vision_model=vision_model,
+        vision_model_name=vision_model_name,
     )
 
 
@@ -160,10 +169,101 @@ async def test_embed_raises_not_implemented() -> None:
         await client.embed(["text"])
 
 
-async def test_vision_raises_not_implemented() -> None:
-    client = _client(chat_model=FakeChatModel())
-    with pytest.raises(NotImplementedError):
+async def test_vision_maps_content_and_usage_and_sends_image_message() -> None:
+    chat_model = FakeChatModel()
+    vision_model = FakeChatModel(
+        response_content="transcribed text",
+        usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+    )
+    client = _client(
+        chat_model=chat_model,
+        vision_model=vision_model,
+        vision_model_name="fake-vision-model",
+    )
+
+    result = await client.vision(b"\x89PNG\r\n\x1a\nrest", "describe this")
+
+    assert result.content == "transcribed text"
+    assert result.provider == "fake-provider"
+    assert result.model == "fake-vision-model"
+    assert result.usage is not None
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 20
+    assert result.usage.total_tokens == 30
+
+    assert vision_model.seen_messages, "vision model should have been invoked"
+    sent_messages = vision_model.seen_messages[-1]
+    assert len(sent_messages) == 1
+    content = sent_messages[0].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "describe this"}
+    image_block = content[1]
+    assert isinstance(image_block, dict)
+    assert image_block["type"] == "image_url"
+    assert image_block["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+async def test_vision_passes_run_name_and_metadata() -> None:
+    vision_model = FakeChatModel()
+    client = _client(
+        chat_model=FakeChatModel(),
+        vision_model=vision_model,
+        vision_model_name="fake-vision-model",
+    )
+
+    seen_config: dict[str, Any] = {}
+    original_ainvoke = BaseChatModel.ainvoke
+
+    async def _spy_ainvoke(self: Any, *args: Any, **kwargs: Any) -> Any:
+        seen_config.update(kwargs.get("config") or {})
+        return await original_ainvoke(self, *args, **kwargs)
+
+    with patch.object(BaseChatModel, "ainvoke", _spy_ainvoke):
         await client.vision(b"bytes", "prompt")
+
+    assert seen_config.get("run_name") == "llm.vision"
+    assert seen_config.get("metadata") == {
+        "provider": "fake-provider",
+        "model": "fake-vision-model",
+    }
+
+
+async def test_vision_error_wraps_without_leaking_message() -> None:
+    vision_model = FakeChatModel(should_raise=True)
+    client = _client(
+        chat_model=FakeChatModel(),
+        vision_model=vision_model,
+        vision_model_name="fake-vision-model",
+        provider="fake-provider",
+    )
+
+    with pytest.raises(LLMError) as exc_info:
+        await client.vision(b"bytes", "prompt")
+
+    message = str(exc_info.value)
+    assert "boom-with-secret-key" not in message
+    assert "fake-provider" in message
+    assert "RuntimeError" in message
+
+
+async def test_vision_without_vision_model_raises_llm_error() -> None:
+    client = _client(chat_model=FakeChatModel())
+
+    with pytest.raises(LLMError) as exc_info:
+        await client.vision(b"bytes", "prompt")
+
+    assert "not configured" in str(exc_info.value)
+
+
+async def test_get_llm_client_builds_vision_model(make_settings: MakeSettings) -> None:
+    settings = make_settings(llm_provider="groq", groq_api_key="test-key")
+    client = get_llm_client(settings)
+    assert isinstance(client, LangChainLLMClient)
+    assert client._vision_model is not None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert (
+        client._vision_model_name  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        == settings.resolved_llm_vision_model
+    )
 
 
 def test_tracer_from_settings_disabled_when_tracing_false(make_settings: MakeSettings) -> None:

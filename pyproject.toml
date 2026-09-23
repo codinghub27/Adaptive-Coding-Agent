@@ -23,4 +23,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: needs docker compose infra (Postgres + Qdrant)",
+    "live: calls the real LLM provider; opt-in via RUN_LIVE_LLM=1",
 ]

@@ -15,6 +15,8 @@ from sqlalchemy.engine import make_url
 
 GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b"
 OPENROUTER_DEFAULT_MODEL = "qwen/qwen3.8-27b:free"
+GROQ_DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
+OPENROUTER_DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b:free"
 
 _ASYNCPG_SCHEME = "postgresql+asyncpg"
 _NORMALIZABLE_SCHEMES = (
@@ -86,6 +88,7 @@ class Settings(BaseSettings):
 
     llm_provider: Literal["groq", "openrouter"] = "groq"
     llm_model: str | None = None
+    llm_vision_model: str | None = None
     groq_api_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
 
@@ -110,7 +113,12 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "qdrant_api_key", "groq_api_key", "openrouter_api_key", "llm_model", mode="before"
+        "qdrant_api_key",
+        "groq_api_key",
+        "openrouter_api_key",
+        "llm_model",
+        "llm_vision_model",
+        mode="before",
     )
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
@@ -137,6 +145,15 @@ class Settings(BaseSettings):
         if self.llm_provider == "groq":
             return GROQ_DEFAULT_MODEL
         return OPENROUTER_DEFAULT_MODEL
+
+    @property
+    def resolved_llm_vision_model(self) -> str:
+        """The effective vision model name: explicit override or provider default."""
+        if self.llm_vision_model is not None:
+            return self.llm_vision_model
+        if self.llm_provider == "groq":
+            return GROQ_DEFAULT_VISION_MODEL
+        return OPENROUTER_DEFAULT_VISION_MODEL
 
     @property
     def llm_api_key(self) -> SecretStr:

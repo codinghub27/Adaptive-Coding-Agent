@@ -19,6 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory, ping_db
 from app.health import ping_qdrant
+from app.input.api import MAX_REQUEST_BYTES, BodySizeLimitMiddleware
+from app.input.api import router as input_router
+from app.llm import get_llm_client
 from app.schemas import HealthResponse
 
 
@@ -62,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.engine = engine
             app.state.session_factory = session_factory
             app.state.qdrant = qdrant
+            app.state.llm = get_llm_client(settings)
 
             yield
 
@@ -78,6 +82,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
         allow_credentials=False,
     )
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+
+    app.include_router(input_router)
 
     @app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> JSONResponse:

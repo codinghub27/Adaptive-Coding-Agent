@@ -8,7 +8,9 @@ from pydantic import ValidationError
 
 from app.config import (
     GROQ_DEFAULT_MODEL,
+    GROQ_DEFAULT_VISION_MODEL,
     OPENROUTER_DEFAULT_MODEL,
+    OPENROUTER_DEFAULT_VISION_MODEL,
     DatabaseSettings,
     Settings,
     normalize_database_url,
@@ -67,7 +69,8 @@ def test_cors_origins_comma_split(make_settings: MakeSettings) -> None:
 
 
 @pytest.mark.parametrize(
-    "field", ["qdrant_api_key", "groq_api_key", "openrouter_api_key", "llm_model"]
+    "field",
+    ["qdrant_api_key", "groq_api_key", "openrouter_api_key", "llm_model", "llm_vision_model"],
 )
 def test_empty_string_keys_become_none(make_settings: MakeSettings, field: str) -> None:
     overrides: dict[str, object] = {field: ""}
@@ -94,6 +97,23 @@ def test_resolved_llm_model_defaults_openrouter(make_settings: MakeSettings) -> 
 def test_resolved_llm_model_override(make_settings: MakeSettings) -> None:
     settings = make_settings(llm_model="custom-model")
     assert settings.resolved_llm_model == "custom-model"
+
+
+def test_resolved_llm_vision_model_defaults_groq(make_settings: MakeSettings) -> None:
+    settings = make_settings(llm_provider="groq")
+    assert settings.resolved_llm_vision_model == GROQ_DEFAULT_VISION_MODEL
+
+
+def test_resolved_llm_vision_model_defaults_openrouter(make_settings: MakeSettings) -> None:
+    settings = make_settings(
+        llm_provider="openrouter", openrouter_api_key="test-key", groq_api_key=None
+    )
+    assert settings.resolved_llm_vision_model == OPENROUTER_DEFAULT_VISION_MODEL
+
+
+def test_resolved_llm_vision_model_override(make_settings: MakeSettings) -> None:
+    settings = make_settings(llm_vision_model="custom-vision-model")
+    assert settings.resolved_llm_vision_model == "custom-vision-model"
 
 
 def test_repr_hides_database_password_and_api_key(make_settings: MakeSettings) -> None:

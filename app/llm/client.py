@@ -5,6 +5,7 @@ LangChain chat-model integration. Everything else depends on the
 `app.llm.base.LLMClient` protocol.
 """
 
+import base64
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from typing import TypeVar
@@ -99,11 +100,36 @@ class LangChainLLMClient:
         provider: str,
         model: str,
         tracer: Tracer,
+        vision_model: BaseChatModel | None = None,
+        vision_model_name: str | None = None,
     ) -> None:
         self._chat_model = chat_model
         self._provider = provider
         self._model = model
         self._tracer = tracer
+        self._vision_model = vision_model
+        self._vision_model_name = vision_model_name
+
+    @staticmethod
+    def _to_chat_result(ai_message: AIMessage, *, provider: str, model: str) -> ChatResult:
+        """Map a LangChain `AIMessage` into our provider-agnostic `ChatResult`."""
+        content = ai_message.text
+
+        usage: TokenUsage | None = None
+        usage_metadata = ai_message.usage_metadata
+        if usage_metadata is not None:
+            usage = TokenUsage(
+                input_tokens=usage_metadata["input_tokens"],
+                output_tokens=usage_metadata["output_tokens"],
+                total_tokens=usage_metadata["total_tokens"],
+            )
+
+        return ChatResult(
+            content=content,
+            provider=provider,
+            model=model,
+            usage=usage,
+        )
 
     async def chat(
         self,
@@ -135,23 +161,7 @@ class LangChainLLMClient:
         except Exception as exc:
             raise LLMError(f"{self._provider} chat call failed: {type(exc).__name__}") from None
 
-        content = ai_message.text
-
-        usage: TokenUsage | None = None
-        usage_metadata = ai_message.usage_metadata
-        if usage_metadata is not None:
-            usage = TokenUsage(
-                input_tokens=usage_metadata["input_tokens"],
-                output_tokens=usage_metadata["output_tokens"],
-                total_tokens=usage_metadata["total_tokens"],
-            )
-
-        return ChatResult(
-            content=content,
-            provider=self._provider,
-            model=self._model,
-            usage=usage,
-        )
+        return self._to_chat_result(ai_message, provider=self._provider, model=self._model)
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         raise NotImplementedError("embeddings not implemented until Phase 5")
@@ -163,24 +173,61 @@ class LangChainLLMClient:
         *,
         mime_type: str = "image/png",
     ) -> ChatResult:
-        raise NotImplementedError("vision not implemented until Phase 2")
+        if self._vision_model is None or self._vision_model_name is None:
+            raise LLMError(f"{self._provider} vision model not configured")
+
+        b64_image = base64.b64encode(image).decode("ascii")
+        message = HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{b64_image}"},
+                },
+            ]
+        )
+
+        run_config: RunnableConfig = {
+            "run_name": "llm.vision",
+            "metadata": {"provider": self._provider, "model": self._vision_model_name},
+        }
+
+        vision_model = self._vision_model
+
+        async def _invoke() -> AIMessage:
+            return await vision_model.ainvoke([message], config=run_config)
+
+        try:
+            ai_message = await self._tracer.trace(_invoke)
+        except Exception as exc:
+            raise LLMError(f"{self._provider} vision call failed: {type(exc).__name__}") from None
+
+        return self._to_chat_result(
+            ai_message, provider=self._provider, model=self._vision_model_name
+        )
 
 
 def get_llm_client(settings: Settings) -> LLMClient:
     """Build the configured `LLMClient` (Groq or OpenRouter) with tracing wired in."""
     tracer = Tracer.from_settings(settings)
     model_name = settings.resolved_llm_model
+    vision_model_name = settings.resolved_llm_vision_model
     api_key = settings.llm_api_key
 
     chat_model: BaseChatModel
+    vision_model: BaseChatModel
     if settings.llm_provider == "groq":
         chat_model = ChatGroq(model=model_name, api_key=api_key)
+        vision_model = ChatGroq(model=vision_model_name, api_key=api_key)
     else:
         chat_model = ChatOpenRouter(model=model_name, api_key=api_key)
+        vision_model = ChatOpenRouter(model=vision_model_name, api_key=api_key)
 
     return LangChainLLMClient(
         chat_model=chat_model,
         provider=settings.llm_provider,
         model=model_name,
         tracer=tracer,
+        vision_model=vision_model,
+        vision_model_name=vision_model_name,
     )

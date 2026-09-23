@@ -77,7 +77,7 @@ Built in phases; each is shippable and committed before the next begins.
 | Phase | Title | Status |
 |---|---|---|
 | 01 | Project Foundation & Core Infrastructure | Done |
-| 02 | Input Understanding & Multimodal Intent | Not Started |
+| 02 | Input Understanding & Multimodal Intent | Done |
 | 03 | Learner Profile, Memory & Learning Events | Not Started |
 | 04 | LangGraph Orchestration & Teaching Planner | Not Started |
 | 05 | Knowledge Base & Hybrid RAG | Not Started |

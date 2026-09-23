@@ -2,19 +2,29 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from app.schemas.base import APIModel
+from app.schemas.input import CodeBlock, InputSource, StructuredInput
+from app.schemas.intent import (
+    LOW_CONFIDENCE_THRESHOLD,
+    Intent,
+    IntentResult,
+    IntentSource,
+    UnderstandResponse,
+)
 
 __all__ = [
     "APIModel",
     "ComponentStatus",
     "HealthResponse",
+    "CodeBlock",
+    "InputSource",
+    "StructuredInput",
+    "Intent",
+    "IntentResult",
+    "IntentSource",
+    "LOW_CONFIDENCE_THRESHOLD",
+    "UnderstandResponse",
 ]
-
-
-class APIModel(BaseModel):
-    """Base class for all API boundary models: immutable, no unknown fields."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 ComponentStatus = Literal["ok", "error"]
