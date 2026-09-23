@@ -1,7 +1,7 @@
 # PHASE-02 — Input Understanding & Multimodal Intent Classification
 
 ## Status
-Done (2026-09-23), commit: see Git Commit
+Done (2026-09-23), commit `aadb117`
 
 ## Goal
 Turn raw multimodal input (text, code, error logs, images) into one structured,
@@ -252,7 +252,7 @@ venv/Scripts/python.exe -m uvicorn app.main:app --port 8767 ; curl -F ... /under
   Only Groq was.
 
 ## Git Commit
-Not created yet.
+`aadb117` — feat: phase 2 input understanding + intent classification (not pushed)
 
 ## Next Phase
 - PHASE-03 — Learner Profile, Memory & Learning Events.
