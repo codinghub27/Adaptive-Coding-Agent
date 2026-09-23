@@ -5,6 +5,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.db.models  # noqa: F401  # register ORM models on Base.metadata for autogenerate
 from alembic import context
 from app.config import get_database_settings
 from app.db.base import Base

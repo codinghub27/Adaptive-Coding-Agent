@@ -79,12 +79,12 @@ def _tcp_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def _infra_reachable() -> tuple[bool, str]:
-    """Probe the real Postgres + Qdrant infra referenced by the real settings.
+def _postgres_reachable() -> tuple[bool, str]:
+    """Probe the real Postgres infra referenced by the real settings.
 
     Returns `(reachable, reason)`. Uses a plain TCP connect rather than the
-    async `ping_db`/`ping_qdrant` helpers so it can run synchronously during
-    collection, before any event loop exists.
+    async `ping_db` helper so it can run synchronously during collection,
+    before any event loop exists.
     """
     try:
         settings = get_settings()
@@ -96,6 +96,21 @@ def _infra_reachable() -> tuple[bool, str]:
     if not _tcp_reachable(db_host, db_port):
         return False, f"postgres unreachable at {db_host}:{db_port}"
 
+    return True, ""
+
+
+def _infra_reachable(postgres_ok: bool, postgres_reason: str) -> tuple[bool, str]:
+    """Combine an already-computed Postgres probe with a fresh Qdrant probe.
+
+    Returns `(reachable, reason)`. Takes the Postgres result instead of
+    re-probing so Postgres is only ever TCP-probed once per collection. Uses a
+    plain TCP connect rather than the async `ping_qdrant` helper so it can run
+    synchronously during collection, before any event loop exists.
+    """
+    if not postgres_ok:
+        return False, postgres_reason
+
+    settings = get_settings()
     qdrant_url = urlsplit(settings.qdrant_url)
     qdrant_host, qdrant_port = qdrant_url.hostname or "localhost", qdrant_url.port or 6333
     if not _tcp_reachable(qdrant_host, qdrant_port):
@@ -105,11 +120,20 @@ def _infra_reachable() -> tuple[bool, str]:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip `integration`-marked tests when the real infra isn't reachable."""
-    reachable, reason = _infra_reachable()
-    if reachable:
-        return
-    skip_marker = pytest.mark.skip(reason=f"integration infra unreachable: {reason}")
+    """Skip `integration`-marked tests when the real infra isn't reachable, and
+    `db`-marked tests when Postgres alone isn't reachable.
+
+    Uses `get_closest_marker` rather than `item.keywords`: keyword matching
+    also matches on substrings of the test's node id (e.g. a `tests/db/`
+    package name), which would spuriously skip unmarked tests that merely
+    live under a `db`-named directory.
+    """
+    postgres_ok, postgres_reason = _postgres_reachable()
+    infra_ok, infra_reason = _infra_reachable(postgres_ok, postgres_reason)
+    integration_skip = pytest.mark.skip(reason=f"integration infra unreachable: {infra_reason}")
+    db_skip = pytest.mark.skip(reason=f"db infra unreachable: {postgres_reason}")
     for item in items:
-        if "integration" in item.keywords:
-            item.add_marker(skip_marker)
+        if not infra_ok and item.get_closest_marker("integration") is not None:
+            item.add_marker(integration_skip)
+        if not postgres_ok and item.get_closest_marker("db") is not None:
+            item.add_marker(db_skip)
