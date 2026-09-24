@@ -21,7 +21,16 @@ from app.input.vision import MAX_IMAGE_BYTES, ImageValidationError, extract_from
 from app.llm.base import LLMClient, LLMError
 from app.schemas import StructuredInput, UnderstandResponse
 
-__all__ = ["MAX_REQUEST_BYTES", "BodySizeLimitMiddleware", "router", "get_llm"]
+__all__ = [
+    "IMAGE_VALIDATION_DETAIL",
+    "IMAGE_VALIDATION_STATUS",
+    "MAX_REQUEST_BYTES",
+    "BodySizeLimitMiddleware",
+    "router",
+    "get_llm",
+    "valid_language_hint",
+    "validate_request",
+]
 
 router = APIRouter(tags=["input"])
 
@@ -99,12 +108,12 @@ class BodySizeLimitMiddleware:
         await response(scope, receive, send)
 
 
-_IMAGE_VALIDATION_STATUS: dict[str, int] = {
+IMAGE_VALIDATION_STATUS: dict[str, int] = {
     "too_large": 413,
     "unsupported_type": 415,
     "empty": 422,
 }
-_IMAGE_VALIDATION_DETAIL: dict[str, str] = {
+IMAGE_VALIDATION_DETAIL: dict[str, str] = {
     "too_large": "image exceeds maximum size",
     "unsupported_type": "unsupported image type",
     "empty": "image is empty",
@@ -119,7 +128,7 @@ def get_llm(request: Request) -> LLMClient:
     return llm
 
 
-def _validate_request(text: str | None, image: UploadFile | None) -> None:
+def validate_request(text: str | None, image: UploadFile | None) -> None:
     if not (text and text.strip()) and image is None:
         raise HTTPException(status_code=422, detail="provide text and/or an image")
 
@@ -136,8 +145,8 @@ async def _image_to_structured(image: UploadFile, llm: LLMClient) -> StructuredI
         return await extract_from_image(llm, data, declared_mime=image.content_type)
     except ImageValidationError as exc:
         raise HTTPException(
-            status_code=_IMAGE_VALIDATION_STATUS[exc.reason],
-            detail=_IMAGE_VALIDATION_DETAIL[exc.reason],
+            status_code=IMAGE_VALIDATION_STATUS[exc.reason],
+            detail=IMAGE_VALIDATION_DETAIL[exc.reason],
         ) from None
     except LLMError:
         raise HTTPException(status_code=502, detail="vision extraction failed") from None
@@ -152,13 +161,13 @@ def _combine(
         return image_input
     if text_input is not None:
         return text_input
-    # Unreachable when called from `understand()`: `_validate_request` has
+    # Unreachable when called from `understand()`: `validate_request` has
     # already rejected the request (422) if neither text nor an image was
     # supplied, so at least one of the two inputs is always set here.
     raise RuntimeError("_combine called with neither text_input nor image_input")
 
 
-def _valid_language_hint(language: str | None) -> str | None:
+def valid_language_hint(language: str | None) -> str | None:
     """Return `language` if it looks like a plausible language tag, else `None`.
 
     An implausible value (e.g. containing spaces or punctuation outside
@@ -179,9 +188,9 @@ async def understand(
     image: Annotated[UploadFile | None, File()] = None,
 ) -> UnderstandResponse:
     """Normalize `text`/`image` into a `StructuredInput` and classify its intent."""
-    _validate_request(text, image)
+    validate_request(text, image)
 
-    language_hint = _valid_language_hint(language)
+    language_hint = valid_language_hint(language)
     text_input = _text_to_structured(text, language_hint) if text and text.strip() else None
     image_input = await _image_to_structured(image, llm) if image is not None else None
 

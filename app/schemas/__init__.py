@@ -11,6 +11,12 @@ from app.schemas.intent import (
     IntentSource,
     UnderstandResponse,
 )
+from app.schemas.plan import (
+    ASSISTANCE_ORDER,
+    AssistanceLevel,
+    SolutionStrategy,
+    TeachingPlan,
+)
 
 __all__ = [
     "APIModel",
@@ -24,6 +30,10 @@ __all__ = [
     "IntentSource",
     "LOW_CONFIDENCE_THRESHOLD",
     "UnderstandResponse",
+    "ASSISTANCE_ORDER",
+    "AssistanceLevel",
+    "SolutionStrategy",
+    "TeachingPlan",
 ]
 
 

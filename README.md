@@ -78,8 +78,8 @@ Built in phases; each is shippable and committed before the next begins.
 |---|---|---|
 | 01 | Project Foundation & Core Infrastructure | Done |
 | 02 | Input Understanding & Multimodal Intent | Done |
-| 03 | Learner Profile, Memory & Learning Events | Not Started |
-| 04 | LangGraph Orchestration & Teaching Planner | Not Started |
+| 03 | Learner Profile, Memory & Learning Events | Done |
+| 04 | LangGraph Orchestration & Teaching Planner | Done |
 | 05 | Knowledge Base & Hybrid RAG | Not Started |
 | 06 | Code Execution Sandbox & Verification | Not Started |
 | 07 | Specialized Agents (DSA / Debug / Explain) | Not Started |

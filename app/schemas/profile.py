@@ -27,3 +27,8 @@ class LearnerProfileView(APIModel):
             if not 0.0 <= level <= 1.0:
                 raise ValueError(f"skill level for {skill!r} must be within 0.0-1.0")
         return value
+
+    @classmethod
+    def empty(cls) -> "LearnerProfileView":
+        """A neutral profile view for an unknown/anonymous learner."""
+        return cls(language=None, skill_levels={}, learning_preferences={}, common_errors=[])

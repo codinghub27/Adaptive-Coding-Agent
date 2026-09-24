@@ -21,6 +21,7 @@ __all__ = [
     "LearningEventView",
     "RecordEventResult",
     "RequestedHelp",
+    "slug_tag",
 ]
 
 Difficulty = Literal["easy", "medium", "hard"]
@@ -29,7 +30,7 @@ RequestedHelp = Literal[
 ]
 
 
-def _slug(value: str) -> str:
+def slug_tag(value: str) -> str:
     """Normalize a short tag: strip, lowercase, spaces -> underscores."""
     return value.strip().lower().replace(" ", "_")
 
@@ -73,14 +74,14 @@ class LearningEventCreate(APIModel):
         # here; `min_length=1` on the field then rejects it, same as any
         # other too-short topic.
         if isinstance(value, str):
-            return _slug(value)
+            return slug_tag(value)
         return value
 
     @field_validator("pattern", mode="before")
     @classmethod
     def _normalize_pattern(cls, value: object) -> object:
         if isinstance(value, str):
-            slug = _slug(value)
+            slug = slug_tag(value)
             return slug or None
         return value
 
@@ -96,7 +97,7 @@ class LearningEventCreate(APIModel):
             normalized: list[object] = []
             for item in items:
                 if isinstance(item, str):
-                    slug = _slug(item)
+                    slug = slug_tag(item)
                     if slug:
                         normalized.append(slug)
                 else:

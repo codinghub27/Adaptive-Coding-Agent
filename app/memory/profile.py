@@ -161,9 +161,7 @@ async def get_profile(session: AsyncSession, user_id: uuid.UUID) -> LearnerProfi
     result = await session.execute(stmt)
     profile = result.scalar_one_or_none()
     if profile is None:
-        return LearnerProfileView(
-            language=None, skill_levels={}, learning_preferences={}, common_errors=[]
-        )
+        return LearnerProfileView.empty()
     return to_view(profile)
 
 

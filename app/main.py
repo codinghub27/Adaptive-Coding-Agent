@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory, ping_db
+from app.graph.api import router as chat_router
 from app.health import ping_qdrant
 from app.input.api import MAX_REQUEST_BYTES, BodySizeLimitMiddleware
 from app.input.api import router as input_router
@@ -83,8 +84,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=False,
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES, path="/chat")
 
     app.include_router(input_router)
+    app.include_router(chat_router)
 
     @app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> JSONResponse:
