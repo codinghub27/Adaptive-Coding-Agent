@@ -1,15 +1,7 @@
 # PHASE-05 — Knowledge Base & Hybrid RAG
 
 ## Status
-In Progress. Paused 2026-09-24, nothing committed.
-- Done + verified: P1 schema/collection/embedders, P2 corpus, P3 ingestion +
-  BM25 + build script (live `dsa_knowledge` = 78 points), P4 hybrid retrieval
-  (live + Qdrant-down checks pass).
-- **P5 graph node: interrupted mid-packet.** `state.py`, `nodes.py`,
-  `build.py`, `config.py` and `main.py` are partially edited, and `api.py` and
-  the tests are not done yet. Review `git diff app/graph app/main.py
-  app/config.py` before continuing.
-- Remaining: finish P5 → P6 tests → close-out (code-review, doc, commit).
+Done (2026-09-24), commit `95118e0`
 
 ## Goal
 Build the DSA/coding knowledge base and a hybrid retriever (dense + BM25 +
@@ -324,7 +316,7 @@ venv/Scripts/python.exe -m pytest -q
   also fail on the unmodified tree at `5301208`.
 
 ## Git Commit
-Not created yet.
+`95118e0` — feat: phase 5 knowledge base + hybrid RAG
 
 ## Next Phase
 - PHASE-06 — Code Execution Sandbox & Verification.
