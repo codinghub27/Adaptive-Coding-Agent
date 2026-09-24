@@ -1,7 +1,7 @@
 # PHASE-04 — LangGraph Orchestration & Teaching Planner
 
 ## Status
-Not Started
+Done (2026-09-24), commit `d1e77eb`
 
 ## Goal
 Wire the pieces from Phases 01–03 into a real LangGraph flow with a typed state,
@@ -297,7 +297,7 @@ venv/Scripts/python.exe -m uvicorn app.main:app --port 8768 ; curl -F "text=..."
 - `recent_context` is loaded into state but not yet consumed (Phase 07/08).
 
 ## Git Commit
-Not created yet.
+`d1e77eb` — feat: phase 4 langgraph orchestration + teaching planner (not pushed)
 
 ## Next Phase
 - PHASE-05 — Knowledge Base & Hybrid RAG.
