@@ -155,6 +155,13 @@ Owner-approved 2026-09-24:
   JWTs — a fast hash is safe and enables indexed lookup); passwords use
   **bcrypt** (slow, salted).
 
+- **Owner follow-up (P9, 2026-09-24):** the public API field is `username`
+  (register request/response, error messages "username already taken" /
+  "incorrect username or password"); the DB column stays `users.handle` (no
+  migration). `POST /auth/login` accepts a JSON body `{"username","password"}`
+  **or** the OAuth2 form (Swagger "Authorize" still works); other content types
+  → 415. Both formats return the same `TokenPair` and the same 401 body.
+
 ## Dependencies
 - PHASE-01 (Settings, DB session, app factory), PHASE-03 (User, memory
   scoping), PHASE-04 (`/chat`).
@@ -251,7 +258,7 @@ venv/Scripts/python.exe -m uvicorn app.main:app --port 8769 ; curl …/auth/* �
 ```
 
 ## Test Results
-- `pytest -q`: **755 passed, 2 skipped** (the 2 skips are the opt-in live-LLM
+- `pytest -q`: **765 passed, 2 skipped** (after P9; 755 before) (the 2 skips are the opt-in live-LLM
   tests). Auth tests: passwords, users, refresh-token persistence, tokens
   (alg=none / HS512 / tampered / wrong type / each missing claim / leeway),
   deps, routes, protected routes, manual cases, concurrency, 422 redaction,

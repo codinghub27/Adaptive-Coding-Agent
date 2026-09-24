@@ -73,7 +73,7 @@ async def create_user(session: AsyncSession, handle: str, password: str) -> User
     """
     handle = normalize_handle(handle)
     if not _HANDLE_PATTERN.fullmatch(handle):
-        raise ValueError("handle must be 3-64 characters from [A-Za-z0-9_.-]")
+        raise ValueError("username must be 3-64 characters from [A-Za-z0-9_.-]")
 
     if await get_user_by_handle(session, handle) is not None:
         raise HandleTakenError(handle)

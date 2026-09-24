@@ -51,6 +51,61 @@ DETAIL_REFRESH_REUSE: Final = "refresh token reuse detected"
 
 
 # --------------------------------------------------------------------------
+# AUTH-P9 owner repro -- JSON register/login with the public `username` field
+# --------------------------------------------------------------------------
+
+
+async def test_owner_repro_json_register_and_login_with_username(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    """AUTH-P9 owner repro, end-to-end: `POST /auth/register` and
+    `POST /auth/login` both accept `{"username", "password"}` as JSON, and
+    the resulting access token works on `/chat`.
+
+    Uses a fresh generated username (`make_handle`), not the owner's literal
+    `"sravan12"`: that value already exists as a real row in the project's
+    dev database (created 2026-09-24, presumably from the owner's own manual
+    reproduction of this bug before filing it), so registering it here would
+    just get a 409 rather than exercising the fix. The request/response
+    shapes below are otherwise identical to the owner's repro.
+    """
+    settings = make_settings()
+    fake = FakeLLMClient()
+    username = make_handle()
+    password = "sravan123"  # noqa: S105
+    async with client_for(settings, db_session, fake) as client:
+        register_resp = await client.post(
+            "/auth/register", json={"username": username, "password": password}
+        )
+        login_resp = await client.post(
+            "/auth/login", json={"username": username, "password": password}
+        )
+        access_token = login_resp.json()["access_token"]
+        chat_resp = await client.post(
+            "/chat", data={"text": _DEBUG_TEXT}, headers=auth_headers(access_token)
+        )
+
+    assert register_resp.status_code == 201
+    register_body = register_resp.json()
+    assert register_body == {"id": register_body["id"], "username": username}
+
+    assert login_resp.status_code == 200
+    login_body = login_resp.json()
+    claims = decode_token(login_body["access_token"], expected_type="access", settings=settings)
+    assert claims.type == "access"
+
+    assert chat_resp.status_code == 200
+
+    print(
+        "ACTUAL: "
+        f"register status={register_resp.status_code} body={register_body} | "
+        f"login status={login_resp.status_code} token_type={login_body['token_type']} "
+        f"access claims.type={claims.type} | "
+        f"chat status={chat_resp.status_code} route={chat_resp.json()['route']}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Manual Test 1 -- valid login
 # --------------------------------------------------------------------------
 

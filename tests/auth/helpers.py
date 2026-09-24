@@ -11,6 +11,11 @@ function with a local variable of the same name for the rest of that
 function's scope (Python resolves `handle` as local for the *whole*
 function as soon as it's assigned anywhere in it, which would make the
 right-hand-side call raise `UnboundLocalError`).
+
+`register` posts the public `username` field (`RegisterRequest.username`);
+`login` posts form-encoded data (the OAuth2 password flow shape), and
+`login_json` posts the same credentials as a JSON body instead, to exercise
+`POST /auth/login`'s other accepted content type.
 """
 
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -27,7 +32,15 @@ from app.input.api import get_llm
 from app.main import create_app
 from tests.input.fakes import FakeLLMClient
 
-__all__ = ["PASSWORD", "auth_headers", "client_for", "login", "make_handle", "register"]
+__all__ = [
+    "PASSWORD",
+    "auth_headers",
+    "client_for",
+    "login",
+    "login_json",
+    "make_handle",
+    "register",
+]
 
 #: 29 UTF-8 bytes -- comfortably within the 8-72 byte password policy.
 PASSWORD = "correct horse battery staple"
@@ -63,8 +76,16 @@ def auth_headers(token: str) -> dict[str, str]:
 async def register(
     client: httpx.AsyncClient, handle: str, password: str = PASSWORD
 ) -> httpx.Response:
-    return await client.post("/auth/register", json={"handle": handle, "password": password})
+    return await client.post("/auth/register", json={"username": handle, "password": password})
 
 
 async def login(client: httpx.AsyncClient, handle: str, password: str = PASSWORD) -> httpx.Response:
+    """Form-encoded login (the OAuth2 password flow shape)."""
     return await client.post("/auth/login", data={"username": handle, "password": password})
+
+
+async def login_json(
+    client: httpx.AsyncClient, handle: str, password: str = PASSWORD
+) -> httpx.Response:
+    """JSON-body login."""
+    return await client.post("/auth/login", json={"username": handle, "password": password})

@@ -16,6 +16,7 @@ from app.schemas.base import APIModel
 
 __all__ = [
     "AuthUser",
+    "LoginRequest",
     "LogoutRequest",
     "RefreshRequest",
     "RegisterRequest",
@@ -35,12 +36,14 @@ class AuthUser(APIModel):
 class RegisterRequest(APIModel):
     """Request body for `POST /auth/register`.
 
-    The password length policy itself lives in `app.auth.security`
-    (`validate_password`); this only bounds the field size at the API
-    boundary.
+    `username` is the public name for what the DB/internal layers still call
+    a "handle" (`app.db.models.user.User.handle`, `app.db.auth.create_user`);
+    the rename is API-surface only. The password length policy itself lives
+    in `app.auth.security` (`validate_password`); this only bounds the field
+    size at the API boundary.
     """
 
-    handle: str = Field(min_length=3, max_length=64)
+    username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=1, max_length=256, repr=False)
 
 
@@ -48,7 +51,20 @@ class RegisterResponse(APIModel):
     """Response body for `POST /auth/register`."""
 
     id: UUID
-    handle: str
+    username: str
+
+
+class LoginRequest(APIModel):
+    """Request body for `POST /auth/login` when sent as JSON.
+
+    Form-encoded logins (`application/x-www-form-urlencoded` or
+    `multipart/form-data`, including the Swagger "Authorize" OAuth2 password
+    flow) are read directly from the form instead of this model -- see
+    `app.auth.routes.login`.
+    """
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256, repr=False)
 
 
 class TokenPair(APIModel):

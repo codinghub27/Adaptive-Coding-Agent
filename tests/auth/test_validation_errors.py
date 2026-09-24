@@ -5,10 +5,13 @@ behaviour unchanged.
 
 A missing-field pydantic error's `input` is the *entire* input mapping the
 model was validated against (see `test_missing_field_error_input_is_the_whole_payload`
-below) -- so a request missing only `handle` would otherwise echo the
+below) -- so a request missing only `username` would otherwise echo the
 `password` back in `errors()[0]["input"]`, and a too-long `refresh_token`
 would echo itself back as the offending `input` value. `app.main.create_app`'s
 `RequestValidationError` handler strips `input`/`ctx` for `/auth/*` only.
+This applies to both `POST /auth/login`'s body shapes: the JSON one raises
+`RequestValidationError` from `app.auth.routes._parse_login_body` itself
+(there's no `LoginRequest` FastAPI parameter to validate it automatically).
 """
 
 from collections.abc import Callable
@@ -33,7 +36,7 @@ def test_missing_field_error_input_is_the_whole_payload() -> None:
     """
 
     class _Model(BaseModel):
-        handle: str = Field(min_length=3, max_length=64)
+        username: str = Field(min_length=3, max_length=64)
         password: str = Field(min_length=1, max_length=256)
 
     with pytest.raises(ValidationError) as exc_info:
@@ -44,7 +47,7 @@ def test_missing_field_error_input_is_the_whole_payload() -> None:
 
 
 @pytest.mark.db
-async def test_register_422_for_missing_handle_never_echoes_the_password(
+async def test_register_422_for_missing_username_never_echoes_the_password(
     make_settings: MakeSettings, db_session: AsyncSession
 ) -> None:
     settings = make_settings()
@@ -54,6 +57,47 @@ async def test_register_422_for_missing_handle_never_echoes_the_password(
 
     assert response.status_code == 422
     assert secret_password not in response.text
+    for error in response.json()["detail"]:
+        assert set(error) == {"loc", "msg", "type"}
+
+
+@pytest.mark.db
+async def test_register_old_handle_field_name_returns_422_without_echoing_the_password(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    """The old field name `handle` is no longer accepted: `username` is
+    missing (`RegisterRequest.username`) and `handle` is an unrecognized
+    extra field, so `password` must not leak through either error's `input`.
+    """
+    settings = make_settings()
+    async with client_for(settings, db_session, FakeLLMClient()) as client:
+        response = await client.post(
+            "/auth/register", json={"handle": make_handle(), "password": PASSWORD}
+        )
+
+    assert response.status_code == 422
+    assert PASSWORD not in response.text
+    for error in response.json()["detail"]:
+        assert set(error) == {"loc", "msg", "type"}
+
+
+@pytest.mark.db
+async def test_json_login_missing_password_never_echoes_the_username(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    """A JSON `/auth/login` body missing `password` goes through the same
+    `/auth/*` redaction handler as `/auth/register` (Fix 6): the 422 body is
+    reduced to `loc`/`msg`/`type`, so pydantic's own `input` (the whole
+    payload -- see `test_missing_field_error_input_is_the_whole_payload`)
+    never leaks a sibling field back.
+    """
+    settings = make_settings()
+    handle = make_handle()
+    async with client_for(settings, db_session, FakeLLMClient()) as client:
+        await register(client, handle)
+        response = await client.post("/auth/login", json={"username": handle})
+
+    assert response.status_code == 422
     for error in response.json()["detail"]:
         assert set(error) == {"loc", "msg", "type"}
 
@@ -117,7 +161,7 @@ async def test_chat_422_keeps_the_default_handler_behaviour(
 
 
 def test_register_request_repr_and_str_do_not_reveal_the_password() -> None:
-    body = RegisterRequest(handle="alice-handle", password="super-secret-password")  # noqa: S106
+    body = RegisterRequest(username="alice-handle", password="super-secret-password")  # noqa: S106
     assert "super-secret-password" not in repr(body)
     assert "super-secret-password" not in str(body)
 

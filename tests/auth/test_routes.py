@@ -26,12 +26,13 @@ import app.db.auth as db_auth_module
 from app.auth import security as security_module
 from app.auth.deps import DETAIL_SESSION_REVOKED, get_app_settings, get_current_user
 from app.auth.routes import (
-    DETAIL_HANDLE_TAKEN,
     DETAIL_LOGIN_FAILED,
     DETAIL_REFRESH_ALREADY_USED,
     DETAIL_REFRESH_EXPIRED,
     DETAIL_REFRESH_INVALID,
     DETAIL_REFRESH_REUSE,
+    DETAIL_UNSUPPORTED_MEDIA_TYPE,
+    DETAIL_USERNAME_TAKEN,
 )
 from app.auth.routes import router as auth_router
 from app.auth.security import decode_token, hash_token, issue_refresh_token
@@ -87,13 +88,21 @@ def _auth_headers(token: str) -> dict[str, str]:
 async def _register(
     client: httpx.AsyncClient, handle: str, password: str = PASSWORD
 ) -> httpx.Response:
-    return await client.post("/auth/register", json={"handle": handle, "password": password})
+    return await client.post("/auth/register", json={"username": handle, "password": password})
 
 
 async def _login(
     client: httpx.AsyncClient, handle: str, password: str = PASSWORD
 ) -> httpx.Response:
+    """Form-encoded login (the OAuth2 password flow shape)."""
     return await client.post("/auth/login", data={"username": handle, "password": password})
+
+
+async def _login_json(
+    client: httpx.AsyncClient, handle: str, password: str = PASSWORD
+) -> httpx.Response:
+    """JSON-body login."""
+    return await client.post("/auth/login", json={"username": handle, "password": password})
 
 
 # --------------------------------------------------------------------------
@@ -102,7 +111,7 @@ async def _login(
 
 
 @pytest.mark.db
-async def test_register_returns_201_with_id_and_handle(
+async def test_register_returns_201_with_id_and_username(
     make_settings: MakeSettings, db_session: AsyncSession
 ) -> None:
     settings = make_settings()
@@ -112,12 +121,12 @@ async def test_register_returns_201_with_id_and_handle(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["handle"] == handle
+    assert body["username"] == handle
     assert "id" in body
 
 
 @pytest.mark.db
-async def test_register_duplicate_handle_returns_409(
+async def test_register_duplicate_username_returns_409(
     make_settings: MakeSettings, db_session: AsyncSession
 ) -> None:
     settings = make_settings()
@@ -128,7 +137,28 @@ async def test_register_duplicate_handle_returns_409(
 
     assert first.status_code == 201
     assert second.status_code == 409
-    assert second.json()["detail"] == DETAIL_HANDLE_TAKEN
+    assert second.json()["detail"] == DETAIL_USERNAME_TAKEN
+
+
+@pytest.mark.db
+async def test_register_old_handle_field_name_returns_422(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    """The old field name `handle` is no longer accepted -- `username` is
+    required and `handle` is simply an unrecognized extra field, so this is
+    a plain missing-required-field 422 (owner repro: the reverse direction).
+
+    Only the status code here; the redacted-body variant (no password
+    echoed) is covered against the full app, with its `/auth/*`
+    validation-error handler, in `tests/auth/test_validation_errors.py`.
+    """
+    settings = make_settings()
+    async with _client_for(settings, db_session) as client:
+        response = await client.post(
+            "/auth/register", json={"handle": _handle(), "password": PASSWORD}
+        )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.db
@@ -250,6 +280,114 @@ async def test_login_wrong_password_and_unknown_handle_get_identical_401(
     assert wrong.json()["detail"] == DETAIL_LOGIN_FAILED
     assert unknown.json()["detail"] == DETAIL_LOGIN_FAILED
     assert wrong.headers["www-authenticate"] == "Bearer"
+
+
+# --------------------------------------------------------------------------
+# login: JSON body (owner repro)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.db
+async def test_register_and_login_json_owner_repro(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    """Owner repro: `POST /auth/register` and `POST /auth/login` both accept
+    a JSON body of exactly `{"username", "password"}`.
+    """
+    settings = make_settings()
+    handle = _handle()
+    async with _client_for(settings, db_session) as client:
+        register_resp = await _register(client, handle)
+        login_resp = await _login_json(client, handle)
+
+    assert register_resp.status_code == 201
+    assert register_resp.json() == {"id": register_resp.json()["id"], "username": handle}
+
+    assert login_resp.status_code == 200
+    body = login_resp.json()
+    claims = decode_token(body["access_token"], expected_type="access", settings=settings)
+    assert claims.type == "access"
+
+
+@pytest.mark.db
+async def test_json_login_returns_same_token_pair_shape_as_form_login(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    settings = make_settings()
+    handle = _handle()
+    async with _client_for(settings, db_session) as client:
+        await _register(client, handle)
+        response = await _login_json(client, handle)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_type"] == "bearer"
+    assert body["expires_in"] == 2700
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+
+@pytest.mark.db
+async def test_json_login_wrong_password_matches_form_login_401_body(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    settings = make_settings()
+    handle = _handle()
+    async with _client_for(settings, db_session) as client:
+        await _register(client, handle)
+        json_wrong = await _login_json(client, handle, password="totally-wrong-password")
+        form_wrong = await _login(client, handle, password="totally-wrong-password")
+
+    assert json_wrong.status_code == form_wrong.status_code == 401
+    assert json_wrong.json() == form_wrong.json()
+    assert json_wrong.json()["detail"] == DETAIL_LOGIN_FAILED
+
+
+@pytest.mark.db
+async def test_json_login_missing_password_returns_422(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    """Only checks the status code here; the redaction of the 422 body
+    (no secret echoed) is covered against the full app, with its
+    `/auth/*` validation-error handler, in
+    `tests/auth/test_validation_errors.py`.
+    """
+    settings = make_settings()
+    handle = _handle()
+    async with _client_for(settings, db_session) as client:
+        await _register(client, handle)
+        response = await client.post("/auth/login", json={"username": handle})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.db
+async def test_login_with_text_plain_content_type_returns_415(
+    make_settings: MakeSettings, db_session: AsyncSession
+) -> None:
+    settings = make_settings()
+    handle = _handle()
+    async with _client_for(settings, db_session) as client:
+        await _register(client, handle)
+        response = await client.post(
+            "/auth/login",
+            content=f'{{"username": "{handle}", "password": "{PASSWORD}"}}'.encode(),
+            headers={"Content-Type": "text/plain"},
+        )
+
+    assert response.status_code == 415
+    assert response.json()["detail"] == DETAIL_UNSUPPORTED_MEDIA_TYPE
+
+
+def test_login_openapi_schema_documents_json_and_form_bodies(
+    make_settings: MakeSettings,
+) -> None:
+    app = create_app(make_settings())
+    operation = app.openapi()["paths"]["/auth/login"]["post"]
+    content = operation["requestBody"]["content"]
+
+    assert "application/json" in content
+    assert "application/x-www-form-urlencoded" in content
 
 
 @pytest.mark.db
@@ -536,7 +674,7 @@ async def test_login_with_surrounding_whitespace_in_handle_succeeds(
     async with _client_for(settings, db_session) as client:
         register_resp = await _register(client, f" {bare_handle} ")
         assert register_resp.status_code == 201
-        assert register_resp.json()["handle"] == bare_handle
+        assert register_resp.json()["username"] == bare_handle
 
         login_with_spaces = await _login(client, f" {bare_handle}")
         login_bare = await _login(client, bare_handle)

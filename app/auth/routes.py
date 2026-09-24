@@ -9,12 +9,14 @@ Tokens and passwords are never logged or echoed back in a response body or
 error detail.
 """
 
+import json
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_app_settings, unauthorized
@@ -41,6 +43,7 @@ from app.db.auth import (
 )
 from app.db.session import get_session
 from app.schemas.auth import (
+    LoginRequest,
     LogoutRequest,
     RefreshRequest,
     RegisterRequest,
@@ -53,20 +56,105 @@ __all__ = ["router"]
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 #: Fixed detail strings -- never interpolate user input or secrets into these.
-DETAIL_HANDLE_TAKEN: Final = "handle already taken"
-DETAIL_LOGIN_FAILED: Final = "incorrect handle or password"
+DETAIL_USERNAME_TAKEN: Final = "username already taken"
+DETAIL_LOGIN_FAILED: Final = "incorrect username or password"
 DETAIL_REFRESH_EXPIRED: Final = "refresh token expired"
 DETAIL_REFRESH_INVALID: Final = "invalid refresh token"
 DETAIL_REFRESH_REUSE: Final = "refresh token reuse detected"
 DETAIL_REFRESH_ALREADY_USED: Final = "refresh token already used"
+DETAIL_UNSUPPORTED_MEDIA_TYPE: Final = "unsupported media type"
 
 _NO_STORE_HEADERS: Final = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+#: Documents both accepted `POST /auth/login` body shapes in OpenAPI/`/docs`,
+#: since neither is declared as a normal FastAPI parameter (see `login`
+#: below) -- merged onto the auto-generated operation via `openapi_extra`
+#: (`fastapi.utils.deep_dict_update`).
+_LOGIN_OPENAPI_EXTRA: Final[dict[str, Any]] = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {"schema": LoginRequest.model_json_schema()},
+            "application/x-www-form-urlencoded": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "username": {"type": "string", "title": "Username"},
+                        "password": {
+                            "type": "string",
+                            "format": "password",
+                            "title": "Password",
+                        },
+                    },
+                    "required": ["username", "password"],
+                }
+            },
+        },
+    }
+}
 
 
 def _set_no_store(response: Response) -> None:
     """Mark a response carrying tokens as never cacheable/storable."""
     for key, value in _NO_STORE_HEADERS.items():
         response.headers[key] = value
+
+
+def _missing_field_error(field: str) -> dict[str, Any]:
+    """A pydantic-shaped "field required" error for a form field not sent."""
+    return {"type": "missing", "loc": ("body", field), "msg": "Field required"}
+
+
+async def _parse_login_body(request: Request) -> tuple[str, str]:
+    """Extract `(username, password)` from a JSON or form `/auth/login` body.
+
+    - `application/json` -> validated against `LoginRequest` (`username`
+      1-64 chars, `password` 1-256 chars).
+    - `application/x-www-form-urlencoded` or `multipart/form-data` -> read
+      directly from the form, exactly as `OAuth2PasswordRequestForm` (the
+      Swagger "Authorize" password flow posts this way) does: only presence
+      is required, no length bounds.
+    - anything else -> 415.
+
+    A missing/invalid field raises `RequestValidationError` so it goes
+    through `app.main.create_app`'s `/auth/*` 422 handler, which strips the
+    offending input from the response -- never the password itself.
+    """
+    content_type = request.headers.get("content-type", "")
+    media_type = content_type.split(";", 1)[0].strip().lower()
+
+    if media_type == "application/json":
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            raise RequestValidationError(
+                [{"type": "json_invalid", "loc": ("body",), "msg": "Invalid JSON body"}]
+            ) from None
+        try:
+            body = LoginRequest.model_validate(payload)
+        except PydanticValidationError as exc:
+            # Prefix `loc` with "body", matching FastAPI's own convention for
+            # a body-parameter validation error (e.g. `RegisterRequest`'s).
+            errors = [{**error, "loc": ("body", *error["loc"])} for error in exc.errors()]
+            raise RequestValidationError(errors) from None
+        return body.username, body.password
+
+    if media_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
+        form = await request.form()
+        username = form.get("username")
+        password = form.get("password")
+        errors = [
+            _missing_field_error(field)
+            for field, value in (("username", username), ("password", password))
+            if not isinstance(value, str)
+        ]
+        if errors:
+            raise RequestValidationError(errors)
+        assert isinstance(username, str)
+        assert isinstance(password, str)
+        return username, password
+
+    raise HTTPException(status_code=415, detail=DETAIL_UNSUPPORTED_MEDIA_TYPE)
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
@@ -76,39 +164,44 @@ async def register(
 ) -> RegisterResponse:
     """Create a new user with a bcrypt-hashed password.
 
-    422 for an invalid handle or a password failing the length policy (the
-    fixed validation message, never the password itself); 409 if the handle
-    is already taken.
+    422 for an invalid username or a password failing the length policy (the
+    fixed validation message, never the password itself); 409 if the
+    username is already taken.
     """
     try:
-        user = await create_user(session, body.handle, body.password)
+        user = await create_user(session, body.username, body.password)
     except HandleTakenError:
-        raise HTTPException(status_code=409, detail=DETAIL_HANDLE_TAKEN) from None
+        raise HTTPException(status_code=409, detail=DETAIL_USERNAME_TAKEN) from None
     except (ValueError, PasswordPolicyError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
     await session.commit()
-    return RegisterResponse(id=user.id, handle=user.handle)
+    return RegisterResponse(id=user.id, username=user.handle)
 
 
-@router.post("/login", response_model=TokenPair)
+@router.post("/login", response_model=TokenPair, openapi_extra=_LOGIN_OPENAPI_EXTRA)
 async def login(
+    request: Request,
     response: Response,
-    form: Annotated[OAuth2PasswordRequestForm, Depends()],
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> TokenPair:
-    """Exchange a handle + password for a new access/refresh token pair.
+    """Exchange a username + password for a new access/refresh token pair.
 
-    `form.username` is the handle. `verify_password_async` always runs a
-    bcrypt comparison (against a dummy hash when the user or its password
-    hash is missing) in a worker thread, so an unknown handle and a wrong
-    password take the same time and get the identical 401 detail, without
-    blocking the event loop.
+    Accepts either a JSON body (`{"username", "password"}`) or a
+    form-encoded body (`application/x-www-form-urlencoded` or
+    `multipart/form-data`, the shape `OAuth2PasswordRequestForm` and the
+    Swagger "Authorize" password flow send) -- see `_parse_login_body`.
+    `verify_password_async` always runs a bcrypt comparison (against a dummy
+    hash when the user or its password hash is missing) in a worker thread,
+    so an unknown username and a wrong password take the same time and get
+    the identical 401 detail, without blocking the event loop.
     """
-    user = await get_user_by_handle(session, form.username)
+    username, password = await _parse_login_body(request)
+
+    user = await get_user_by_handle(session, username)
     password_hash = user.password_hash if user is not None else None
-    if not await verify_password_async(form.password, password_hash) or user is None:
+    if not await verify_password_async(password, password_hash) or user is None:
         raise unauthorized(DETAIL_LOGIN_FAILED)
 
     session_id = uuid4()
