@@ -4,13 +4,16 @@ Mirrors `app.input.api`'s `/understand` request shape and validation (same
 size/type limits, same "text and/or image" requirement) but drives the full
 `app.graph.build.run_graph` pipeline instead of only normalization + intent
 classification, and persists this turn's conversation/learning-event state
-when `user_id`/`conversation_id` are supplied.
+when `conversation_id` is supplied.
 
 All request content (text, code, error text, image bytes) is **untrusted
 user data**; it is only ever passed into the graph, never logged, and never
-echoed back inside error details. `user_id` is caller-supplied and currently
-unauthenticated -- there is no session/auth layer yet to verify the caller
-actually owns that id (tracked as a known issue until an auth phase adds one).
+echoed back inside error details. The acting user comes solely from the
+authenticated bearer token (`get_current_user`); there is no caller-supplied
+`user_id`. A `conversation_id` owned by a different user is not a data leak:
+`app.memory.conversation.get_owned_conversation` (Phase 03) rejects it, which
+surfaces here as a `NodeError` from `load_learner_profile`/
+`update_learner_model` and an empty/degraded turn, never another user's data.
 """
 
 from typing import Annotated
@@ -19,6 +22,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import get_current_user
 from app.db.session import get_session
 from app.graph.build import run_graph
 from app.graph.nodes import SAFE_FALLBACK_RESPONSE
@@ -33,6 +37,7 @@ from app.input.api import (
 from app.input.normalize import MAX_TEXT_CHARS
 from app.input.vision import MAX_IMAGE_BYTES, ImageValidationError, validate_image
 from app.llm.base import LLMClient
+from app.schemas.auth import AuthUser
 from app.schemas.base import APIModel
 from app.schemas.event import LearningEventCreate
 from app.schemas.intent import IntentResult
@@ -73,21 +78,20 @@ async def _read_image(image: UploadFile) -> bytes:
 async def chat(
     llm: Annotated[LLMClient, Depends(get_llm)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
     text: Annotated[str | None, Form()] = None,
     language: Annotated[str | None, Form(max_length=32)] = None,
     image: Annotated[UploadFile | None, File()] = None,
-    user_id: Annotated[UUID | None, Form()] = None,
     conversation_id: Annotated[UUID | None, Form()] = None,
     topic: Annotated[str | None, Form(max_length=64)] = None,
 ) -> ChatResponse:
     """Run one turn of the teaching graph over `text`/`image` and return its outcome.
 
-    `user_id` is caller-supplied and unauthenticated; conversation memory is
-    user-scoped, so a `conversation_id` without a `user_id` is rejected.
+    The acting user is always `current_user.id`, resolved from the bearer
+    access token by `get_current_user` -- there is no caller-supplied
+    `user_id` field.
     """
     validate_request(text, image)
-    if conversation_id is not None and user_id is None:
-        raise HTTPException(status_code=422, detail="conversation_id requires user_id")
 
     if text is not None and len(text) > MAX_TEXT_CHARS:
         raise HTTPException(status_code=413, detail="text exceeds maximum length")
@@ -103,7 +107,11 @@ async def chat(
     )
 
     result = await run_graph(
-        raw, llm=llm, session=session, user_id=user_id, conversation_id=conversation_id
+        raw,
+        llm=llm,
+        session=session,
+        user_id=current_user.id,
+        conversation_id=conversation_id,
     )
     await session.commit()
 

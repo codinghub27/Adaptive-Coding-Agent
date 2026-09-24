@@ -1,5 +1,6 @@
 """Shared pytest fixtures for the Adaptive Coding Agent test suite."""
 
+import os
 import socket
 from collections.abc import Callable, Generator
 from urllib.parse import urlsplit
@@ -7,6 +8,15 @@ from urllib.parse import urlsplit
 import pytest
 
 from app.config import Settings, get_database_settings, get_settings
+
+#: A fixed, test-only JWT secret (64 hex-ish characters, well over the
+#: 32-character minimum). Set as a default *before* anything imports
+#: `app.main` (which builds `app = create_app()` at import time via
+#: `get_settings()`), so the test suite never depends on the developer's
+#: `.env` having a real `JWT_SECRET_KEY` set. Never used outside tests.
+TEST_JWT_SECRET_KEY = "0123456789abcdef" * 4
+
+os.environ.setdefault("JWT_SECRET_KEY", TEST_JWT_SECRET_KEY)
 
 #: Every environment variable `Settings` (or `DatabaseSettings`) can read.
 #: Unit tests must never be influenced by whatever happens to be set in the
@@ -28,6 +38,12 @@ SETTINGS_ENV_VARS = (
     "LANGSMITH_PROJECT",
     "CORS_ORIGINS",
     "APP_ENV",
+    "JWT_SECRET_KEY",
+    "JWT_ALGORITHM",
+    "ACCESS_TOKEN_EXPIRE_MINUTES",
+    "REFRESH_TOKEN_EXPIRE_DAYS",
+    "JWT_LEEWAY_SECONDS",
+    "REFRESH_REUSE_GRACE_SECONDS",
 )
 
 
@@ -44,6 +60,7 @@ def _isolate_settings_env(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     get_database_settings.cache_clear()
     for var in SETTINGS_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("JWT_SECRET_KEY", TEST_JWT_SECRET_KEY)
     yield
     get_settings.cache_clear()
     get_database_settings.cache_clear()
@@ -64,6 +81,7 @@ def make_settings() -> Callable[..., Settings]:
             "qdrant_url": "http://127.0.0.1:1",
             "groq_api_key": "test-key",
             "langsmith_tracing": False,
+            "jwt_secret_key": TEST_JWT_SECRET_KEY,
         }
         params.update(overrides)
         return Settings(_env_file=None, **params)  # pyright: ignore[reportCallIssue]

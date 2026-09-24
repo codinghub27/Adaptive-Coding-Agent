@@ -6,7 +6,7 @@ langchain-groq
 python-dotenv
 langchain_core
 langchain-tavily
-python-jose[cryptography]
+pyjwt
 bcrypt
 python-multipart
 sqlalchemy

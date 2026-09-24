@@ -169,3 +169,28 @@ def test_settings_env_isolation_allows_env_based_loading(
         assert settings.database_url == "postgresql+asyncpg://u:p@127.0.0.1:1/x"
     finally:
         get_settings.cache_clear()
+
+
+def test_missing_jwt_secret_key_raises_validation_error(make_settings: MakeSettings) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        make_settings(jwt_secret_key=None)
+    errors = exc_info.value.errors()
+    assert any(error["loc"] == ("jwt_secret_key",) for error in errors)
+
+
+def test_short_jwt_secret_key_rejected_without_leaking_value(make_settings: MakeSettings) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        make_settings(jwt_secret_key="HS256")
+    assert "HS256" not in str(exc_info.value)
+
+
+def test_jwt_expiry_defaults(make_settings: MakeSettings) -> None:
+    settings = make_settings()
+    assert settings.access_token_expire_minutes == 45
+    assert settings.refresh_token_expire_days == 7
+
+
+def test_repr_hides_jwt_secret_key(make_settings: MakeSettings) -> None:
+    settings = make_settings(jwt_secret_key="a-super-secret-jwt-signing-key-value")
+    representation = repr(settings)
+    assert "a-super-secret-jwt-signing-key-value" not in representation

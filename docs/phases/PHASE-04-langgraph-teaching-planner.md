@@ -280,7 +280,9 @@ venv/Scripts/python.exe -m uvicorn app.main:app --port 8768 ; curl -F "text=..."
 - Bound total LLM calls per graph run to avoid runaway loops.
 
 ## Known Issues
-- **No authentication:** `/chat` trusts a caller-supplied `user_id` (as the
+- ~~**No authentication**~~ — **resolved** by `docs/features/AUTH-jwt.md`
+  (`/chat` now takes the user from the bearer token). Original note:
+  `/chat` trusts a caller-supplied `user_id` (as the
   Phase 03 memory layer assumes). Anyone with a user's UUID can infer that
   user's skill/preferences from the returned plan and append turns to their
   conversation. Must be addressed before any non-local deployment; no current

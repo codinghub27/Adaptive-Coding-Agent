@@ -11,11 +11,15 @@ from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.auth.routes import router as auth_router
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory, ping_db
 from app.graph.api import router as chat_router
@@ -86,8 +90,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES, path="/chat")
 
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """422s under `/auth/*` never echo request field values (e.g. a password
+        or refresh token) back in the response body.
+
+        FastAPI's default handler includes each Pydantic error's `input` (the
+        raw, offending value) and `ctx`; for every other path that default
+        behaviour is preserved unchanged. For `/auth/*`, each error is reduced
+        to `loc`/`msg`/`type` only.
+        """
+        if not request.url.path.startswith("/auth/"):
+            return await request_validation_exception_handler(request, exc)
+
+        errors = [
+            {"loc": error["loc"], "msg": error["msg"], "type": error["type"]}
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
     app.include_router(input_router)
     app.include_router(chat_router)
+    app.include_router(auth_router)
 
     @app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> JSONResponse:

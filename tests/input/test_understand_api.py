@@ -9,12 +9,14 @@ import io
 import json
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import httpx
 import pytest
 from PIL import Image
 from starlette.types import Message, Receive, Scope, Send
 
+from app.auth.deps import get_current_user
 from app.config import Settings
 from app.input.api import (
     BodySizeLimitMiddleware,
@@ -24,9 +26,12 @@ from app.input.api import (
 from app.input.normalize import MAX_TEXT_CHARS
 from app.input.vision import MAX_IMAGE_BYTES
 from app.main import create_app
+from app.schemas.auth import AuthUser
 from tests.input.fakes import FakeLLMClient
 
 MakeSettings = Callable[..., Settings]
+
+_TEST_USER = AuthUser(id=uuid4(), handle="test-user", session_id=uuid4())
 
 
 def _png_bytes() -> bytes:
@@ -41,6 +46,7 @@ async def _client_for(
 ) -> AsyncGenerator[httpx.AsyncClient]:
     app = create_app(make_settings())
     app.dependency_overrides[get_llm] = lambda: fake
+    app.dependency_overrides[get_current_user] = lambda: _TEST_USER
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

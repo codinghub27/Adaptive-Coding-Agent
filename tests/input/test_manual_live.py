@@ -18,11 +18,14 @@ Run with:
 """
 
 import os
+from uuid import uuid4
 
 import httpx
 import pytest
 
+from app.auth.deps import get_current_user
 from app.main import create_app
+from app.schemas.auth import AuthUser
 from tests.input.fixtures.make_fixtures import TWO_SUM_PATH
 
 pytestmark = [
@@ -48,6 +51,9 @@ IndexError: list index out of range
 async def test_manual_1_debug_text_classified_as_debug_or_error() -> None:
     """Manual Test 1: pasted buggy function + traceback, no question."""
     app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=uuid4(), handle="live-test-user", session_id=uuid4()
+    )
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -68,6 +74,9 @@ async def test_manual_1_debug_text_classified_as_debug_or_error() -> None:
 async def test_manual_2_image_only_classified_as_dsa() -> None:
     """Manual Test 2: LeetCode-style screenshot, no text."""
     app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: AuthUser(
+        id=uuid4(), handle="live-test-user", session_id=uuid4()
+    )
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

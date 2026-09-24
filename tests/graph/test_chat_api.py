@@ -2,8 +2,11 @@
 
 Mirrors `tests/input/test_understand_api.py`'s style: the app is built via
 `create_app()` without running its lifespan, `get_llm` is overridden with a
-`FakeLLMClient`, and `get_session` is overridden so every non-`db` test stays
-fully offline.
+`FakeLLMClient`, `get_session` is overridden so every non-`db` test stays
+fully offline, and `get_current_user` is overridden with a fixed `AuthUser`
+(or, for the `db` test, one built from the seeded `user_id` fixture) since
+`/chat` requires authentication. Full end-to-end auth behavior (real tokens,
+401s, cross-user isolation) lives in `tests/auth/test_protected_routes.py`.
 """
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
@@ -15,6 +18,7 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import get_current_user
 from app.config import Settings
 from app.db.session import get_session
 from app.input.api import get_llm
@@ -22,6 +26,7 @@ from app.input.vision import MAX_IMAGE_BYTES
 from app.main import create_app
 from app.memory.conversation import get_recent_context, start_conversation
 from app.memory.profile import ensure_profile, get_profile, set_learning_preferences
+from app.schemas.auth import AuthUser
 from tests.input.fakes import FakeLLMClient
 
 MakeSettings = Callable[..., Settings]
@@ -45,13 +50,36 @@ _SLIDING_WINDOW_DEBUG_TEXT = (
 )
 
 
-class _StubSession:
-    """A minimal stand-in for `AsyncSession`: only `commit()` is ever called.
+class _EmptyResult:
+    """Stands in for a SQLAlchemy `Result` that matched no rows."""
 
-    `load_learner_profile`/`update_learner_model` never touch the session
-    when `user_id` is `None` (see `app.graph.nodes`), so the non-`db` tests
-    below -- which never pass a `user_id` -- can use this instead of a real
-    database connection.
+    def scalar_one_or_none(self) -> None:
+        return None
+
+    def scalars(self) -> list[Any]:
+        return []
+
+
+class _NoOpNestedTransaction:
+    """Stands in for the async context manager `AsyncSession.begin_nested()` returns."""
+
+    async def __aenter__(self) -> "_NoOpNestedTransaction":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _StubSession:
+    """A minimal stand-in for `AsyncSession`, with every request now authenticated.
+
+    Every `/chat` call carries a real `user_id` (from the token), so
+    `load_learner_profile` always issues a `SELECT` for that user's profile
+    even when the test never seeded one -- `execute()`/`begin_nested()` here
+    emulate an empty database (no profile row found), matching what a real,
+    freshly created user would see. `conversation_id` is never set in the
+    non-`db` tests that use this stub, so conversation reads/writes are never
+    reached.
     """
 
     def __init__(self) -> None:
@@ -60,9 +88,23 @@ class _StubSession:
     async def commit(self) -> None:
         self.committed = True
 
+    async def execute(self, *args: object, **kwargs: object) -> _EmptyResult:
+        del args, kwargs
+        return _EmptyResult()
+
+    def begin_nested(self) -> _NoOpNestedTransaction:
+        return _NoOpNestedTransaction()
+
 
 async def _stub_session() -> AsyncIterator[Any]:
     yield _StubSession()
+
+
+#: Default authenticated identity for tests that don't care which user it
+#: is. `db`-marked tests pass their own `AuthUser` (built from the seeded
+#: `user_id` fixture) so the graph runs as the user whose profile/conversation
+#: was set up.
+_DEFAULT_TEST_USER = AuthUser(id=uuid4(), handle="test-user", session_id=uuid4())
 
 
 @asynccontextmanager
@@ -70,10 +112,12 @@ async def _client_for(
     make_settings: MakeSettings,
     fake: FakeLLMClient,
     session_override: Callable[..., AsyncIterator[Any]] = _stub_session,
+    current_user: AuthUser = _DEFAULT_TEST_USER,
 ) -> AsyncGenerator[httpx.AsyncClient]:
     app = create_app(make_settings())
     app.dependency_overrides[get_llm] = lambda: fake
     app.dependency_overrides[get_session] = session_override
+    app.dependency_overrides[get_current_user] = lambda: current_user
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -154,17 +198,6 @@ async def test_oversize_image_returns_413(make_settings: MakeSettings) -> None:
     assert fake.vision_calls == []
 
 
-async def test_conversation_id_without_user_id_returns_422(make_settings: MakeSettings) -> None:
-    fake = FakeLLMClient()
-    async with _client_for(make_settings, fake) as client:
-        response = await client.post(
-            "/chat",
-            data={"text": "why does this fail?", "conversation_id": str(uuid4())},
-        )
-
-    assert response.status_code == 422
-
-
 # --------------------------------------------------------------------------
 # db: full turn with a real profile + conversation
 # --------------------------------------------------------------------------
@@ -197,12 +230,14 @@ async def test_debug_turn_persists_conversation_and_learning_event(
         yield db_session
 
     fake = FakeLLMClient(chat_content="unused")
-    async with _client_for(make_settings, fake, session_override) as client:
+    current_user = AuthUser(id=user_id, handle="test-user", session_id=uuid4())
+    async with _client_for(
+        make_settings, fake, session_override, current_user=current_user
+    ) as client:
         response = await client.post(
             "/chat",
             data={
                 "text": _SLIDING_WINDOW_DEBUG_TEXT,
-                "user_id": str(user_id),
                 "conversation_id": str(conversation_id),
             },
         )

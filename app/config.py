@@ -100,10 +100,28 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:8501"]
     )
 
+    jwt_secret_key: SecretStr = Field(repr=False)
+    jwt_algorithm: Literal["HS256"] = "HS256"
+    access_token_expire_minutes: int = Field(default=45, ge=1, le=1440)
+    refresh_token_expire_days: int = Field(default=7, ge=1, le=90)
+    #: Clock-skew tolerance applied to `iat`/`exp` validation when decoding a token.
+    jwt_leeway_seconds: int = Field(default=10, ge=0, le=120)
+    #: Window after a refresh token is rotated during which presenting the
+    #: rotated-away token again is treated as a benign duplicate (e.g. a
+    #: retried request or a duplicate tab) rather than reuse detection.
+    refresh_reuse_grace_seconds: int = Field(default=10, ge=0, le=300)
+
     @field_validator("database_url")
     @classmethod
     def _normalize_database_url(cls, value: str) -> str:
         return normalize_database_url(value)
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def _validate_jwt_secret_key(cls, value: SecretStr) -> SecretStr:
+        if len(value.get_secret_value()) < 32:
+            raise ValueError("jwt_secret_key must be at least 32 characters")
+        return value
 
     @field_validator("qdrant_timeout")
     @classmethod

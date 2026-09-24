@@ -4,7 +4,8 @@ plus its classified `Intent`.
 All request content (text, code, error text, image bytes/pixels) is
 **untrusted user data**; it is only ever passed to the deterministic
 normalizer or the vision/intent LLM calls, never logged, and never echoed
-back inside error details.
+back inside error details. The route requires a valid bearer access token
+(`get_current_user`); identity comes from that token only.
 """
 
 import re
@@ -15,11 +16,13 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.auth.deps import get_current_user
 from app.input.intent import classify_intent
 from app.input.normalize import MAX_TEXT_CHARS, merge_inputs, normalize_text
 from app.input.vision import MAX_IMAGE_BYTES, ImageValidationError, extract_from_image
 from app.llm.base import LLMClient, LLMError
 from app.schemas import StructuredInput, UnderstandResponse
+from app.schemas.auth import AuthUser
 
 __all__ = [
     "IMAGE_VALIDATION_DETAIL",
@@ -183,11 +186,18 @@ def valid_language_hint(language: str | None) -> str | None:
 @router.post("/understand", response_model=UnderstandResponse)
 async def understand(
     llm: Annotated[LLMClient, Depends(get_llm)],
+    _current_user: Annotated[AuthUser, Depends(get_current_user)],
     text: Annotated[str | None, Form()] = None,
     language: Annotated[str | None, Form(max_length=32)] = None,
     image: Annotated[UploadFile | None, File()] = None,
 ) -> UnderstandResponse:
-    """Normalize `text`/`image` into a `StructuredInput` and classify its intent."""
+    """Normalize `text`/`image` into a `StructuredInput` and classify its intent.
+
+    Requires authentication (`get_current_user`); the identity itself is
+    unused here -- `/understand` has no user-scoped state -- but the route is
+    still gated so it can't be used to probe the LLM/vision pipeline
+    unauthenticated.
+    """
     validate_request(text, image)
 
     language_hint = valid_language_hint(language)
