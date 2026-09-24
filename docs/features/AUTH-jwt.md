@@ -1,7 +1,7 @@
 # FEATURE — JWT Access + Refresh Authentication
 
 ## Status
-Done (2026-09-24), commit pending
+Done (2026-09-24), commit `42fb6a9`
 
 ## Goal
 Replace the caller-supplied, unauthenticated `user_id` (PHASE-04 Known Issue)
@@ -309,4 +309,4 @@ venv/Scripts/python.exe -m uvicorn app.main:app --port 8769 ; curl …/auth/* �
   `.env*`).
 
 ## Git Commit
-Not created yet.
+`42fb6a9` — feat: JWT access + refresh auth with db-backed refresh tokens
