@@ -13,6 +13,8 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
+from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K
+
 GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b"
 OPENROUTER_DEFAULT_MODEL = "qwen/qwen3.8-27b:free"
 GROQ_DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
@@ -86,6 +88,30 @@ class Settings(BaseSettings):
     qdrant_api_key: SecretStr | None = None
     qdrant_timeout: int = 10
 
+    #: Name of the Qdrant collection holding the knowledge-corpus chunks.
+    knowledge_collection: str = "dsa_knowledge"
+    #: fastembed dense-embedding model used to embed chunks and queries.
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    #: Expected output dimensionality of `embedding_model`.
+    embedding_dim: int = Field(default=384, ge=1)
+    #: fastembed cross-encoder model used to rerank retrieved chunks.
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    #: Directory fastembed caches downloaded models in; None uses its default.
+    fastembed_cache_dir: str | None = None
+    #: Number of chunks returned by knowledge retrieval per query.
+    knowledge_top_k: int = Field(default=DEFAULT_KNOWLEDGE_TOP_K, ge=1, le=20)
+    #: Wall-clock budget for a single knowledge retrieval call.
+    knowledge_timeout_s: float = Field(default=3.0, gt=0, le=30)
+    #: Wall-clock budget for building the `KnowledgeRetriever` at startup
+    #: (embedder/reranker model load, including a first-time download). A
+    #: startup that blows this budget degrades to `retriever=None` rather
+    #: than hanging the process -- see `app.main`'s lifespan.
+    knowledge_startup_timeout_s: float = Field(default=60.0, gt=0, le=600)
+    #: Whether the app builds a `KnowledgeRetriever` at startup. Startup must
+    #: never fail because of knowledge retrieval -- this is also the escape
+    #: hatch tests use to skip the (multi-second) embedder/reranker model load.
+    knowledge_enabled: bool = True
+
     llm_provider: Literal["groq", "openrouter"] = "groq"
     llm_model: str | None = None
     llm_vision_model: str | None = None
@@ -136,6 +162,7 @@ class Settings(BaseSettings):
         "openrouter_api_key",
         "llm_model",
         "llm_vision_model",
+        "fastembed_cache_dir",
         mode="before",
     )
     @classmethod

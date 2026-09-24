@@ -19,10 +19,11 @@ surfaces here as a `NodeError` from `load_learner_profile`/
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
+from app.config import Settings
 from app.db.session import get_session
 from app.graph.build import run_graph
 from app.graph.nodes import SAFE_FALLBACK_RESPONSE
@@ -36,6 +37,7 @@ from app.input.api import (
 )
 from app.input.normalize import MAX_TEXT_CHARS
 from app.input.vision import MAX_IMAGE_BYTES, ImageValidationError, validate_image
+from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
 from app.schemas.auth import AuthUser
 from app.schemas.base import APIModel
@@ -61,6 +63,32 @@ class ChatResponse(APIModel):
     llm_calls: int
 
 
+def _get_retriever(request: Request) -> Retriever | None:
+    """Return the shared `Retriever` configured on `app.state`, if any.
+
+    `app.state.retriever` is `None` whenever knowledge retrieval is disabled
+    or failed to load at startup (see `app.main`'s lifespan) -- that's a
+    normal, expected state, not an error, so (unlike `get_llm`) this never
+    raises. `Retriever` is a `@runtime_checkable` `Protocol`, so `isinstance`
+    is used directly rather than `getattr` + a cast.
+    """
+    retriever = getattr(request.app.state, "retriever", None)
+    if isinstance(retriever, Retriever):
+        return retriever
+    return None
+
+
+def _get_knowledge_top_k(request: Request) -> int:
+    """Return `settings.knowledge_top_k` from `app.state`, defaulting to
+    `DEFAULT_KNOWLEDGE_TOP_K` (the same default `Settings.knowledge_top_k`
+    itself uses) when `app.state.settings` isn't configured (as in tests that
+    build the app without running its lifespan)."""
+    settings = getattr(request.app.state, "settings", None)
+    if isinstance(settings, Settings):
+        return settings.knowledge_top_k
+    return DEFAULT_KNOWLEDGE_TOP_K
+
+
 async def _read_image(image: UploadFile) -> bytes:
     """Bounded read of `image`, validated (magic bytes, size) before use."""
     data = await image.read(MAX_IMAGE_BYTES + 1)
@@ -76,6 +104,7 @@ async def _read_image(image: UploadFile) -> bytes:
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
+    request: Request,
     llm: Annotated[LLMClient, Depends(get_llm)],
     session: Annotated[AsyncSession, Depends(get_session)],
     current_user: Annotated[AuthUser, Depends(get_current_user)],
@@ -112,6 +141,8 @@ async def chat(
         session=session,
         user_id=current_user.id,
         conversation_id=conversation_id,
+        retriever=_get_retriever(request),
+        knowledge_top_k=_get_knowledge_top_k(request),
     )
     await session.commit()
 

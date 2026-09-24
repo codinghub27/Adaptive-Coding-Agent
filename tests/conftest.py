@@ -28,6 +28,15 @@ SETTINGS_ENV_VARS = (
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "QDRANT_TIMEOUT",
+    "KNOWLEDGE_COLLECTION",
+    "EMBEDDING_MODEL",
+    "EMBEDDING_DIM",
+    "RERANKER_MODEL",
+    "FASTEMBED_CACHE_DIR",
+    "KNOWLEDGE_TOP_K",
+    "KNOWLEDGE_TIMEOUT_S",
+    "KNOWLEDGE_STARTUP_TIMEOUT_S",
+    "KNOWLEDGE_ENABLED",
     "LLM_PROVIDER",
     "LLM_MODEL",
     "LLM_VISION_MODEL",
@@ -82,6 +91,10 @@ def make_settings() -> Callable[..., Settings]:
             "groq_api_key": "test-key",
             "langsmith_tracing": False,
             "jwt_secret_key": TEST_JWT_SECRET_KEY,
+            # Loading the embedder/reranker models costs real seconds per app
+            # instance; tests that specifically exercise knowledge retrieval
+            # opt back in with `knowledge_enabled=True`.
+            "knowledge_enabled": False,
         }
         params.update(overrides)
         return Settings(_env_file=None, **params)  # pyright: ignore[reportCallIssue]

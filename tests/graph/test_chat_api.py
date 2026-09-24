@@ -171,6 +171,32 @@ async def test_ambiguous_text_with_unusable_llm_output_routes_to_clarify(
 # --------------------------------------------------------------------------
 
 
+async def test_chat_passes_app_state_retriever_to_the_graph(
+    make_settings: MakeSettings,
+) -> None:
+    """When `app.state.retriever` is set (normally by the lifespan), `/chat`
+    threads it into `run_graph` -- a DSA question calls it."""
+    from tests.graph.test_retrieve_node import FakeRetriever
+
+    fake_llm = FakeLLMClient(
+        chat_content='{"intent": "DSA_SOLVE", "confidence": 0.95, "rationale": "clear"}'
+    )
+    fake_retriever = FakeRetriever()
+    app = create_app(make_settings())
+    app.state.retriever = fake_retriever
+    app.dependency_overrides[get_llm] = lambda: fake_llm
+    app.dependency_overrides[get_session] = _stub_session
+    app.dependency_overrides[get_current_user] = lambda: _DEFAULT_TEST_USER
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/chat", data={"text": "Can you help me find the two sum pattern for this problem?"}
+        )
+
+    assert response.status_code == 200
+    assert len(fake_retriever.calls) == 1
+
+
 async def test_no_text_and_no_image_returns_422(make_settings: MakeSettings) -> None:
     fake = FakeLLMClient()
     async with _client_for(make_settings, fake) as client:

@@ -17,12 +17,14 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
 from app.schemas.base import APIModel
 from app.schemas.conversation import MessageView
 from app.schemas.event import LearningEventCreate
 from app.schemas.input import StructuredInput
 from app.schemas.intent import IntentResult
+from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
 
@@ -99,7 +101,7 @@ class AgentState(BaseModel):
     profile: LearnerProfileView | None = None
     recent_context: list[MessageView] = Field(default_factory=list[MessageView])
     plan: TeachingPlan | None = None
-    retrieved_context: list[str] = Field(default_factory=list[str])
+    retrieved_context: list[RetrievalHit] = Field(default_factory=list[RetrievalHit])
     execution_result: dict[str, JsonValue] | None = None
     route: RouteKey | None = None
     agent_output: AgentOutcome | None = None
@@ -120,7 +122,7 @@ class AgentStateUpdate(TypedDict, total=False):
     profile: LearnerProfileView | None
     recent_context: list[MessageView]
     plan: TeachingPlan | None
-    retrieved_context: list[str]
+    retrieved_context: list[RetrievalHit]
     execution_result: dict[str, JsonValue] | None
     route: RouteKey | None
     agent_output: AgentOutcome | None
@@ -142,3 +144,5 @@ class GraphContext:
     session: AsyncSession | None = None
     user_id: UUID | None = None
     conversation_id: UUID | None = None
+    retriever: Retriever | None = None
+    knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K

@@ -80,7 +80,7 @@ Built in phases; each is shippable and committed before the next begins.
 | 02 | Input Understanding & Multimodal Intent | Done |
 | 03 | Learner Profile, Memory & Learning Events | Done |
 | 04 | LangGraph Orchestration & Teaching Planner | Done |
-| 05 | Knowledge Base & Hybrid RAG | Not Started |
+| 05 | Knowledge Base & Hybrid RAG | Done |
 | 06 | Code Execution Sandbox & Verification | Not Started |
 | 07 | Specialized Agents (DSA / Debug / Explain) | Not Started |
 | 08 | Response Generation, Frontend & Evaluation | Not Started |

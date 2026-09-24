@@ -3,12 +3,14 @@
 All chat calls go through a local fake `BaseChatModel` — no network I/O, no
 real provider SDK calls, and tracing is exercised only via `Tracer.disabled()`
 or a tracer built from settings where tracing is off. Nothing in this module
-talks to Groq, OpenRouter, or LangSmith.
+talks to Groq, OpenRouter, or a real LangSmith backend; the `Tracer.run` tests
+below use a `unittest.mock.MagicMock(spec=Client)` in place of a real
+`langsmith.Client`, so no network I/O happens there either.
 """
 
 from collections.abc import Callable
-from typing import Any
-from unittest.mock import patch
+from typing import Any, cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -16,6 +18,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration
 from langchain_core.outputs import ChatResult as LCChatResult
+from langsmith import Client as LangSmithClient
 
 from app.config import Settings
 from app.llm.base import ChatMessage, LLMError
@@ -294,3 +297,71 @@ def test_get_llm_client_openrouter_construction_only(make_settings: MakeSettings
     assert isinstance(client, LangChainLLMClient)
     assert client._model == settings.resolved_llm_model  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert client._provider == "openrouter"  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+# --------------------------------------------------------------------------
+# Tracer.run
+# --------------------------------------------------------------------------
+
+
+def _fake_langsmith_client() -> LangSmithClient:
+    """A `MagicMock(spec=Client)` standing in for a real `langsmith.Client`:
+    `create_run`/`update_run` calls are recorded, never sent over the network."""
+    return cast(LangSmithClient, MagicMock(spec=LangSmithClient))
+
+
+async def test_tracer_run_disabled_is_noop_passthrough() -> None:
+    tracer = Tracer.disabled()
+    calls: list[str] = []
+
+    async def _fn() -> str:
+        calls.append("called")
+        return "result"
+
+    result = await tracer.run("op", "tool", {"should": "be-ignored"}, _fn)
+
+    assert result == "result"
+    assert calls == ["called"]
+
+
+async def test_tracer_run_enabled_creates_run_with_expected_name_and_inputs() -> None:
+    mock_client = _fake_langsmith_client()
+    tracer = Tracer(enabled=True, client=mock_client, project_name="test-project")
+
+    async def _fn() -> dict[str, int]:
+        return {"n": 2}
+
+    result = await tracer.run(
+        "embedding.embed_passages",
+        "embedding",
+        {"model": "fake-model", "n_texts": 2},
+        _fn,
+        outputs=lambda r: {"n_vectors": r["n"]},
+    )
+
+    assert result == {"n": 2}
+    create_run = cast(MagicMock, mock_client.create_run)  # pyright: ignore[reportAttributeAccessIssue]
+    assert create_run.called
+    kwargs = create_run.call_args.kwargs
+    assert kwargs["name"] == "embedding.embed_passages"
+    assert kwargs["run_type"] == "embedding"
+    assert kwargs["inputs"] == {"model": "fake-model", "n_texts": 2}
+
+    update_run = cast(MagicMock, mock_client.update_run)  # pyright: ignore[reportUnknownMemberType]
+    assert update_run.called
+    patch_kwargs = update_run.call_args.kwargs
+    assert patch_kwargs.get("outputs") == {"n_vectors": 2}
+
+
+async def test_tracer_run_enabled_without_outputs_fn_does_not_call_end() -> None:
+    mock_client = _fake_langsmith_client()
+    tracer = Tracer(enabled=True, client=mock_client, project_name="test-project")
+
+    async def _fn() -> str:
+        return "value"
+
+    result = await tracer.run("op", "tool", {"n": 1}, _fn)
+
+    assert result == "value"
+    create_run = cast(MagicMock, mock_client.create_run)  # pyright: ignore[reportAttributeAccessIssue]
+    assert create_run.called

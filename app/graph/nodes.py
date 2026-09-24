@@ -51,6 +51,7 @@ __all__ = [
     "FALLBACKS",
     "Node",
     "SAFE_FALLBACK_RESPONSE",
+    "build_retrieval_query",
     "classify_intent",
     "clarify",
     "debug_agent",
@@ -59,8 +60,10 @@ __all__ = [
     "final_response",
     "load_learner_profile",
     "plan_teaching",
+    "retrieve_knowledge",
     "route",
     "safe_node",
+    "should_retrieve",
     "understand_input",
     "update_learner_model",
 ]
@@ -238,6 +241,75 @@ def _plan_teaching_fallback(state: AgentState) -> AgentStateUpdate:
         rationale=["planner_fallback"],
     )
     return {"plan": plan}
+
+
+# --- retrieve_knowledge --------------------------------------------------------
+
+
+def should_retrieve(state: AgentState) -> bool:
+    """Decide whether this turn should query the knowledge corpus.
+
+    False whenever `select_route` would send this turn to "clarify" (nothing
+    usable to search with yet: no/empty structured input, no/low-confidence
+    intent, or a plan that already decided to clarify -- the same checks
+    `select_route` makes, reused here rather than duplicated) or when this is
+    a pure runtime-error debugging turn (the debugger works from the
+    traceback itself, not pattern docs). Otherwise True: every DSA/explain
+    intent, plus the other debug-route intents (`ERROR_EXPLANATION`,
+    `TEST_CASE_ANALYSIS`), retrieve.
+    """
+    intent = state.intent
+    structured = state.structured_input
+    return select_route(state) != "clarify" and not (
+        intent is not None
+        and structured is not None
+        and intent.intent == Intent.CODE_DEBUG
+        and structured.error
+    )
+
+
+def build_retrieval_query(state: AgentState) -> str:
+    """Build the retrieval query text from trusted-shape signal fields only.
+
+    Joins (newline-separated) the plan's topic (`_` -> space), the question,
+    and the problem statement -- never `code` or `error` text, which is far
+    more likely to swamp a short knowledge-corpus query with noise. Duplicate
+    parts (e.g. the topic verbatim inside the question) are deduped,
+    order-preserving, so BM25 doesn't over-weight the repeated text. May
+    return "" if none of those are present.
+    """
+    parts: list[str] = []
+    plan = state.plan
+    if plan is not None and plan.topic:
+        parts.append(plan.topic.replace("_", " "))
+    structured = state.structured_input
+    if structured is not None:
+        if structured.question:
+            parts.append(structured.question)
+        if structured.problem:
+            parts.append(structured.problem)
+    return "\n".join(dict.fromkeys(parts)).strip()
+
+
+async def retrieve_knowledge(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
+    """Query the knowledge corpus for this turn's topic/question/problem.
+
+    Never touches `runtime.context.llm`/the LLM budget: retrieval runs
+    entirely on local embedding/BM25/rerank models.
+    """
+    retriever = runtime.context.retriever
+    if retriever is None or not should_retrieve(state):
+        return {"retrieved_context": []}
+    query = build_retrieval_query(state)
+    if not query:
+        return {"retrieved_context": []}
+    hits = await retriever.retrieve(query, runtime.context.knowledge_top_k)
+    return {"retrieved_context": hits}
+
+
+def _retrieve_knowledge_fallback(state: AgentState) -> AgentStateUpdate:
+    del state
+    return {"retrieved_context": []}
 
 
 # --- route --------------------------------------------------------------------
@@ -592,6 +664,7 @@ FALLBACKS: Final[MappingProxyType[str, Callable[[AgentState], AgentStateUpdate]]
             "classify_intent": _classify_intent_fallback,
             "load_learner_profile": _load_learner_profile_fallback,
             "plan_teaching": _plan_teaching_fallback,
+            "retrieve_knowledge": _retrieve_knowledge_fallback,
             "route": _route_fallback,
             "dsa_agent": _agent_outcome_fallback,
             "debug_agent": _agent_outcome_fallback,

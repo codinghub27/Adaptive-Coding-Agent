@@ -53,6 +53,7 @@ _NODE_NAMES: Sequence[str] = (
     "classify_intent",
     "load_learner_profile",
     "plan_teaching",
+    "retrieve_knowledge",
     "route",
     "dsa_agent",
     "debug_agent",

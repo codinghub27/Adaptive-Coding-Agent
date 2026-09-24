@@ -6,9 +6,9 @@ LangChain chat-model integration. Everything else depends on the
 """
 
 import base64
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -16,6 +16,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_groq import ChatGroq
 from langchain_openrouter import ChatOpenRouter
 from langsmith import Client as LangSmithClient
+from langsmith import trace as ls_trace
+from langsmith.client import RUN_TYPE_T
 from langsmith.run_helpers import tracing_context  # pyright: ignore[reportUnknownVariableType]
 
 from app.config import Settings
@@ -88,6 +90,44 @@ class Tracer:
 
         with context:
             return await fn()
+
+    async def run(
+        self,
+        name: str,
+        run_type: str,
+        inputs: Mapping[str, object],
+        fn: Callable[[], Awaitable[_T]],
+        *,
+        outputs: Callable[[_T], Mapping[str, object]] | None = None,
+    ) -> _T:
+        """Run `fn` inside a real, standalone LangSmith run.
+
+        Unlike `trace` (which only opens ambient tracing context around an
+        existing LangChain-produced run), this creates the run itself, for
+        call sites that emit no LangChain run of their own (e.g. local
+        fastembed inference). A complete no-op (`await fn()`, no LangSmith
+        client interaction) when tracing is disabled.
+
+        `inputs` must only ever be small, non-sensitive metadata (counts,
+        model names) -- never raw user-supplied text, which may be large or
+        untrusted. `outputs`, if given, computes the run's recorded output
+        from `fn`'s result.
+        """
+        if not self._enabled:
+            return await fn()
+
+        with tracing_context(enabled=True, client=self._client, project_name=self._project_name):
+            async with ls_trace(
+                name=name,
+                run_type=cast("RUN_TYPE_T", run_type),
+                inputs=dict(inputs),
+                client=self._client,
+                project_name=self._project_name,
+            ) as run_tree:
+                result = await fn()
+                if outputs is not None:
+                    run_tree.end(outputs=dict(outputs(result)))  # pyright: ignore[reportUnknownMemberType]
+                return result
 
 
 class LangChainLLMClient:

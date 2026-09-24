@@ -1,11 +1,11 @@
-"""Assembles and runs the Phase 04 teaching graph.
+"""Assembles and runs the Phase 04/05 teaching graph.
 
-`build_graph` wires the 11 pipeline/agent-stub nodes from `app.graph.nodes`
-into a single `StateGraph`, wrapping every node in `safe_node` so an
-unexpected exception degrades to that node's fallback plus a recorded
-`NodeError` instead of failing the whole run. `run_graph` is the single entry
-point callers (the `/chat` route in a later phase, tests here) use to execute
-one turn end-to-end.
+`build_graph` wires the 12 pipeline/agent-stub nodes from `app.graph.nodes`
+(the Phase 04 pipeline plus Phase 05's `retrieve_knowledge`) into a single
+`StateGraph`, wrapping every node in `safe_node` so an unexpected exception
+degrades to that node's fallback plus a recorded `NodeError` instead of
+failing the whole run. `run_graph` is the single entry point callers (the
+`/chat` route, tests here) use to execute one turn end-to-end.
 
 The edge names below (`dsa_agent` / `debug_agent` / `explain_agent` /
 `clarify`, wired via `app.graph.routing.ROUTE_NODES`) are a **stable
@@ -37,6 +37,7 @@ from app.graph.nodes import (
     final_response,
     load_learner_profile,
     plan_teaching,
+    retrieve_knowledge,
     route,
     safe_node,
     understand_input,
@@ -44,6 +45,7 @@ from app.graph.nodes import (
 )
 from app.graph.routing import ROUTE_NODES, route_after
 from app.graph.state import AgentState, GraphContext, RawInput
+from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
 from app.llm.budget import DEFAULT_MAX_LLM_CALLS, BudgetedLLMClient
 
@@ -66,6 +68,7 @@ NODE_FUNCTIONS: Final[Mapping[str, Node]] = MappingProxyType(
         "classify_intent": classify_intent,
         "load_learner_profile": load_learner_profile,
         "plan_teaching": plan_teaching,
+        "retrieve_knowledge": retrieve_knowledge,
         "route": route,
         "dsa_agent": dsa_agent,
         "debug_agent": debug_agent,
@@ -101,7 +104,8 @@ def build_graph(node_overrides: Mapping[str, Node] | None = None) -> _CompiledGr
     builder.add_edge("understand_input", "classify_intent")
     builder.add_edge("classify_intent", "load_learner_profile")
     builder.add_edge("load_learner_profile", "plan_teaching")
-    builder.add_edge("plan_teaching", "route")
+    builder.add_edge("plan_teaching", "retrieve_knowledge")
+    builder.add_edge("retrieve_knowledge", "route")
     # `dict(ROUTE_NODES)` types as `dict[RouteKey, str]`, which pyright treats
     # as an invariant mismatch against `add_conditional_edges`'s
     # `dict[Hashable, str]` param; a comprehension lets bidirectional
@@ -142,17 +146,25 @@ async def run_graph(
     user_id: UUID | None = None,
     conversation_id: UUID | None = None,
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
+    retriever: Retriever | None = None,
+    knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K,
 ) -> GraphRunResult:
     """Run the teaching graph once, for a single turn.
 
     `llm` is wrapped in a fresh, per-run `BudgetedLLMClient` so this run can
     never make more than `max_llm_calls` LLM calls in total, no matter how
     many nodes end up needing it. Never commits `session` -- the caller owns
-    the transaction.
+    the transaction. `retriever` is entirely separate from the LLM budget:
+    knowledge retrieval runs on local models, not the LLM provider.
     """
     budgeted = BudgetedLLMClient(llm, max_llm_calls)
     context = GraphContext(
-        llm=budgeted, session=session, user_id=user_id, conversation_id=conversation_id
+        llm=budgeted,
+        session=session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        retriever=retriever,
+        knowledge_top_k=knowledge_top_k,
     )
     result = await get_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         AgentState(input=raw),

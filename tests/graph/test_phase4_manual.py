@@ -259,6 +259,7 @@ def _node_inputs() -> dict[str, tuple[RawInput, FakeLLMClient]]:
         "classify_intent": (RawInput(), FakeLLMClient()),
         "load_learner_profile": (RawInput(), FakeLLMClient()),
         "plan_teaching": (RawInput(), FakeLLMClient()),
+        "retrieve_knowledge": (RawInput(), FakeLLMClient()),
         "route": (RawInput(), FakeLLMClient()),
         "clarify": (RawInput(), FakeLLMClient()),
         "final_response": (RawInput(), FakeLLMClient()),

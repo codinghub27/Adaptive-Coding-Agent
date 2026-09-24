@@ -7,6 +7,7 @@ at first use.
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 
@@ -26,8 +27,13 @@ from app.graph.api import router as chat_router
 from app.health import ping_qdrant
 from app.input.api import MAX_REQUEST_BYTES, BodySizeLimitMiddleware
 from app.input.api import router as input_router
+from app.knowledge.ingest import CorpusError
+from app.knowledge.retrieve import create_retriever
 from app.llm import get_llm_client
+from app.llm.client import Tracer
 from app.schemas import HealthResponse
+
+logger = logging.getLogger(__name__)
 
 
 def _get_engine(app: FastAPI) -> AsyncEngine:
@@ -71,6 +77,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.session_factory = session_factory
             app.state.qdrant = qdrant
             app.state.llm = get_llm_client(settings)
+
+            if settings.knowledge_enabled:
+                try:
+                    app.state.retriever = await asyncio.wait_for(
+                        create_retriever(settings, qdrant, Tracer.from_settings(settings)),
+                        timeout=settings.knowledge_startup_timeout_s,
+                    )
+                except CorpusError:
+                    # A malformed curated corpus is a code bug, not a runtime
+                    # condition to degrade gracefully around -- fail startup
+                    # loudly rather than silently starting with no knowledge
+                    # retrieval (matches `create_retriever`'s docstring).
+                    raise
+                except Exception as exc:
+                    app.state.retriever = None
+                    logger.warning("knowledge retriever unavailable: %s", type(exc).__name__)
+            else:
+                app.state.retriever = None
 
             yield
 
