@@ -25,4 +25,5 @@ markers = [
     "integration: needs docker compose infra (Postgres + Qdrant)",
     "live: calls the real LLM provider; opt-in via RUN_LIVE_LLM=1",
     "db: needs a reachable, migrated Postgres (no Qdrant needed)",
+    "sandbox: needs a running Docker engine and the aca-sandbox image",
 ]

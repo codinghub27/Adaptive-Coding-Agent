@@ -58,6 +58,8 @@ _NODE_NAMES: Sequence[str] = (
     "dsa_agent",
     "debug_agent",
     "explain_agent",
+    "execute_code",
+    "verify",
     "clarify",
     "final_response",
     "update_learner_model",

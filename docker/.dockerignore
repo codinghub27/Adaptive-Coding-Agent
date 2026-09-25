@@ -1,0 +1,6 @@
+# Deny by default; only the harness source and the Dockerfile itself are
+# needed in the build context.
+*
+!harness/
+!harness/run.py
+!sandbox.Dockerfile

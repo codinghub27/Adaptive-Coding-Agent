@@ -1,16 +1,20 @@
-"""Assembles and runs the Phase 04/05 teaching graph.
+"""Assembles and runs the Phase 04-06 teaching graph.
 
-`build_graph` wires the 12 pipeline/agent-stub nodes from `app.graph.nodes`
-(the Phase 04 pipeline plus Phase 05's `retrieve_knowledge`) into a single
-`StateGraph`, wrapping every node in `safe_node` so an unexpected exception
-degrades to that node's fallback plus a recorded `NodeError` instead of
-failing the whole run. `run_graph` is the single entry point callers (the
-`/chat` route, tests here) use to execute one turn end-to-end.
+`build_graph` wires the pipeline/agent-stub nodes from `app.graph.nodes` (the
+Phase 04 pipeline, Phase 05's `retrieve_knowledge`, and Phase 06's
+`execute_code`/`verify`) into a single `StateGraph`, wrapping every node in
+`safe_node` so an unexpected exception degrades to that node's fallback plus
+a recorded `NodeError` instead of failing the whole run. `run_graph` is the
+single entry point callers (the `/chat` route, tests here) use to execute one
+turn end-to-end.
 
 The edge names below (`dsa_agent` / `debug_agent` / `explain_agent` /
 `clarify`, wired via `app.graph.routing.ROUTE_NODES`) are a **stable
 contract**: Phase 07 replaces those nodes' implementations with full
-subgraphs without renaming them or reshaping the surrounding edges.
+subgraphs without renaming them or reshaping the surrounding edges. The three
+specialized-agent nodes now flow through `execute_code` -> `verify` (wired via
+`app.graph.routing.VERIFY_NODES`) before reaching `final_response`; `clarify`
+skips straight to `final_response` since it never runs code.
 """
 
 from collections.abc import Hashable, Mapping
@@ -26,6 +30,7 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution.base import CodeRunner
 from app.graph.nodes import (
     FALLBACKS,
     Node,
@@ -33,6 +38,7 @@ from app.graph.nodes import (
     classify_intent,
     debug_agent,
     dsa_agent,
+    execute_code,
     explain_agent,
     final_response,
     load_learner_profile,
@@ -42,8 +48,9 @@ from app.graph.nodes import (
     safe_node,
     understand_input,
     update_learner_model,
+    verify_execution,
 )
-from app.graph.routing import ROUTE_NODES, route_after
+from app.graph.routing import ROUTE_NODES, VERIFY_NODES, route_after, verify_after
 from app.graph.state import AgentState, GraphContext, RawInput
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
@@ -73,6 +80,8 @@ NODE_FUNCTIONS: Final[Mapping[str, Node]] = MappingProxyType(
         "dsa_agent": dsa_agent,
         "debug_agent": debug_agent,
         "explain_agent": explain_agent,
+        "execute_code": execute_code,
+        "verify": verify_execution,
         "clarify": clarify,
         "final_response": final_response,
         "update_learner_model": update_learner_model,
@@ -112,8 +121,19 @@ def build_graph(node_overrides: Mapping[str, Node] | None = None) -> _CompiledGr
     # inference retarget the key type instead.
     path_map: dict[Hashable, str] = {key: value for key, value in ROUTE_NODES.items()}
     builder.add_conditional_edges("route", route_after, path_map)
+    # Every route node runs any code it produced through the sandbox +
+    # verifier before responding, except `clarify` (it never runs code) which
+    # goes straight to `final_response`. Derived from `ROUTE_NODES` rather
+    # than hard-coded so a future route addition can't silently bypass
+    # execution/verification by omission.
+    clarify_node = ROUTE_NODES["clarify"]
     for agent_node in ROUTE_NODES.values():
-        builder.add_edge(agent_node, "final_response")
+        if agent_node != clarify_node:
+            builder.add_edge(agent_node, "execute_code")
+    builder.add_edge(clarify_node, "final_response")
+    builder.add_edge("execute_code", "verify")
+    verify_path_map: dict[Hashable, str] = {key: value for key, value in VERIFY_NODES.items()}
+    builder.add_conditional_edges("verify", verify_after, verify_path_map)
     builder.add_edge("final_response", "update_learner_model")
     builder.add_edge("update_learner_model", END)
 
@@ -148,6 +168,7 @@ async def run_graph(
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
     retriever: Retriever | None = None,
     knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K,
+    runner: CodeRunner | None = None,
 ) -> GraphRunResult:
     """Run the teaching graph once, for a single turn.
 
@@ -155,7 +176,10 @@ async def run_graph(
     never make more than `max_llm_calls` LLM calls in total, no matter how
     many nodes end up needing it. Never commits `session` -- the caller owns
     the transaction. `retriever` is entirely separate from the LLM budget:
-    knowledge retrieval runs on local models, not the LLM provider.
+    knowledge retrieval runs on local models, not the LLM provider. `runner`
+    is `None` whenever the sandbox is disabled or unavailable (see
+    `app.execution.runner.build_sandbox_runner`) -- `execute_code` degrades
+    to a `sandbox_error` result rather than failing the run.
     """
     budgeted = BudgetedLLMClient(llm, max_llm_calls)
     context = GraphContext(
@@ -165,6 +189,7 @@ async def run_graph(
         conversation_id=conversation_id,
         retriever=retriever,
         knowledge_top_k=knowledge_top_k,
+        runner=runner,
     )
     result = await get_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         AgentState(input=raw),

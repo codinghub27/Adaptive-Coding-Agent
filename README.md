@@ -81,7 +81,7 @@ Built in phases; each is shippable and committed before the next begins.
 | 03 | Learner Profile, Memory & Learning Events | Done |
 | 04 | LangGraph Orchestration & Teaching Planner | Done |
 | 05 | Knowledge Base & Hybrid RAG | Done |
-| 06 | Code Execution Sandbox & Verification | Not Started |
+| 06 | Code Execution Sandbox & Verification | Done |
 | 07 | Specialized Agents (DSA / Debug / Explain) | Not Started |
 | 08 | Response Generation, Frontend & Evaluation | Not Started |
 

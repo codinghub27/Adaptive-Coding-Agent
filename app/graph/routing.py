@@ -1,20 +1,33 @@
-"""Intent-to-agent routing for the teaching graph.
+"""Intent-to-agent and verification routing for the teaching graph.
 
 Route keys (`RouteKey`: "dsa" | "debug" | "explain" | "clarify") and the node
 names they map to (`ROUTE_NODES`) are a **STABLE contract** for Phase 07: the
 stub node *implementations* registered under these names today will be
 replaced by full subgraphs later, but the keys and names themselves must not
 change without a coordinated migration.
+
+`VerifyKey`/`verify_after`/`VERIFY_NODES` are the equivalent contract for the
+post-execution branch: in Phase 06 every verdict status routes straight to
+`final_response` (nothing yet knows how to act on a "fail"); Phase 07 will
+retarget "fail" to the debugger loop instead.
 """
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Literal
 
 from app.graph.state import AgentState, RouteKey
 from app.schemas.intent import Intent
 
-__all__ = ["INTENT_ROUTES", "ROUTE_NODES", "route_after", "select_route"]
+__all__ = [
+    "INTENT_ROUTES",
+    "ROUTE_NODES",
+    "VERIFY_NODES",
+    "VerifyKey",
+    "route_after",
+    "select_route",
+    "verify_after",
+]
 
 INTENT_ROUTES: Final[Mapping[Intent, RouteKey]] = MappingProxyType(
     {
@@ -63,3 +76,31 @@ def select_route(state: AgentState) -> RouteKey:
 def route_after(state: AgentState) -> RouteKey:
     """LangGraph conditional-edge function: read the recorded route decision."""
     return state.route if state.route is not None else "clarify"
+
+
+VerifyKey = Literal["pass", "fail", "inconclusive", "skipped"]
+
+# Phase 06: every verdict status routes straight to "final_response" --
+# nothing yet knows how to act on a "fail" verdict. Phase 07 retargets "fail"
+# to the debugger loop instead of leaving this all-same-target mapping.
+VERIFY_NODES: Final[Mapping[VerifyKey, str]] = MappingProxyType(
+    {
+        "pass": "final_response",
+        "fail": "final_response",
+        "inconclusive": "final_response",
+        "skipped": "final_response",
+    }
+)
+
+
+def verify_after(state: AgentState) -> VerifyKey:
+    """LangGraph conditional-edge function: read this turn's verdict status.
+
+    No verdict (nothing was executed/verified this turn) is "skipped", not a
+    missing-data error -- the default, unverified path every non-code turn
+    takes.
+    """
+    verification = state.verification
+    if verification is None:
+        return "skipped"
+    return verification.status

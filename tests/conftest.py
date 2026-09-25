@@ -53,6 +53,12 @@ SETTINGS_ENV_VARS = (
     "REFRESH_TOKEN_EXPIRE_DAYS",
     "JWT_LEEWAY_SECONDS",
     "REFRESH_REUSE_GRACE_SECONDS",
+    "SANDBOX_ENABLED",
+    "SANDBOX_IMAGE",
+    "SANDBOX_MEMORY_MB",
+    "SANDBOX_MAX_CONCURRENT",
+    "SANDBOX_QUEUE_TIMEOUT_S",
+    "SANDBOX_STARTUP_TIMEOUT_S",
 )
 
 
@@ -95,6 +101,10 @@ def make_settings() -> Callable[..., Settings]:
             # instance; tests that specifically exercise knowledge retrieval
             # opt back in with `knowledge_enabled=True`.
             "knowledge_enabled": False,
+            # Building a `SandboxRunner` needs a reachable Docker daemon;
+            # tests that specifically exercise the sandbox opt back in with
+            # `sandbox_enabled=True`.
+            "sandbox_enabled": False,
         }
         params.update(overrides)
         return Settings(_env_file=None, **params)  # pyright: ignore[reportCallIssue]

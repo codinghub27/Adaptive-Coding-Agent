@@ -26,3 +26,5 @@ pytest
 pytest-asyncio
 pyright
 ruff
+docker
+types-docker

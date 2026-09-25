@@ -14,14 +14,16 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.execution.base import CodeRunner
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
 from app.schemas.base import APIModel
 from app.schemas.conversation import MessageView
 from app.schemas.event import LearningEventCreate
+from app.schemas.execution import ExecutionRequest, ExecutionResult, Verdict
 from app.schemas.input import StructuredInput
 from app.schemas.intent import IntentResult
 from app.schemas.knowledge import RetrievalHit
@@ -102,7 +104,9 @@ class AgentState(BaseModel):
     recent_context: list[MessageView] = Field(default_factory=list[MessageView])
     plan: TeachingPlan | None = None
     retrieved_context: list[RetrievalHit] = Field(default_factory=list[RetrievalHit])
-    execution_result: dict[str, JsonValue] | None = None
+    execution_request: ExecutionRequest | None = None
+    execution_result: ExecutionResult | None = None
+    verification: Verdict | None = None
     route: RouteKey | None = None
     agent_output: AgentOutcome | None = None
     response: str | None = None
@@ -123,7 +127,9 @@ class AgentStateUpdate(TypedDict, total=False):
     recent_context: list[MessageView]
     plan: TeachingPlan | None
     retrieved_context: list[RetrievalHit]
-    execution_result: dict[str, JsonValue] | None
+    execution_request: ExecutionRequest | None
+    execution_result: ExecutionResult | None
+    verification: Verdict | None
     route: RouteKey | None
     agent_output: AgentOutcome | None
     response: str | None
@@ -146,3 +152,4 @@ class GraphContext:
     conversation_id: UUID | None = None
     retriever: Retriever | None = None
     knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K
+    runner: CodeRunner | None = None

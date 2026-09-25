@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.auth.routes import router as auth_router
 from app.config import Settings, get_settings
 from app.db import create_engine, create_session_factory, ping_db
+from app.execution.runner import build_sandbox_runner
 from app.graph.api import router as chat_router
 from app.health import ping_qdrant
 from app.input.api import MAX_REQUEST_BYTES, BodySizeLimitMiddleware
@@ -95,6 +96,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.warning("knowledge retriever unavailable: %s", type(exc).__name__)
             else:
                 app.state.retriever = None
+
+            runner, close_runner = await build_sandbox_runner(settings)
+            stack.callback(close_runner)
+            app.state.runner = runner
 
             yield
 

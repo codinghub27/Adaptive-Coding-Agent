@@ -272,6 +272,12 @@ def _node_inputs() -> dict[str, tuple[RawInput, FakeLLMClient]]:
                 chat_content='{"intent": "CODE_EXPLAIN", "confidence": 0.95, "rationale": "n/a"}'
             ),
         ),
+        # No agent sets an `execution_request` in Phase 06, so these two
+        # nodes are always no-op skips on the straight-line path -- any input
+        # that reaches them (i.e. not "clarify", which skips execute_code
+        # entirely) is enough to exercise the failure sweep.
+        "execute_code": (RawInput(text=_DSA_RULE_TEXT), FakeLLMClient()),
+        "verify": (RawInput(text=_DSA_RULE_TEXT), FakeLLMClient()),
     }
 
 

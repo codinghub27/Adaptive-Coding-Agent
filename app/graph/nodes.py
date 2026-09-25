@@ -27,6 +27,7 @@ from uuid import UUID
 from langgraph.runtime import Runtime
 
 from app.agents.planner import INTENT_DEFAULTS, analyze_problem, build_plan
+from app.execution.verification import verify as verify_result
 from app.graph.routing import select_route
 from app.graph.state import (
     AgentOutcome,
@@ -43,6 +44,7 @@ from app.memory.conversation import add_turn, get_recent_context
 from app.memory.events import record_event, requested_help_for
 from app.memory.profile import PRIOR, get_profile
 from app.schemas.event import LearningEventCreate
+from app.schemas.execution import ExecutionResult, HarnessError, Verdict
 from app.schemas.intent import Intent
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
@@ -56,6 +58,7 @@ __all__ = [
     "clarify",
     "debug_agent",
     "dsa_agent",
+    "execute_code",
     "explain_agent",
     "final_response",
     "load_learner_profile",
@@ -66,6 +69,7 @@ __all__ = [
     "should_retrieve",
     "understand_input",
     "update_learner_model",
+    "verify_execution",
 ]
 
 logger = logging.getLogger(__name__)
@@ -375,6 +379,80 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     return {"agent_output": _stub_outcome("explain", state.plan)}
 
 
+# --- execute_code -------------------------------------------------------------
+
+_SANDBOX_UNAVAILABLE_MESSAGE: Final = "the code sandbox is not available right now"
+_EXECUTION_NODE_FAILED_MESSAGE: Final = "running your code failed unexpectedly"
+
+
+async def execute_code(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
+    """Run `state.execution_request` in the sandbox, if an agent set one.
+
+    Nothing here ever executes code itself -- it only ever hands the request
+    to `runtime.context.runner` (a `CodeRunner`), which is the one thing in
+    the app allowed to talk to the Docker sandbox. No request set (Phase 06:
+    always, since no agent sets one yet) is a no-op skip, not an error.
+    """
+    request = state.execution_request
+    if request is None:
+        return {}
+    runner = runtime.context.runner
+    if runner is None:
+        return {
+            "execution_result": ExecutionResult(
+                status="sandbox_error",
+                language=request.language,
+                error=HarnessError(type="SandboxUnavailable", message=_SANDBOX_UNAVAILABLE_MESSAGE),
+            )
+        }
+    result = await runner.run(request)
+    return {"execution_result": result}
+
+
+def _execute_code_fallback(state: AgentState) -> AgentStateUpdate:
+    if state.execution_request is None:
+        return {}
+    return {
+        "execution_result": ExecutionResult(
+            status="sandbox_error",
+            language=state.execution_request.language,
+            error=HarnessError(type="ExecutionNodeFailed", message=_EXECUTION_NODE_FAILED_MESSAGE),
+        )
+    }
+
+
+# --- verify_execution -----------------------------------------------------------
+
+_VERIFY_NODE_FAILED_SUMMARY: Final = "verifying your code's result failed unexpectedly"
+
+
+async def verify_execution(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
+    """Derive this turn's `Verdict` from `state.execution_result`, if anything ran.
+
+    No request and no result (Phase 06: always, since nothing sets a request
+    yet) is a no-op skip, matching `execute_code`'s skip. Delegates to the
+    pure `app.execution.verification.verify` -- never re-implements the
+    pass/fail logic here.
+    """
+    del runtime
+    if state.execution_request is None and state.execution_result is None:
+        return {"verification": None}
+    return {"verification": verify_result(state.execution_result, state.execution_request)}
+
+
+def _verify_execution_fallback(state: AgentState) -> AgentStateUpdate:
+    if state.execution_request is None and state.execution_result is None:
+        return {"verification": None}
+    # A failing node must never yield "pass" -- degrade to inconclusive.
+    return {
+        "verification": Verdict(
+            status="inconclusive",
+            category="sandbox_error",
+            summary=_VERIFY_NODE_FAILED_SUMMARY,
+        )
+    }
+
+
 # --- Clarify node -----------------------------------------------------------
 
 _ASK_FOR_INPUT: Final = (
@@ -669,6 +747,8 @@ FALLBACKS: Final[MappingProxyType[str, Callable[[AgentState], AgentStateUpdate]]
             "dsa_agent": _agent_outcome_fallback,
             "debug_agent": _agent_outcome_fallback,
             "explain_agent": _agent_outcome_fallback,
+            "execute_code": _execute_code_fallback,
+            "verify": _verify_execution_fallback,
             "clarify": _agent_outcome_fallback,
             "final_response": _final_response_fallback,
             "update_learner_model": _update_learner_model_fallback,

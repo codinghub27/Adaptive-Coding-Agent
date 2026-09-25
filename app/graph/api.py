@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_user
 from app.config import Settings
 from app.db.session import get_session
+from app.execution.base import CodeRunner
 from app.graph.build import run_graph
 from app.graph.nodes import SAFE_FALLBACK_RESPONSE
 from app.graph.state import NodeError, RawInput, RouteKey
@@ -42,6 +43,7 @@ from app.llm.base import LLMClient
 from app.schemas.auth import AuthUser
 from app.schemas.base import APIModel
 from app.schemas.event import LearningEventCreate
+from app.schemas.execution import Verdict
 from app.schemas.intent import IntentResult
 from app.schemas.plan import TeachingPlan
 
@@ -57,10 +59,26 @@ class ChatResponse(APIModel):
     route: RouteKey
     intent: IntentResult | None
     plan: TeachingPlan | None
+    verification: Verdict | None
     events: list[LearningEventCreate]
     events_persisted: list[UUID]
     errors: list[NodeError]
     llm_calls: int
+
+
+def _get_runner(request: Request) -> CodeRunner | None:
+    """Return the shared `CodeRunner` configured on `app.state`, if any.
+
+    `app.state.runner` is `None` whenever the sandbox is disabled or was
+    unavailable at startup (see `app.main`'s lifespan) -- that's a normal,
+    expected state, not an error, so this never raises. `CodeRunner` is a
+    `@runtime_checkable` `Protocol`, so `isinstance` is used directly rather
+    than `getattr` + a cast, mirroring `_get_retriever` below.
+    """
+    runner = getattr(request.app.state, "runner", None)
+    if isinstance(runner, CodeRunner):
+        return runner
+    return None
 
 
 def _get_retriever(request: Request) -> Retriever | None:
@@ -143,6 +161,7 @@ async def chat(
         conversation_id=conversation_id,
         retriever=_get_retriever(request),
         knowledge_top_k=_get_knowledge_top_k(request),
+        runner=_get_runner(request),
     )
     await session.commit()
 
@@ -152,6 +171,7 @@ async def chat(
         route=state.route if state.route is not None else "clarify",
         intent=state.intent,
         plan=state.plan,
+        verification=state.verification,
         events=state.events,
         events_persisted=state.events_persisted,
         errors=state.errors,

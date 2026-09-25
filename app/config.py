@@ -126,6 +126,25 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:8501"]
     )
 
+    #: Whether the app builds a `SandboxRunner` at startup. Startup must
+    #: never fail because Docker isn't reachable -- this is also the escape
+    #: hatch tests use to skip the (Docker-dependent) sandbox build.
+    sandbox_enabled: bool = True
+    #: Tag of the locked-down sandbox image (see `docker/sandbox.Dockerfile`).
+    sandbox_image: str = "aca-sandbox:py3.11-v1"
+    #: Memory limit applied to every sandbox container.
+    sandbox_memory_mb: int = Field(256, ge=64, le=2048)
+    #: Max sandbox containers running at once; runs beyond this queue.
+    sandbox_max_concurrent: int = Field(4, ge=1, le=32)
+    #: Wall-clock budget a run may wait queued for a free sandbox slot
+    #: before being rejected as busy.
+    sandbox_queue_timeout_s: float = Field(30.0, gt=0, le=300)
+    #: Wall-clock budget for the startup Docker-reachability probe (client
+    #: construction, ping, image check). A hung/slow Docker daemon must
+    #: degrade to `runner=None` rather than block app startup -- see
+    #: `app.execution.runner.build_sandbox_runner`.
+    sandbox_startup_timeout_s: float = Field(15.0, gt=0, le=120)
+
     jwt_secret_key: SecretStr = Field(repr=False)
     jwt_algorithm: Literal["HS256"] = "HS256"
     access_token_expire_minutes: int = Field(default=45, ge=1, le=1440)
