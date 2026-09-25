@@ -1,7 +1,7 @@
 # PHASE-06 — Code Execution Sandbox & Verification
 
 ## Status
-Done (2026-09-25), commit pending
+Done (2026-09-25), commit `967b880`
 
 ## Goal
 Safely run code and establish correctness by **execution**, not by the model's
@@ -380,7 +380,7 @@ venv/Scripts/python.exe -c "from app.graph.build import get_graph; print(get_gra
   failures (see Phase 05).
 
 ## Git Commit
-Not created yet.
+`967b880` — feat: phase 6 code execution sandbox + verification
 
 ## Next Phase
 - PHASE-07 — Specialized Agents (DSA Solver, Debugger, Code Explainer).
