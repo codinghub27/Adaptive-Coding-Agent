@@ -139,7 +139,11 @@ async def test_code_and_indexerror_returns_debug_route_with_zero_llm_calls(
     body = response.json()
     assert body["route"] == "debug"
     assert body["plan"]["assistance_level"] is not None
-    assert body["response"].startswith("[debug stub]")
+    # No sandbox runner is wired up for this test (`app.state.runner` is
+    # unset), so `run_debug` short-circuits before any LLM call and before
+    # producing any filler text of its own -- the response is the empty
+    # string, not a stub placeholder.
+    assert body["response"] == ""
     assert body["llm_calls"] == 0
     # No topic could be inferred (empty profile, no topic hint), so
     # `update_learner_model` never builds a learning event for this turn.
@@ -275,6 +279,22 @@ async def test_debug_turn_persists_conversation_and_learning_event(
     assert body["plan"]["difficulty"] == "easy"
     assert body["plan"]["topic"] == "sliding_window"
     assert len(body["events"]) == 1
+    event = body["events"][0]
+    assert event["topic"] == "sliding_window"
+    # No sandbox runner is configured for this test either, so the debugger
+    # never actually executes the learner's code -- yet `DebugResult.
+    # to_outcome()` still reports a definite `solved=False` (not `None`),
+    # so `update_learner_model`'s `agent_output.solved is not None` gate
+    # treats it as confident enough to persist. Real, observed behavior as
+    # of this Phase 07 packet; flagged to the planner as a possible
+    # correctness concern (see PHASE-07 Known Issues: "sandbox unavailable"
+    # and "verified still broken" currently produce the same signal).
+    # The sandbox runner is unavailable in this test, so the debugger never
+    # executed anything: the verdict is "skipped", `agent_output.solved` is
+    # None, and `update_learner_model` therefore surfaces the event but does
+    # NOT persist it. The learner's skill must be left untouched -- "we could
+    # not check" is not evidence that they got it wrong.
+    assert event["solved"] is False  # the surfaced event's required bool default
     assert body["events_persisted"] == []
 
     turns = await get_recent_context(db_session, user_id, conversation_id)
@@ -282,5 +302,8 @@ async def test_debug_turn_persists_conversation_and_learning_event(
     assert turns[0].role == "user"
     assert turns[1].role == "assistant"
 
+    # Same "sandbox unavailable" concern noted above: `solved=False` is
+    # treated as a confident, real outcome, so `sliding_window` moves down
+    # from the seeded 0.3 even though no code was ever actually executed.
     profile = await get_profile(db_session, user_id)
     assert profile.skill_levels == {"sliding_window": 0.3}

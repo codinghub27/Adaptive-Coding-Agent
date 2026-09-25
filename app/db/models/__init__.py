@@ -7,9 +7,18 @@ required for Alembic autogenerate to see them.
 
 from app.db.models.conversation import Conversation
 from app.db.models.event import LearningEvent
+from app.db.models.hint_progress import HintProgress
 from app.db.models.message import Message
 from app.db.models.profile import LearnerProfile
 from app.db.models.refresh_token import RefreshToken
 from app.db.models.user import User
 
-__all__ = ["Conversation", "LearnerProfile", "LearningEvent", "Message", "RefreshToken", "User"]
+__all__ = [
+    "Conversation",
+    "HintProgress",
+    "LearnerProfile",
+    "LearningEvent",
+    "Message",
+    "RefreshToken",
+    "User",
+]

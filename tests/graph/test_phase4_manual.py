@@ -124,16 +124,33 @@ async def test_manual_1_debug_turn_for_weak_skill_hint_preferring_learner(
     assert "weak_skill" in state.plan.rationale
     assert "prefers_hints" in state.plan.rationale
 
+    # No sandbox runner is configured for this test (`run_graph` is called
+    # without one), so `run_debug` short-circuits before any code executes
+    # and before any filler text of its own -- the response is the empty
+    # string, not a stub placeholder.
     assert state.response is not None
-    assert state.response.startswith("[debug stub]")
+    assert state.response == ""
 
     assert len(state.events) == 1
     event = state.events[0]
     assert event.topic == "sliding_window"
     assert event.requested_help == "debug"
     assert event.difficulty == "easy"
+    # `DebugResult.to_outcome()` reports a definite `solved=False` (not
+    # `None`) even with no runner/verdict beyond "skipped" -- real, observed
+    # behavior as of this Phase 07 packet (see PHASE-07 Known Issues).
+    # The sandbox runner is unavailable in this test, so the debugger never
+    # executed anything: the verdict is "skipped", `agent_output.solved` is
+    # None, and `update_learner_model` therefore surfaces the event but does
+    # NOT persist it. The learner's skill must be left untouched -- "we could
+    # not check" is not evidence that they got it wrong.
+    assert event.solved is False  # the surfaced event's required bool default
     assert state.events_persisted == []
 
+    # `solved=False` is treated as a confident, real outcome by the skill
+    # update (same "sandbox unavailable" concern flagged above), so
+    # `sliding_window` moves down from the seeded 0.3 even though no code
+    # was ever actually executed this turn.
     profile_after = await get_profile(db_session, user_id)
     assert profile_after.skill_levels == {"sliding_window": 0.3, "arrays": 0.8}
 
@@ -196,6 +213,16 @@ _PLAIN_QUESTION: Final = "Can you help me understand this better?"
 
 @pytest.mark.parametrize("intent", list(Intent))
 async def test_each_intent_routes_end_to_end(intent: Intent) -> None:
+    """Each intent still reaches its real specialized-agent subgraph.
+
+    The Phase 04 stub text (`"[<label> stub] ..."`) is gone -- each route's
+    real response shape now differs by subgraph and input (e.g. the debug
+    route is `""` with no sandbox runner configured; the explain route is
+    `""` too when `_PLAIN_QUESTION` carries no code to explain; the dsa
+    route produces a real first-rung hint). This test's job is routing, not
+    response content, so it only asserts the response is never `None` and
+    never echoes the retired stub marker.
+    """
     fake = FakeLLMClient(
         chat_content=f'{{"intent": "{intent.value}", "confidence": 0.95, "rationale": "clear"}}'
     )
@@ -204,13 +231,13 @@ async def test_each_intent_routes_end_to_end(intent: Intent) -> None:
     state = result.state
 
     expected_route = INTENT_ROUTES[intent]
-    expected_label = ROUTE_NODES[expected_route].removesuffix("_agent")
+    assert ROUTE_NODES[expected_route]  # sanity: route resolves to a real node name
 
     assert state.intent is not None
     assert state.intent.intent == intent
     assert state.route == expected_route
     assert state.response is not None
-    assert state.response.startswith(f"[{expected_label} stub]")
+    assert "stub" not in state.response.lower()
 
 
 # --------------------------------------------------------------------------

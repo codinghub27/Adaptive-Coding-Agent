@@ -20,8 +20,8 @@ from tests.input.fakes import FakeLLMClient
 MARKER = "zzz_untrusted_marker_zzz"
 
 
-def _runtime() -> Runtime[GraphContext]:
-    return Runtime(context=GraphContext(llm=FakeLLMClient()))
+def _runtime(*, llm: FakeLLMClient | None = None) -> Runtime[GraphContext]:
+    return Runtime(context=GraphContext(llm=llm if llm is not None else FakeLLMClient()))
 
 
 def _plan(
@@ -156,33 +156,95 @@ def test_route_after_defaults_to_clarify_when_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Agent stubs
+# Specialized agents (real Phase 07 subgraphs, not the retired Phase 04 stubs)
 # ---------------------------------------------------------------------------
+#
+# The three agents no longer share one uniform stub contract, so a single
+# parametrized "no echo" test can no longer share one fixed LLM/response
+# setup across all three: `dsa_agent` reaches the LLM whenever the problem
+# text is non-empty, `debug_agent` short-circuits before any LLM call
+# whenever `runtime.context.runner` is `None` (as it is in every test here),
+# and `explain_agent` only calls the LLM when there is learner *code* to
+# explain (there isn't, in `_input()`). Each gets its own test below instead,
+# preserving the one property that mattered in the old shared test: the
+# learner's raw input text is never echoed into the outcome.
 
 
 AgentNode = Callable[[AgentState, Runtime[GraphContext]], Awaitable[AgentStateUpdate]]
 
 
-@pytest.mark.parametrize(
-    "agent_node",
-    [dsa_agent, debug_agent, explain_agent],
-)
-async def test_stub_agents_return_outcome_without_echoing_user_input(
-    agent_node: AgentNode,
-) -> None:
+async def test_dsa_agent_degrades_gracefully_and_does_not_echo_user_input() -> None:
+    """`dsa_agent` (unlike the retired stub) makes a real LLM call whenever
+    the problem text is non-empty -- a materially new LLM-call path on this
+    route. `analyze_dsa_problem` never raises on a bad/empty response
+    though, so a fake that returns `"{}"` (a syntactically valid but
+    content-free analysis) still produces a real hint, not a crash."""
     plan = _plan(strategy="guided_debugging", assistance="hint", difficulty="easy", topic="graphs")
     state = _state(structured_input=_input(), intent=_intent(Intent.CODE_DEBUG), plan=plan)
+    fake = FakeLLMClient(chat_content="{}")
 
-    update = await agent_node(state, _runtime())
+    update = await dsa_agent(state, _runtime(llm=fake))
 
     outcome = update.get("agent_output")
     assert outcome is not None
+    assert fake.chat_calls  # confirms the real subgraph reached the LLM
+    # `DSAResult.to_outcome()` never reports a definite solved/unsolved
+    # verdict for a hint -- unlike debug_agent below.
     assert outcome.solved is None
-    assert outcome.topic == "graphs"
     assert MARKER not in outcome.text
 
 
-async def test_debug_agent_stub_text_matches_plan_template() -> None:
+async def test_debug_agent_without_sandbox_runner_skips_llm_and_returns_empty_text() -> None:
+    """With no sandbox runner wired up (`GraphContext.runner is None`, as in
+    every test in this module), `run_debug` short-circuits before the
+    debugger subgraph -- and therefore before any LLM call -- to a
+    `DebugResult` whose only verdict is "skipped". `DebugResult.to_outcome()`
+    never derives `topic` from the plan (unlike the old stub), and reports a
+    definite `solved=False` here since "skipped" != "pass"."""
+    plan = _plan(strategy="guided_debugging", assistance="hint", difficulty="easy", topic="graphs")
+    state = _state(structured_input=_input(), intent=_intent(Intent.CODE_DEBUG), plan=plan)
+    fake = FakeLLMClient()
+
+    update = await debug_agent(state, _runtime(llm=fake))
+
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert fake.chat_calls == []
+    assert outcome.text == ""
+    assert outcome.topic is None
+    # No runner means nothing was executed, so there is NO evidence about the
+    # learner either way: `solved` must stay None so `update_learner_model`
+    # skips the event rather than recording an unobserved failure.
+    assert outcome.solved is None
+    assert MARKER not in outcome.text
+
+
+async def test_explain_agent_without_code_skips_llm_and_has_no_topic() -> None:
+    """`_input()` carries a question but no code, so `extract_learner_code`
+    returns `None` and the explainer subgraph's two LLM-calling nodes both
+    skip -- zero LLM calls, matching the old stub's LLM-free property (for
+    this no-code input) even though the pipeline behind it is now real.
+    `ExplainResult.to_outcome()` never carries a `topic` at all."""
+    plan = _plan(strategy="guided_debugging", assistance="hint", difficulty="easy", topic="graphs")
+    state = _state(structured_input=_input(), intent=_intent(Intent.CODE_DEBUG), plan=plan)
+    fake = FakeLLMClient()
+
+    update = await explain_agent(state, _runtime(llm=fake))
+
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert fake.chat_calls == []
+    assert outcome.solved is None
+    assert outcome.topic is None
+    assert MARKER not in outcome.text
+
+
+async def test_debug_agent_without_runner_ignores_plan_content() -> None:
+    """Renamed from the retired `test_debug_agent_stub_text_matches_plan_template`:
+    the old stub echoed the plan's strategy/assistance/difficulty into its
+    placeholder text. The real `debug_agent`, short-circuited by the absence
+    of a sandbox runner, produces empty text regardless of the plan's
+    content -- the plan's fields are simply not part of this result."""
     plan = _plan(strategy="guided_debugging", assistance="hint", difficulty="easy")
     state = _state(structured_input=_input(), intent=_intent(Intent.CODE_DEBUG), plan=plan)
 
@@ -190,12 +252,15 @@ async def test_debug_agent_stub_text_matches_plan_template() -> None:
 
     outcome = update.get("agent_output")
     assert outcome is not None
-    assert "guided_debugging" in outcome.text
-    assert "'hint'" in outcome.text
-    assert "easy" in outcome.text
+    assert outcome.text == ""
 
 
-async def test_stub_agent_with_no_plan_has_no_topic() -> None:
+async def test_debug_agent_with_no_plan_has_no_topic_and_no_solved_evidence() -> None:
+    """Renamed from the retired `test_stub_agent_with_no_plan_has_no_topic`:
+    the old stub's "topic is None regardless of plan" invariant doesn't hold
+    for `solved` any more -- `debug_agent` reports a definite `solved=False`
+    (from the "skipped" verdict) whether or not a plan is present, since
+    `run_debug`'s no-runner short-circuit never even looks at `state.plan`."""
     state = _state(structured_input=_input(), intent=_intent(Intent.CODE_DEBUG), plan=None)
 
     update = await debug_agent(state, _runtime())
@@ -203,6 +268,9 @@ async def test_stub_agent_with_no_plan_has_no_topic() -> None:
     outcome = update.get("agent_output")
     assert outcome is not None
     assert outcome.topic is None
+    # No runner means nothing was executed, so there is NO evidence about the
+    # learner either way: `solved` must stay None so `update_learner_model`
+    # skips the event rather than recording an unobserved failure.
     assert outcome.solved is None
     assert MARKER not in outcome.text
 

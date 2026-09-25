@@ -5,8 +5,12 @@ description: >
   session). Use for writing/editing modules, wiring components, and running the
   project's own type-checks and tests within a single, well-defined work packet.
   Not for high-level planning or cross-phase decisions — those stay with the planner.
-tools: Read, Write, Edit, MultiEdit, Grep, Glob, Bash
-mcpServers: token-savior, context7, github, postgres
+tools: Read, Write, Edit, MultiEdit, Grep, Glob, Bash,
+  mcp__token-savior__find_symbol, mcp__token-savior__get_function_source,
+  mcp__token-savior__ts_search, mcp__token-savior__search_codebase,
+  mcp__token-savior__get_call_chain, mcp__token-savior__get_full_context,
+  mcp__context7__resolve-library-id, mcp__context7__query-docs
+mcpServers: token-savior, context7
 model: sonnet
 ---
 

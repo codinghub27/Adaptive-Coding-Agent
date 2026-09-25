@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import pytest
 
 from app.llm.base import ChatMessage, ChatResult, LLMClient
-from app.llm.budget import BudgetedLLMClient, LLMBudgetExceededError
+from app.llm.budget import DEFAULT_MAX_LLM_CALLS, BudgetedLLMClient, LLMBudgetExceededError
 
 
 class _CountingLLMClient:
@@ -107,7 +107,20 @@ def test_negative_max_calls_rejected() -> None:
 
 def test_default_max_calls_used_when_unspecified() -> None:
     client = BudgetedLLMClient(_CountingLLMClient())
-    assert client.max_calls == 3
+    assert client.max_calls == DEFAULT_MAX_LLM_CALLS
+
+
+def test_default_budget_covers_the_worst_real_graph_path() -> None:
+    """The default must fit the longest real turn, or agents silently degrade.
+
+    Phase 07's debugger spends `classify_intent` + `infer_approach` +
+    `explain` + `patch`, plus a second `patch` on retry, and an image turn
+    adds a vision call: 6. When this default was 3, the patch call raised
+    `LLMBudgetExceededError`, `patch_code` swallowed it as an `LLMError`, and
+    the debugger silently never produced a fix at all.
+    """
+    worst_case_calls = 6
+    assert worst_case_calls <= DEFAULT_MAX_LLM_CALLS
 
 
 def test_calls_property_starts_at_zero() -> None:

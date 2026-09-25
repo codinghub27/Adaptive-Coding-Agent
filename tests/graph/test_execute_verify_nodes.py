@@ -204,6 +204,10 @@ def _raiser(name: str) -> Node:
 
 
 async def test_no_execution_request_skips_execute_and_verify() -> None:
+    """The real `dsa_agent` only sets `execution_request` once the hint
+    ladder actually reaches L6 (full solution); a fresh ladder's first turn
+    stops at L0 and never sets one, so `execute_code`/`verify` are still a
+    no-op skip on this route -- unchanged from Phase 04/05/06."""
     result = await run_graph(
         RawInput(text=_DSA_TEXT), llm=FakeLLMClient(chat_content=_DSA_CHAT_CONTENT)
     )
@@ -214,17 +218,23 @@ async def test_no_execution_request_skips_execute_and_verify() -> None:
     assert state.verification is None
     assert state.route == "dsa"
     assert state.response is not None
-    assert state.response.startswith("[dsa stub]")
+    assert "stub" not in state.response.lower()
 
 
-async def test_no_execution_request_response_identical_to_pre_phase6_stub_text() -> None:
-    """The stub `dsa_agent`'s output text is untouched by execute_code/verify
-    when it never sets an `execution_request`."""
+async def test_no_execution_request_leaves_agent_text_untouched_by_execute_and_verify() -> None:
+    """Renamed from the retired `..._identical_to_pre_phase6_stub_text`: that
+    name asserted a specific Phase 04 stub string. The real guarantee this
+    test protects is that `execute_code`/`verify` never rewrite an agent's
+    `response` text when no `execution_request` was set for this turn --
+    proven here by running the same input twice and checking the response is
+    stable and matches the agent output's own text exactly, byte for byte."""
     fake = FakeLLMClient(chat_content=_DSA_CHAT_CONTENT)
     result = await run_graph(RawInput(text=_DSA_TEXT), llm=fake)
 
-    assert result.state.response is not None
-    assert result.state.response.startswith("[dsa stub] Phase 7 will provide")
+    state = result.state
+    assert state.execution_request is None
+    assert state.agent_output is not None
+    assert state.response == state.agent_output.text
 
 
 # --------------------------------------------------------------------------

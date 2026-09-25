@@ -5,11 +5,13 @@ Runtime[GraphContext]) -> AgentStateUpdate`. Nodes read dependencies (the LLM
 client, DB session, ids) only from `runtime.context` -- never module-level
 globals -- so they stay swappable and testable in isolation.
 
-The specialized-agent stubs (`dsa_agent`, `debug_agent`, `explain_agent`) are
-placeholders: Phase 07 replaces their *implementations* with full subgraphs
-without renaming them (see `app.graph.routing` for the STABLE routing
-contract these names are part of). Every other node here is real Phase 04
-pipeline logic.
+The specialized-agent nodes (`dsa_agent`, `debug_agent`, `explain_agent`) call
+the Phase 07 subgraphs/pipelines -- `app.graph.subgraphs.dsa.run_dsa`,
+`app.graph.subgraphs.debug.run_debug`, `app.graph.subgraphs.explain.run_explain`,
+and `app.agents.reviewer.review_code` (dispatched from `explain_agent` for the
+`CODE_REVIEW`/`OPTIMIZATION` intents) -- without renaming these node names
+(see `app.graph.routing` for the STABLE routing contract these names are part
+of). Every other node here is real Phase 04 pipeline logic.
 
 Nodes must never interpolate raw user-supplied text (from `state.input` /
 `state.structured_input`) into their own output -- that data is untrusted
@@ -26,7 +28,9 @@ from uuid import UUID
 
 from langgraph.runtime import Runtime
 
+from app.agents.hint_engine import HintProgress
 from app.agents.planner import INTENT_DEFAULTS, analyze_problem, build_plan
+from app.agents.reviewer import review_code
 from app.execution.verification import verify as verify_result
 from app.graph.routing import select_route
 from app.graph.state import (
@@ -36,14 +40,18 @@ from app.graph.state import (
     GraphContext,
     NodeError,
 )
+from app.graph.subgraphs.debug import run_debug
+from app.graph.subgraphs.dsa import run_dsa
+from app.graph.subgraphs.explain import run_explain
 from app.input.intent import classify_intent as _classify_intent_llm
 from app.input.normalize import merge_inputs, normalize_text
 from app.input.vision import ImageValidationError, extract_from_image
 from app.llm.base import LLMError
 from app.memory.conversation import add_turn, get_recent_context
 from app.memory.events import record_event, requested_help_for
+from app.memory.hint_progress import get_hint_progress, save_hint_progress
 from app.memory.profile import PRIOR, get_profile
-from app.schemas.event import LearningEventCreate
+from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, Verdict
 from app.schemas.intent import Intent
 from app.schemas.plan import TeachingPlan
@@ -63,6 +71,7 @@ __all__ = [
     "final_response",
     "load_learner_profile",
     "plan_teaching",
+    "resolve_hint_progress",
     "retrieve_knowledge",
     "route",
     "safe_node",
@@ -330,25 +339,7 @@ def _route_fallback(state: AgentState) -> AgentStateUpdate:
     return {"route": "clarify"}
 
 
-# --- Specialized-agent stubs (Phase 07 replaces these with subgraphs) ------
-
-
-def _stub_outcome(label: str, plan: TeachingPlan | None) -> AgentOutcome:
-    """Build a fixed, plan-derived placeholder outcome for a stub agent node.
-
-    The text is built only from `plan`'s own fields (never from user input,
-    which is untrusted). If no plan is available yet, a generic fallback is
-    used instead.
-    """
-    if plan is not None:
-        text = (
-            f"[{label} stub] Phase 7 will provide {plan.solution_strategy} "
-            f"at '{plan.assistance_level}' level (difficulty: {plan.difficulty})."
-        )
-    else:
-        text = f"[{label} stub] Phase 7 will provide guided help once a teaching plan is available."
-    return AgentOutcome(text=text, topic=plan.topic if plan is not None else None, solved=None)
-
+# --- Specialized agents: dsa_agent / debug_agent / explain_agent -----------
 
 _AGENT_FALLBACK_TEXT: Final = (
     "Something went wrong on my end while working on that -- could you try again, "
@@ -361,22 +352,115 @@ def _agent_outcome_fallback(state: AgentState) -> AgentStateUpdate:
     return {"agent_output": AgentOutcome(text=_AGENT_FALLBACK_TEXT, topic=None, solved=None)}
 
 
+async def resolve_hint_progress(state: AgentState, ctx: GraphContext) -> HintProgress:
+    """Read this conversation+topic's hint-ladder progress from the dedicated store.
+
+    `AgentState` has nowhere to persist `HintProgress` across turns, so this
+    reads it from `app.memory.hint_progress` (a small store dedicated to hint
+    ladder state, upserted by `dsa_agent` -- see that function's docstring for
+    why this is deliberately *not* rebuilt from `LearningEvent`s). Keyed on
+    `slug_tag(plan.topic)`, the same key `dsa_agent` writes under, so reads
+    and writes always agree.
+
+    Degrades to a fresh `HintProgress()` (never raises) whenever `ctx.session`
+    or `ctx.user_id` is `None`, there is no plan/topic to match against, no
+    stored row is found, or the DB lookup itself fails -- a history lookup
+    must never cost the learner their turn. The read runs in its own
+    savepoint, mirroring `load_learner_profile`, so a failure here can never
+    leave the shared session's outer transaction aborted for later reads/
+    writes in this turn.
+    """
+    if ctx.session is None or ctx.user_id is None or ctx.conversation_id is None:
+        return HintProgress()
+    plan = state.plan
+    if plan is None or not plan.topic:
+        return HintProgress()
+    topic = slug_tag(plan.topic)
+
+    try:
+        async with ctx.session.begin_nested():
+            return await get_hint_progress(ctx.session, ctx.user_id, ctx.conversation_id, topic)
+    except Exception:
+        return HintProgress()
+
+
 async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
-    """Stub for the DSA solver subgraph (hint ladder), added in Phase 07."""
-    del runtime
-    return {"agent_output": _stub_outcome("dsa", state.plan)}
+    """Run the DSA solver subgraph (hint ladder) for this turn.
+
+    Persists the rung actually reached this turn to the hint-progress store
+    (keyed the same way `resolve_hint_progress` reads it), so the next turn
+    on this conversation+topic resumes the ladder instead of restarting at
+    L0. Only `dsa_agent` ever writes this store -- no other agent's turn can
+    move (or reset) a DSA hint ladder. `solved` is carried forward unchanged
+    from the progress read at the start of this turn: nothing in a hint turn
+    itself observes whether the learner ultimately solved the problem (see
+    `DSAResult.to_outcome`). Skipped (never raises) whenever `ctx.session`,
+    `ctx.user_id`, `ctx.conversation_id`, or the plan topic is missing, the
+    ladder produced no hint this turn (already solved), or the write itself
+    fails -- a failed write must never cost the learner their turn's response.
+    """
+    ctx = runtime.context
+    progress = await resolve_hint_progress(state, ctx)
+    run = await run_dsa(state, runtime, progress=progress)
+    update: AgentStateUpdate = {"agent_output": run.result.to_outcome()}
+    if run.execution_request is not None:
+        update["execution_request"] = run.execution_request
+
+    plan = state.plan
+    if (
+        run.result.hint is not None
+        and ctx.session is not None
+        and ctx.user_id is not None
+        and ctx.conversation_id is not None
+        and plan is not None
+        and plan.topic
+    ):
+        topic = slug_tag(plan.topic)
+        try:
+            async with ctx.session.begin_nested():
+                await save_hint_progress(
+                    ctx.session,
+                    ctx.user_id,
+                    ctx.conversation_id,
+                    topic,
+                    level=int(run.result.hint.level),
+                    solved=progress.solved,
+                )
+        except Exception:
+            pass
+
+    return update
 
 
 async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
-    """Stub for the debugger subgraph, added in Phase 07."""
-    del runtime
-    return {"agent_output": _stub_outcome("debug", state.plan)}
+    """Run the debugger subgraph for this turn."""
+    run = await run_debug(state, runtime)
+    update: AgentStateUpdate = {"agent_output": run.result.to_outcome()}
+    if run.execution_request is not None:
+        update["execution_request"] = run.execution_request
+    return update
+
+
+_REVIEW_INTENTS: Final[frozenset[Intent]] = frozenset({Intent.CODE_REVIEW, Intent.OPTIMIZATION})
 
 
 async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
-    """Stub for the code/concept explainer subgraph, added in Phase 07."""
-    del runtime
-    return {"agent_output": _stub_outcome("explain", state.plan)}
+    """Run the code/concept explainer for this turn, or the reviewer for
+    `CODE_REVIEW`/`OPTIMIZATION` (see `app.graph.routing.INTENT_ROUTES`: both
+    intents route to this node, but need the reviewer's pipeline instead)."""
+    intent = state.intent
+    if intent is not None and intent.intent in _REVIEW_INTENTS:
+        review_run = await review_code(state, runtime)
+        update: AgentStateUpdate = {"agent_output": review_run.result.to_outcome()}
+        if review_run.execution_request is not None:
+            update["execution_request"] = review_run.execution_request
+        return update
+
+    explain_run = await run_explain(state, runtime)
+    update = {"agent_output": explain_run.result.to_outcome()}
+    if explain_run.execution_request is not None:
+        update["execution_request"] = explain_run.execution_request
+    return update
 
 
 # --- execute_code -------------------------------------------------------------

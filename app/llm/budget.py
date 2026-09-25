@@ -22,10 +22,14 @@ from app.llm.base import ChatMessage, ChatResult, LLMClient, LLMError
 
 __all__ = ["DEFAULT_MAX_LLM_CALLS", "BudgetedLLMClient", "LLMBudgetExceededError"]
 
-# Per graph run: today's pipeline makes at most one vision call (image
-# understanding) and one chat call (intent classification), plus one call of
-# headroom for near-term additions.
-DEFAULT_MAX_LLM_CALLS: Final = 3
+# Per graph run. The Phase 07 specialized agents made the old budget of 3 too
+# tight: the debugger alone needs `classify_intent` (1) + `infer_approach` (2)
+# + `explain` (3) + `patch` (4), plus a second `patch` on its retry (5), and an
+# image turn spends one more on vision (6). At 3 the patch call always raised
+# `LLMBudgetExceededError`, which `patch_code` swallowed as an `LLMError` --
+# so the debugger silently never produced a fix. 8 covers the worst real path
+# (image + debug + retry) with headroom, while still bounding a runaway run.
+DEFAULT_MAX_LLM_CALLS: Final = 8
 
 _BUDGET_EXCEEDED_MESSAGE: Final = "LLM call budget exceeded for this graph run"
 

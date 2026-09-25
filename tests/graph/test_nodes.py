@@ -628,8 +628,14 @@ async def test_final_response_fixed_text_when_no_agent_output() -> None:
     assert "hi" not in (update.get("response") or "")
 
 
-async def test_stub_agents_and_clarify_still_work_with_runtime_param() -> None:
+async def test_specialized_agents_and_clarify_return_real_outcomes() -> None:
+    """Phase 07: the three specialized-agent nodes call their real subgraphs
+    (no session/user, no runner, so `dsa_agent`'s hint progress starts fresh
+    and `debug_agent`/`explain_agent` never need to run code)."""
     state = _pipeline_state(agent_output=None)
+    llm = FakeLLMClient(chat_content="{}")
     for node in (dsa_agent, debug_agent, explain_agent, clarify):
-        update = await node(state, _runtime())
-        assert update.get("agent_output") is not None
+        update = await node(state, _runtime(llm=llm))
+        outcome = update.get("agent_output")
+        assert outcome is not None
+        assert "stub" not in outcome.text.lower()

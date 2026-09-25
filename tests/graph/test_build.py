@@ -59,14 +59,19 @@ def test_node_functions_and_fallbacks_declare_the_same_names() -> None:
 
 
 async def test_end_to_end_debug_route_with_zero_llm_calls() -> None:
+    """No sandbox runner is configured for this run, so `run_debug` short-
+    circuits before spending any of the turn's LLM budget (the "zero LLM
+    calls" property this test name promises still holds for the real
+    debugger, not just the retired stub). With no runner, `DebugResult`
+    carries no filler text of its own, so the turn's response is the empty
+    string rather than a stub placeholder."""
     fake = FakeLLMClient()
 
     result = await run_graph(RawInput(text=_DEBUG_TEXT), llm=fake)
 
     assert result.llm_calls == 0
     assert result.state.route == "debug"
-    assert result.state.response is not None
-    assert result.state.response.startswith("[debug stub]")
+    assert result.state.response == ""
     assert result.state.plan is not None
     assert result.state.errors == []
 

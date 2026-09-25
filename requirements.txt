@@ -28,3 +28,5 @@ pyright
 ruff
 docker
 types-docker
+tree-sitter
+tree-sitter-python
