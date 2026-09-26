@@ -513,15 +513,21 @@ def test_retrieval_topic_used_at_the_floor_exactly() -> None:
 
 
 def test_the_floor_admits_every_measured_real_question_score() -> None:
-    """Measured against this corpus and reranker, real questions scored -2.15,
-    -3.25 and +6.63; bare follow-ups scored -8.39, -10.09 and -10.89. The floor
-    must sit in the empty band between those clusters -- this pins that, so a
-    future change to the constant cannot silently start dropping real topics."""
-    real_question_scores = (-2.15, -3.25, 6.63)
-    bare_followup_scores = (-8.39, -10.09, -10.89)
+    """Measured against this corpus and reranker (re-measured for Packet P2,
+    see the `MIN_RETRIEVAL_TOPIC_SCORE` docstring and
+    `tests/graph/test_topic_accuracy.py`): real questions scored -2.15, -2.65,
+    -3.25 and +6.63; bare follow-ups scored -6.96, -8.39, -10.09 and -10.89;
+    and an off-corpus debug turn (a `factorial` bug no corpus pattern covers)
+    scored -5.94, which must land on the *rejected* side of the floor, not
+    the accepted one. The floor must sit in the empty band between the real
+    and no-real-topic clusters -- this pins that, so a future change to the
+    constant cannot silently start dropping real topics or re-admitting
+    no-topic noise."""
+    real_question_scores = (-2.15, -2.65, -3.25, 6.63)
+    no_real_topic_scores = (-5.94, -6.96, -8.39, -10.09, -10.89)
 
     assert all(score >= MIN_RETRIEVAL_TOPIC_SCORE for score in real_question_scores)
-    assert all(score < MIN_RETRIEVAL_TOPIC_SCORE for score in bare_followup_scores)
+    assert all(score < MIN_RETRIEVAL_TOPIC_SCORE for score in no_real_topic_scores)
 
 
 def test_a_profile_match_still_wins_over_a_high_scoring_retrieval_hit() -> None:

@@ -20,8 +20,10 @@ fixed, safe strings for the same reason: never the raw exception text or any
 user-supplied content, either of which might carry secrets or untrusted data.
 """
 
+import ast
 import hashlib
 import logging
+import re
 from collections.abc import Callable, Sequence
 from types import MappingProxyType
 from typing import Final, Protocol, cast
@@ -65,7 +67,7 @@ from app.response.format import SAFE_FALLBACK_RESPONSE
 from app.response.generate import generate_response
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verdict
-from app.schemas.input import StructuredInput
+from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent
 from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import TeachingPlan
@@ -308,26 +310,155 @@ def should_retrieve(state: AgentState) -> bool:
     return not (intent.intent == Intent.CODE_DEBUG and structured.error)
 
 
-def build_retrieval_query(state: AgentState) -> str:
-    """Build the retrieval query text from trusted-shape signal fields only.
+#: A bare identifier ending in `Error`/`Exception` (e.g. `IndexError`), never
+#: the exception message or any other traceback text.
+_EXCEPTION_TYPE_RE: Final = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception))\b")
 
-    Joins (newline-separated) the question and the problem statement -- never
-    `code` or `error` text, which is far more likely to swamp a short
-    knowledge-corpus query with noise. `state.plan` is never consulted: this
-    node now runs *before* `plan_teaching` (see `app.graph.build`), so a plan
-    doesn't exist yet at this point in the graph -- and joining it in was
-    always circular besides (the plan's topic itself needs to be inferred
-    from what retrieval returns). Duplicate parts (e.g. the question repeated
-    in the problem statement) are deduped, order-preserving, so BM25 doesn't
-    over-weight the repeated text. May return "" if neither is present.
+#: Cap on how many identifiers `_extract_identifiers` contributes to a query,
+#: so one large code block still can't swamp the short question/problem text
+#: it's added alongside -- this is a bounded handful of tokens, not the code.
+_MAX_QUERY_IDENTIFIERS: Final = 12
+
+#: Python builtins/keywords common enough in *any* snippet that they carry no
+#: topic signal (and would otherwise show up in nearly every query).
+_IDENTIFIER_STOPWORDS: Final = frozenset(
+    {
+        "self",
+        "cls",
+        "range",
+        "len",
+        "print",
+        "int",
+        "str",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "True",
+        "False",
+        "None",
+        "return",
+    }
+)
+
+
+def _extract_exception_type(error: str | None) -> str | None:
+    """The exception *type name* mentioned in `error`, or `None`.
+
+    Deliberately narrow, per the audit that led to this: only a bare
+    identifier shaped like `SomeError`/`SomeException` is pulled out -- never
+    the exception message or any other traceback text, which is untrusted
+    free text and must not be spliced into a retrieval query verbatim. The
+    *last* match wins, since a full traceback lists the exception that was
+    actually raised on its final line, and code/messages earlier in the text
+    frequently *mention* other exception types (a caught-and-reraised clause,
+    a docstring).
+    """
+    if not error:
+        return None
+    matches = _EXCEPTION_TYPE_RE.findall(error)
+    return matches[-1] if matches else None
+
+
+def _extract_identifiers(code: Sequence[CodeBlock]) -> list[str]:
+    """Function/variable identifier names parsed out of `code` via `ast`.
+
+    Structurally constrained to bare identifier tokens -- function/class
+    names and variable references -- never full source lines, comments, or
+    string/docstring contents, so this is safe to fold into a retrieval query
+    even though `code` itself is untrusted learner input: there is no free
+    text here for a corpus doc or an LLM prompt to misinterpret as
+    instructions, only isolated names like `two_sum` or `dfs`. A block that
+    fails to parse (non-Python, or invalid syntax -- common for buggy learner
+    code) is silently skipped rather than raising: a parse failure must never
+    cost the learner their turn. Order-preserving, deduped, common
+    builtins/keywords filtered out, capped at `_MAX_QUERY_IDENTIFIERS`.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    for block in code:
+        try:
+            tree = ast.parse(block.content)
+        except (SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            name: str | None = None
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                name = node.name
+            elif isinstance(node, ast.Name):
+                name = node.id
+            if (
+                name is None
+                or name in seen
+                or name in _IDENTIFIER_STOPWORDS
+                or name.startswith("__")
+            ):
+                continue
+            seen.add(name)
+            names.append(name)
+            if len(names) >= _MAX_QUERY_IDENTIFIERS:
+                return names
+    return names
+
+
+def build_retrieval_query(state: AgentState) -> str:
+    """Build the retrieval query text from trusted-shape signal fields, plus
+    two narrow, structurally-constrained signals pulled *out of* `code`/`error`.
+
+    The raw `code`/`error` text is still never included: that was the change
+    already tried and reverted, because splicing whole tracebacks and source
+    blocks in swamps a short knowledge-corpus query with noise. What *is*
+    included is two narrow, structurally-constrained signals: an extracted
+    exception *type name* (never the message; see `_extract_exception_type`)
+    and a bounded list of identifier names parsed out of `code` via `ast`
+    (never the source itself; see `_extract_identifiers`) -- a handful of
+    tokens, not the code.
+
+    When there's no `problem` statement -- the common shape for a debug/
+    review turn (`question` + `code` [+ `error`], no full problem text) --
+    and identifiers were found, the query is the identifiers *alone* (plus
+    the exception type), dropping `question`. This was a measured choice,
+    not a guess: reranking `question` alongside the identifiers consistently
+    scored *lower* against the correct corpus doc than the identifiers alone,
+    across every debug/review probe measured (see
+    `tests/graph/test_topic_accuracy.py`). The generic wrapper text nearly
+    every debug/review turn shares ("why does this crash", "can you review
+    this") is a *worse* signal than a handful of the learner's own
+    function/variable names, which are corpus-vocabulary-shaped tokens
+    (`two_sum`, `dfs`, `reverse_list`) a cross-encoder matches far more
+    precisely than it does generic phrasing. This fixed both known misfiles
+    that motivated it: an `IndexError` loop bug filed under `hashing`, and
+    (partially -- see `MIN_RETRIEVAL_TOPIC_SCORE`) a `factorial` off-by-one
+    filed under `binary_search_on_answer`.
+
+    When a `problem` statement *is* present -- the common shape for a DSA
+    turn -- it is always kept (official problem text is the strongest signal
+    available and code, if any, is only a supplementary attempt), combined
+    with `question`, the exception type, and identifiers.
+
+    `state.plan` is never consulted: this node now runs *before*
+    `plan_teaching` (see `app.graph.build`), so a plan doesn't exist yet at
+    this point in the graph -- and joining it in was always circular besides
+    (the plan's topic itself needs to be inferred from what retrieval
+    returns). Duplicate parts (e.g. the question repeated in the problem
+    statement) are deduped, order-preserving, so BM25 doesn't over-weight the
+    repeated text. May return "" if nothing at all is present.
     """
     parts: list[str] = []
     structured = state.structured_input
     if structured is not None:
-        if structured.question:
-            parts.append(structured.question)
+        identifiers = _extract_identifiers(structured.code)
         if structured.problem:
+            if structured.question:
+                parts.append(structured.question)
             parts.append(structured.problem)
+        elif not identifiers and structured.question:
+            parts.append(structured.question)
+        if identifiers:
+            parts.append(" ".join(identifiers))
+        exception_type = _extract_exception_type(structured.error)
+        if exception_type is not None:
+            parts.append(exception_type)
     return "\n".join(dict.fromkeys(parts)).strip()
 
 

@@ -118,17 +118,30 @@ def _best_topic_match(skill_levels: Mapping[str, float], prose_lower: str) -> st
 #: This is NOT an absolute relevance cutoff -- the cross-encoder emits raw
 #: logits that are routinely negative for correct matches, so `score > 0` would
 #: throw away most good answers. It is calibrated to separate "a real question"
-#: from "no question at all", measured against this corpus and reranker:
+#: from "no question at all", measured against this corpus and reranker.
 #:
-#:     real questions   top score  -2.15, -3.25, +6.63
-#:     bare follow-ups  top score  -8.39, -10.09, -10.89
+#: Re-measured for Packet P2 (`app.graph.nodes.build_retrieval_query` now folds
+#: in exception-type/identifier signal for debug/review turns -- see that
+#: function's docstring), against the 30-probe set in
+#: `tests/graph/test_topic_accuracy.py`:
 #:
-#: -6.0 sits in the empty band between those two clusters. It is corpus- and
-#: model-specific: re-measure it if `reranker_model` or the corpus changes.
+#:     real questions              weakest correct top score   -2.65
+#:     bare follow-ups             strongest (still-empty) top score  -6.96
+#:     off-corpus debug turn       top score  -5.94  (a `factorial` bug --
+#:                                 no corpus pattern covers it; correctly
+#:                                 belongs below the floor, not above it)
+#:
+#: -5.0 sits in the band between the weakest real question (-2.65) and the
+#: strongest score that must still be rejected (-5.94), with margin on both
+#: sides. This is *tighter* than the pre-P2 value (-6.0): richer,
+#: identifier-bearing queries push genuine matches to clearly higher scores,
+#: which leaves room to raise the floor and catch more no-real-topic turns
+#: without losing any real one. It is corpus- and model-specific: re-measure
+#: it if `reranker_model`, the corpus, or `build_retrieval_query` changes.
 #: Below the floor the turn simply has no topic, and the hint ladder falls back
 #: to the conversation's most recent one (`app.graph.nodes._hint_topic_key`),
 #: which is the right behaviour for a follow-up.
-MIN_RETRIEVAL_TOPIC_SCORE: Final = -6.0
+MIN_RETRIEVAL_TOPIC_SCORE: Final = -5.0
 
 
 def analyze_problem(
