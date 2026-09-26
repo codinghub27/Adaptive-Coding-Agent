@@ -27,6 +27,10 @@ class CorpusDocument(APIModel):
     topic: str
     aliases: tuple[str, ...]
     body: str = Field(min_length=1)
+    pattern_family: str = ""
+    difficulty: str = ""
+    representative_problems: tuple[str, ...] = ()
+    identification_signals: tuple[str, ...] = ()
 
     @field_validator("topic", "pattern", mode="before")
     @classmethod
@@ -40,6 +44,13 @@ class CorpusDocument(APIModel):
     def _require_nonempty_tag(cls, value: str) -> str:
         if not value:
             raise ValueError("must be non-empty after normalization")
+        return value
+
+    @field_validator("pattern_family", mode="before")
+    @classmethod
+    def _normalize_pattern_family(cls, value: object) -> object:
+        if isinstance(value, str):
+            return slug_tag(value)
         return value
 
 

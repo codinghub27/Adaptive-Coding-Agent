@@ -1,11 +1,14 @@
 """Tests for `app.knowledge.ingest` chunking: `chunk_document`/`chunk_corpus`
 and the payload round-trip helpers."""
 
+import hashlib
+
 import pytest
 
 from app.knowledge.ingest import (
     MAX_CHUNK_CHARS,
     CorpusError,
+    bm25_text,
     chunk_corpus,
     chunk_document,
     chunk_from_payload,
@@ -87,6 +90,101 @@ def test_payload_round_trip_real_corpus() -> None:
     chunks = chunk_corpus(load_corpus())
     for chunk in chunks:
         assert chunk_from_payload(chunk_to_payload(chunk)) == chunk
+
+
+def test_chunk_ids_pinned_for_existing_docs() -> None:
+    """Regression guard: chunk ids for these docs' first two sections are
+    pinned to their current (post-P3c 10-section format) values, so a
+    future change to metadata alone -- as opposed to a heading rename --
+    cannot silently reshuffle ingested chunk ids."""
+    docs = {doc.pattern: doc for doc in load_corpus()}
+    chunks_by_source: dict[str, list[str]] = {}
+    for chunk in chunk_corpus(list(docs.values())):
+        chunks_by_source.setdefault(chunk.source, []).append(chunk.id)
+
+    hashing_ids = chunks_by_source["app/knowledge/corpus/hashing.md"]
+    two_pointers_ids = chunks_by_source["app/knowledge/corpus/two_pointers.md"]
+
+    assert hashing_ids[0] == "82476166-751f-564c-bed4-aeef4a73c2d0"
+    assert hashing_ids[1] == "1c891011-c94f-5e3f-b73e-6d8a66f7ebe2"
+    assert two_pointers_ids[0] == "3103240c-2f00-5060-8cec-985c31b746fb"
+    assert two_pointers_ids[1] == "5c6e5851-2979-5328-a7cb-afaf3037a541"
+
+
+# ---------------------------------------------------------------------------
+# new optional-metadata fields (pattern_family, difficulty,
+# identification_signals, representative_problems)
+# ---------------------------------------------------------------------------
+
+
+def test_chunk_document_omits_new_metadata_keys_when_fields_empty() -> None:
+    """A doc with no optional metadata fields set must not have those keys
+    show up in chunk metadata at all (as opposed to an empty-string value)."""
+    doc = CorpusDocument(
+        source="no_metadata.md",
+        title="No Metadata",
+        pattern="no_metadata_pattern",
+        topic="no_metadata_topic",
+        aliases=("synth",),
+        body="# No Metadata\n\n## Overview\nSome body text.\n",
+    )
+    for chunk in chunk_document(doc):
+        assert "pattern_family" not in chunk.metadata
+        assert "difficulty" not in chunk.metadata
+        assert "identification_signals" not in chunk.metadata
+        assert "representative_problems" not in chunk.metadata
+
+
+def test_chunk_document_includes_new_metadata_keys_when_set() -> None:
+    doc = CorpusDocument(
+        source="synthetic_meta.md",
+        title="Synthetic Meta",
+        pattern="synthetic_meta_pattern",
+        topic="synthetic_meta_topic",
+        aliases=("synth",),
+        body="# Synthetic Meta\n\n## Overview\nSome body text.\n",
+        pattern_family="array_scanning",
+        difficulty="E:5 M:8 H:1",
+        representative_problems=("Two Sum | Easy | url1", "3Sum | Medium | url2"),
+        identification_signals=("sorted array", "two indices"),
+    )
+    chunks = chunk_document(doc)
+    assert len(chunks) == 1
+    metadata = chunks[0].metadata
+    assert metadata["pattern_family"] == "array_scanning"
+    assert metadata["difficulty"] == "E:5 M:8 H:1"
+    assert metadata["identification_signals"] == "sorted array, two indices"
+    assert metadata["representative_problems"] == "Two Sum | Easy | url1 ; 3Sum | Medium | url2"
+    # content_hash must be a hash of the text only, unaffected by metadata.
+    assert (
+        metadata["content_hash"] == hashlib.sha256(chunks[0].text.encode("utf-8")).hexdigest()[:16]
+    )
+
+
+def test_bm25_text_excludes_doc_level_metadata() -> None:
+    """`identification_signals` / `pattern_family` are document-level strings
+    repeated on all ten of a doc's chunks, so indexing them would boost every
+    section of a matching doc equally and narrow the reranker's candidate pool
+    without improving accuracy. They stay in metadata but out of the BM25 text;
+    the signals are still searchable via the doc's own body section."""
+    doc = CorpusDocument(
+        source="synthetic_bm25.md",
+        title="Synthetic BM25",
+        pattern="synthetic_bm25_pattern",
+        topic="synthetic_bm25_topic",
+        aliases=("synth",),
+        body="# Synthetic BM25\n\n## Overview\nSome body text.\n",
+        pattern_family="array_scanning",
+        identification_signals=("sorted array", "two indices"),
+    )
+    chunk = chunk_document(doc)[0]
+    text = bm25_text(chunk)
+    assert "sorted array, two indices" not in text
+    assert "array scanning" not in text
+    # the chunk body, title, aliases and pattern are still indexed
+    assert "Some body text." in text
+    assert "synth" in text
+    assert "synthetic bm25 pattern" in text
 
 
 # ---------------------------------------------------------------------------

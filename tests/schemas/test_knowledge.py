@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas import KnowledgeChunk, RetrievalHit
+from app.schemas.knowledge import CorpusDocument
 
 
 def _make_chunk(**overrides: object) -> KnowledgeChunk:
@@ -82,3 +83,45 @@ def test_retrieval_hit_rejects_extra_field() -> None:
             reranked=False,
             bogus="nope",  # type: ignore[call-arg]
         )
+
+
+def _make_corpus_document(**overrides: object) -> CorpusDocument:
+    params: dict[str, object] = {
+        "source": "corpus/sliding_window.md",
+        "title": "Sliding Window",
+        "pattern": "sliding_window",
+        "topic": "arrays",
+        "aliases": ("window", "subarray"),
+        "body": "# Sliding Window\n\nBody text.",
+    }
+    params.update(overrides)
+    return CorpusDocument(**params)  # type: ignore[arg-type]
+
+
+def test_corpus_document_optional_fields_default_empty() -> None:
+    doc = _make_corpus_document()
+    assert doc.pattern_family == ""
+    assert doc.difficulty == ""
+    assert doc.representative_problems == ()
+    assert doc.identification_signals == ()
+
+
+def test_corpus_document_pattern_family_is_slug_normalized() -> None:
+    doc = _make_corpus_document(pattern_family="Array Scanning")
+    assert doc.pattern_family == "array_scanning"
+
+
+def test_corpus_document_pattern_family_allows_empty() -> None:
+    doc = _make_corpus_document(pattern_family="")
+    assert doc.pattern_family == ""
+
+
+def test_corpus_document_representative_problems_and_identification_signals_roundtrip() -> None:
+    doc = _make_corpus_document(
+        difficulty="E:5 M:8 H:1",
+        representative_problems=("Two Sum | Easy | url1", "3Sum | Medium | url2"),
+        identification_signals=("sorted array", "two indices"),
+    )
+    assert doc.difficulty == "E:5 M:8 H:1"
+    assert doc.representative_problems == ("Two Sum | Easy | url1", "3Sum | Medium | url2")
+    assert doc.identification_signals == ("sorted array", "two indices")

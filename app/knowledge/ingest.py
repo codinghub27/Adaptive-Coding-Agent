@@ -63,7 +63,11 @@ KNOWLEDGE_NAMESPACE: Final = uuid.UUID("7c6e2a1e-3b7a-4b8a-9b0a-1f2e3d4c5b6a")
 _REPO_ROOT: Final[Path] = Path(__file__).parent.parent.parent
 
 _FRONT_MATTER_DELIMITER: Final[str] = "---"
-_EXPECTED_KEYS: Final[frozenset[str]] = frozenset({"title", "pattern", "topic", "aliases"})
+_REQUIRED_KEYS: Final[frozenset[str]] = frozenset({"title", "pattern", "topic", "aliases"})
+_OPTIONAL_KEYS: Final[frozenset[str]] = frozenset(
+    {"pattern_family", "difficulty", "representative_problems", "identification_signals"}
+)
+_EXPECTED_KEYS: Final[frozenset[str]] = _REQUIRED_KEYS | _OPTIONAL_KEYS
 _H1_PATTERN: Final[re.Pattern[str]] = re.compile(r"^# ", flags=re.MULTILINE)
 
 EXPECTED_PATTERNS: Final[frozenset[str]] = frozenset(
@@ -81,6 +85,23 @@ EXPECTED_PATTERNS: Final[frozenset[str]] = frozenset(
         "graphs",
         "trees",
         "heaps",
+        "fast_slow_pointers",
+        "monotonic_stack",
+        "stack",
+        "binary_search_on_answer",
+        "linked_list",
+        "union_find",
+        "topological_sort",
+        "dijkstra",
+        "bellman_ford",
+        "dp_1d",
+        "dp_2d",
+        "intervals",
+        "bit_manipulation",
+        "trie",
+        "divide_and_conquer",
+        "math_geometry",
+        "segment_tree",
     }
 )
 
@@ -123,7 +144,7 @@ def parse_document(text: str, *, source: str) -> CorpusDocument:
             raise CorpusError(f"{source}: unknown front-matter key {key!r}")
         raw[key] = value.strip()
 
-    missing = _EXPECTED_KEYS - raw.keys()
+    missing = _REQUIRED_KEYS - raw.keys()
     if missing:
         raise CorpusError(f"{source}: missing front-matter key(s): {sorted(missing)}")
 
@@ -135,6 +156,16 @@ def parse_document(text: str, *, source: str) -> CorpusDocument:
         raise CorpusError(f"{source}: body has no top-level '# ' heading")
 
     aliases = tuple(alias.strip() for alias in raw["aliases"].split(",") if alias.strip())
+    identification_signals = tuple(
+        signal.strip()
+        for signal in raw.get("identification_signals", "").split(",")
+        if signal.strip()
+    )
+    representative_problems = tuple(
+        problem.strip()
+        for problem in raw.get("representative_problems", "").split(";")
+        if problem.strip()
+    )
 
     return CorpusDocument(
         source=source,
@@ -143,6 +174,10 @@ def parse_document(text: str, *, source: str) -> CorpusDocument:
         topic=raw["topic"],
         aliases=aliases,
         body=body,
+        pattern_family=raw.get("pattern_family", ""),
+        difficulty=raw.get("difficulty", ""),
+        representative_problems=representative_problems,
+        identification_signals=identification_signals,
     )
 
 
@@ -330,6 +365,14 @@ def chunk_document(doc: CorpusDocument) -> list[KnowledgeChunk]:
                 "aliases": ", ".join(doc.aliases),
                 "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
             }
+            if doc.pattern_family:
+                metadata["pattern_family"] = doc.pattern_family
+            if doc.difficulty:
+                metadata["difficulty"] = doc.difficulty
+            if doc.identification_signals:
+                metadata["identification_signals"] = ", ".join(doc.identification_signals)
+            if doc.representative_problems:
+                metadata["representative_problems"] = " ; ".join(doc.representative_problems)
             chunks.append(
                 KnowledgeChunk(
                     id=chunk_id,
@@ -381,7 +424,18 @@ def chunk_from_payload(payload: Mapping[str, object]) -> KnowledgeChunk:
 def bm25_text(chunk: KnowledgeChunk) -> str:
     """The text BM25 indexes for `chunk`: its body plus title/aliases/pattern
     so exact-keyword matches on those also count for the sparse side of
-    retrieval."""
+    retrieval.
+
+    `identification_signals` and `pattern_family` are deliberately NOT folded
+    in. They are document-level strings copied onto all ten of a doc's chunks,
+    and the signals already appear verbatim in that doc's `## Identification
+    Signals` body section, so indexing them again is a constant per-doc boost
+    that cannot discriminate between sections. Measured over the corpus it left
+    BM25 accuracy unchanged (15/15 hit@1, MRR 1.000 either way) while shrinking
+    the distinct patterns in BM25's top-4 from 1.27 to 1.13 and the fused top-10
+    handed to the reranker from 3.00 to 2.78 -- a narrower candidate pool for no
+    gain. The metadata is still carried on every chunk for consumers.
+    """
     aliases = chunk.metadata.get("aliases", "")
     return f"{chunk.text}\n{chunk.title}\n{aliases}\n{chunk.pattern.replace('_', ' ')}"
 

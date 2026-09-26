@@ -24,21 +24,26 @@ TOP_K_HIT = 3
 #: (query, expected pattern). Mixes keyword-heavy queries that share exact
 #: corpus/alias vocabulary (favour BM25) with paraphrases that share almost
 #: no vocabulary with the corpus text (favour dense embeddings).
+#:
+#: Three labels were re-pointed when the corpus grew 13 -> 30 docs: union
+#: find, binary-search-on-answer and weighted-shortest-path now have their
+#: own docs, so `graphs`/`binary_search` were scoring the *better* answer as
+#: a miss. Re-check these labels whenever a doc is split out of an umbrella.
 _LABELED_QUERIES: list[tuple[str, str]] = [
     # -- keyword-style (favour BM25) --
     ("heapq kth largest", "heaps"),
-    ("union find disjoint set", "graphs"),
+    ("union find disjoint set", "union_find"),
     ("memoization overlapping subproblems", "dynamic_programming"),
     ("monotonic deque maximum", "sliding_window"),
     ("hash map frequency dictionary lookup", "hashing"),
-    ("binary search on answer bisect", "binary_search"),
+    ("binary search on answer bisect", "binary_search_on_answer"),
     # -- paraphrase / semantic (favour dense) --
     (
         "I keep getting the wrong middle index and loop forever when searching a sorted list",
         "binary_search",
     ),
     ("explore all subsets and undo choices", "backtracking"),
-    ("cheapest path when edges have costs", "graphs"),
+    ("cheapest path when edges have costs", "dijkstra"),
     ("count subarrays whose total equals a target quickly", "prefix_sum"),
     ("find the closest shared ancestor node between two leaves of a hierarchy", "trees"),
     (
