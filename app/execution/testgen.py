@@ -18,6 +18,14 @@ A wrong test suite is worse than none: it would make the verifier report a
 false failure against otherwise-correct code. Every code path that cannot
 recover a *confident* entrypoint-plus-cases pair returns `None` rather than
 guessing, and nothing here ever raises out to its caller.
+
+`top_level_functions`, `accepts`, and `select_entrypoint` are exported (in
+addition to `extract_test_suite`) because `app.execution.synth` -- the
+LLM-assisted suite synthesizer -- reuses them to pick the learner's real
+entrypoint from an LLM-proposed suite rather than trusting the LLM's
+free-text function name. Sharing them keeps this module's LLM-free guarantee
+intact: `synth.py` only ever calls these read-only `ast`-parsing helpers, it
+never imports anything here that touches an LLM or executes code.
 """
 
 from __future__ import annotations
@@ -32,7 +40,7 @@ from app.agents.debugger import extract_learner_code
 from app.schemas.execution import MAX_TEST_CASES, TestCase, TestSuite
 from app.schemas.input import StructuredInput
 
-__all__ = ["extract_test_suite"]
+__all__ = ["accepts", "extract_test_suite", "select_entrypoint", "top_level_functions"]
 
 _MAX_STATEMENT_CHARS: Final = 20_000
 _MAX_VALUE_CHARS: Final = 2_000
@@ -56,7 +64,7 @@ class _UnsupportedValue(Exception):
 # --------------------------------------------------------------------------
 
 
-def _top_level_functions(code: str | None) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+def top_level_functions(code: str | None) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     """Every top-level `def`/`async def` in the learner's code, in order."""
     if not code:
         return []
@@ -67,7 +75,7 @@ def _top_level_functions(code: str | None) -> list[ast.FunctionDef | ast.AsyncFu
     return [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
 
 
-def _accepts(func: ast.FunctionDef | ast.AsyncFunctionDef, case: TestCase) -> bool:
+def accepts(func: ast.FunctionDef | ast.AsyncFunctionDef, case: TestCase) -> bool:
     """Can `func` actually be called the way `case` describes?
 
     Calling the wrong function is worse than deriving no tests at all: the
@@ -91,7 +99,7 @@ def _accepts(func: ast.FunctionDef | ast.AsyncFunctionDef, case: TestCase) -> bo
     return supplied >= max(required, 0) or args.vararg is not None
 
 
-def _select_entrypoint(
+def select_entrypoint(
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef], cases: list[TestCase]
 ) -> str | None:
     """The public-looking top-level function every case can actually call.
@@ -100,7 +108,7 @@ def _select_entrypoint(
     is the wrong guess. Prefer a non-underscore function that fits all cases;
     fall back to any fitting function; give up rather than pick a misfit.
     """
-    fitting = [f for f in functions if all(_accepts(f, case) for case in cases)]
+    fitting = [f for f in functions if all(accepts(f, case) for case in cases)]
     if not fitting:
         return None
     public = [f for f in fitting if not f.name.startswith("_")]
@@ -281,7 +289,7 @@ def extract_test_suite(problem: StructuredInput | None) -> TestSuite | None:
         return None
 
     try:
-        functions = _top_level_functions(extract_learner_code(problem))
+        functions = top_level_functions(extract_learner_code(problem))
         if not functions:
             return None
 
@@ -294,8 +302,8 @@ def extract_test_suite(problem: StructuredInput | None) -> TestSuite | None:
             return None
 
         # Entrypoint is chosen *after* the cases, so it can be checked against
-        # how they actually call it (see `_select_entrypoint`).
-        entrypoint = _select_entrypoint(functions, cases)
+        # how they actually call it (see `select_entrypoint`).
+        entrypoint = select_entrypoint(functions, cases)
         if entrypoint is None:
             return None
 
