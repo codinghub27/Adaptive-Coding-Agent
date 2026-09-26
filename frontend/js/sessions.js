@@ -27,6 +27,15 @@ export class SessionManager {
   }
 
   async create() {
+    // An untitled session with no messages is already "a new session" — open
+    // it instead of stacking another empty one beside it.
+    const empty = this.conversations.find((item) => item.untitled && !item.messageCount);
+    if (empty) {
+      this.activeId = empty.id;
+      this.render();
+      await this.onSelect(empty);
+      return empty;
+    }
     const conversation = await this.api.createConversation();
     this.conversations.unshift(conversation);
     this.activeId = conversation.id;

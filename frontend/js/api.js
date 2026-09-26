@@ -291,6 +291,15 @@ export const api = {
     return request("/profile", { fallbackError: "Unable to load your learning profile" });
   },
 
+  /** Merge declared learning preferences; returns the full updated profile. */
+  async setPreferences(preferences) {
+    return request("/profile/preferences", {
+      method: "PATCH",
+      body: preferences,
+      fallbackError: "Unable to save that preference",
+    });
+  },
+
   /**
    * The optimistic user bubble. The backend persists both turns itself as part
    * of the /chat turn, so this deliberately makes no request — posting the

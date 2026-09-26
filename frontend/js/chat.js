@@ -5,7 +5,9 @@ import {
   finalizeStreamingMessage,
   messageMarkup,
   renderMessages,
+  renderPreferenceCards,
   renderProfile,
+  renderStreak,
   showProfileModal,
   showToast,
   startStreamingContent,
@@ -141,6 +143,7 @@ async function refreshAfterTurn(firstTurnText) {
       document.querySelector("#chat-title").textContent = updated.title;
     }
     sessionManager.render();
+    renderStreak(conversations);
     state.profile = profile;
     renderProfile(profile);
   } catch {
@@ -242,9 +245,21 @@ function clearAttachment() {
   elements.attachment.innerHTML = "";
 }
 
+/**
+ * One source of truth for "how much help may this turn give".
+ *
+ * The composer's Hint mode button and the top-bar Guidance pill are two views
+ * of the same state, so both are repainted here; previously each moved on its
+ * own and they could disagree.
+ */
 function setAssistanceCap(capped, note) {
   state.assistanceCap = capped ? "hint" : null;
   document.querySelector("#hint-mode")?.classList.toggle("active", capped);
+  document.querySelectorAll(".mode-pill button").forEach((button) => {
+    const isChallenge = button.textContent.trim() === "Challenge";
+    button.classList.toggle("active", isChallenge === capped);
+    button.setAttribute("aria-pressed", String(isChallenge === capped));
+  });
   if (note) showToast(note);
 }
 
@@ -338,6 +353,38 @@ function bindMessageInteractions() {
   });
 }
 
+/** Toggle one declared preference and persist it. */
+async function togglePreference(card) {
+  const key = card?.dataset.preference;
+  if (!key || card.dataset.saving === "true") return;
+  card.dataset.saving = "true";
+  const next = !card.classList.contains("on");
+  try {
+    state.profile = await api.setPreferences({ [key]: next });
+    renderProfile(state.profile);
+    renderPreferenceCards(document.querySelector("[data-profile-preferences]"), state.profile);
+    showToast(next ? "Preference on" : "Preference off");
+  } catch (error) {
+    showToast(error?.message || "Unable to save that preference", "error");
+  } finally {
+    delete card.dataset.saving;
+  }
+}
+
+function bindPreferenceToggles() {
+  document.addEventListener("click", (event) => {
+    const card = event.target.closest(".preference-grid > div[data-preference]");
+    if (card) togglePreference(card);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const card = event.target.closest?.(".preference-grid > div[data-preference]");
+    if (!card) return;
+    event.preventDefault();
+    togglePreference(card);
+  });
+}
+
 async function openProfileModal() {
   const choice = await showProfileModal({
     user: state.user,
@@ -392,10 +439,12 @@ async function initialize() {
   bindComposer();
   bindMessageInteractions();
   bindChrome();
+  bindPreferenceToggles();
   try {
     const [conversations, profile] = await Promise.all([sessionManager.load(), api.getProfile()]);
     state.profile = profile;
     renderProfile(profile);
+    renderStreak(conversations);
     const preferred = localStorage.getItem("adaptive_active_conversation");
     const initial = conversations.find((item) => item.id === preferred) || conversations[0];
     if (initial) await selectConversation(initial);

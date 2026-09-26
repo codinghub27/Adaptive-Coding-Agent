@@ -215,6 +215,71 @@ function preferenceLabels(profile) {
   };
 }
 
+/**
+ * Paint the two preference cards from the stored profile and mark them as
+ * the toggles they now are. `data-preference` carries the flag each card
+ * writes, so the click handler never has to guess from position.
+ */
+export function renderPreferenceCards(grid, profile) {
+  if (!grid) return;
+  const preferences = profile?.learning_preferences || {};
+  const cards = [
+    { key: "likes_step_by_step", on: Boolean(preferences.likes_step_by_step) },
+    { key: "prefers_hints", on: Boolean(preferences.prefers_hints) },
+  ];
+  grid.querySelectorAll(":scope > div").forEach((card, index) => {
+    const spec = cards[index];
+    if (!spec) return;
+    card.dataset.preference = spec.key;
+    card.classList.toggle("on", spec.on);
+    card.setAttribute("role", "button");
+    card.setAttribute("tabindex", "0");
+    card.setAttribute("aria-pressed", String(spec.on));
+    const value = card.querySelector("strong");
+    if (value) {
+      value.textContent = spec.key === "likes_step_by_step"
+        ? (spec.on ? "Step-by-step" : "Balanced")
+        : (spec.on ? "Guided" : "Direct");
+    }
+  });
+}
+
+/**
+ * The learning streak: consecutive days, ending today or yesterday, on which
+ * at least one conversation saw activity. Derived from the conversation list
+ * the sidebar already holds — nothing here is invented.
+ */
+export function renderStreak(conversations = []) {
+  const host = document.querySelector(".usage");
+  if (!host) return;
+
+  const dayKey = (date) => new Date(date).toDateString();
+  const active = new Set(conversations.map((item) => dayKey(item.updatedAt)));
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  let streak = 0;
+  const cursor = new Date(startOfToday);
+  // Yesterday still counts as an unbroken streak until today's first session.
+  if (!active.has(dayKey(cursor))) cursor.setDate(cursor.getDate() - 1);
+  while (active.has(dayKey(cursor))) {
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  const label = host.querySelector("b");
+  if (label) label.textContent = streak === 1 ? "1 day" : `${streak} days`;
+
+  // Seven bars, oldest on the left, lit on the days that saw activity.
+  const bars = host.querySelectorAll(".mini-bars i");
+  bars.forEach((bar, index) => {
+    const day = new Date(startOfToday);
+    day.setDate(day.getDate() - (bars.length - 1 - index));
+    bar.classList.toggle("off", !active.has(dayKey(day)));
+  });
+}
+
 function growthItems(profile) {
   const errors = profile?.common_errors || [];
   if (!errors.length) {
@@ -277,10 +342,7 @@ export function renderProfile(profile) {
     }
   }
 
-  const labels = preferenceLabels(profile);
-  const preferenceCells = document.querySelectorAll(".profile-panel .preference-grid > div strong");
-  if (preferenceCells[0]) preferenceCells[0].textContent = labels.style;
-  if (preferenceCells[1]) preferenceCells[1].textContent = labels.hints;
+  renderPreferenceCards(document.querySelector(".profile-panel .preference-grid"), profile);
 
   const growth = document.querySelector(".profile-panel .growth-list");
   if (growth) growth.innerHTML = growthItems({ ...profile, common_errors: (profile?.common_errors || []).slice(0, 4) });
@@ -309,7 +371,7 @@ export function showProfileModal({ user, profile, conversationCount = 0 }) {
       <div class="profile-identity"><span class="avatar">${escapeHtml(initials)}</span><span><strong id="profile-modal-title">${escapeHtml(user?.username || "Your account")}</strong><small>Member since ${escapeHtml(joined)}</small></span></div>
       <div class="profile-hero"><div class="profile-score"><svg viewBox="0 0 90 90"><circle cx="45" cy="45" r="38"></circle><circle class="score-ring" cx="45" cy="45" r="38" style="stroke-dashoffset:${ringOffset(overall)}"></circle></svg><strong>${overall}<small>%</small></strong></div><div><span>OVERALL FLUENCY</span><h3>${escapeHtml(fluencyBand(overall))}</h3><p>${escapeHtml(sessionNote)}</p></div></div>
       <section class="profile-section"><div class="section-label"><span>Full skill map</span><small>${profile?.language ? escapeHtml(humanizeKey(profile.language)) : "All languages"}</small></div>${skillRows(skills)}</section>
-      <section class="profile-section"><div class="section-label"><span>How you learn best</span></div><div class="preference-grid"><div><i class="steps-icon"></i><span>STYLE</span><strong>${escapeHtml(labels.style)}</strong></div><div><i class="guide-icon"></i><span>HINTS</span><strong>${escapeHtml(labels.hints)}</strong></div></div></section>
+      <section class="profile-section"><div class="section-label"><span>How you learn best</span></div><div class="preference-grid" data-profile-preferences><div><i class="steps-icon"></i><span>STYLE</span><strong>${escapeHtml(labels.style)}</strong></div><div><i class="guide-icon"></i><span>HINTS</span><strong>${escapeHtml(labels.hints)}</strong></div></div></section>
       <section class="profile-section"><div class="section-label"><span>Recurring errors</span></div><ul class="growth-list">${growthItems(profile)}</ul></section>
       <div class="modal-actions"><button data-cancel>Close</button><button class="confirm danger" data-signout>Sign out</button></div>
     </section></div>`;
@@ -318,6 +380,7 @@ export function showProfileModal({ user, profile, conversationCount = 0 }) {
       root.innerHTML = "";
       resolve(result);
     };
+    renderPreferenceCards(root.querySelector("[data-profile-preferences]"), profile);
     root.querySelector("[data-cancel]").addEventListener("click", () => close(null));
     root.querySelector("[data-signout]").addEventListener("click", () => close("signout"));
     root.querySelector(".modal-backdrop").addEventListener("click", (event) => {

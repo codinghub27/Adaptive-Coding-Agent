@@ -149,3 +149,15 @@
 .growth-list small { font-size: 11px; }
 
 .profile-settings { font-size: 11px; }
+
+/* --- Learning streak: bars reflect real activity, not a fixed six -------- */
+.mini-bars i:not(.off) { background: var(--accent); }
+.mini-bars i.off { background: var(--surface-3); }
+
+/* --- Preference cards are real toggles ---------------------------------- */
+.preference-grid > div[data-preference] { cursor: pointer; transition: border-color .15s, background .15s; }
+.preference-grid > div[data-preference]:hover { border-color: var(--line-strong); }
+.preference-grid > div[data-preference]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.preference-grid > div.on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.preference-grid > div.on i { background: var(--accent); border-color: var(--accent); position: relative; }
+.preference-grid > div.on i::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; color: var(--accent-ink); font-size: 12px; font-weight: 700; }

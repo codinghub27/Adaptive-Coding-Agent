@@ -9,7 +9,7 @@ from pydantic import field_validator
 
 from app.schemas.base import APIModel
 
-__all__ = ["LearnerProfileView"]
+__all__ = ["LearnerProfileView", "LearningPreferencesUpdate"]
 
 
 class LearnerProfileView(APIModel):
@@ -32,3 +32,22 @@ class LearnerProfileView(APIModel):
     def empty(cls) -> "LearnerProfileView":
         """A neutral profile view for an unknown/anonymous learner."""
         return cls(language=None, skill_levels={}, learning_preferences={}, common_errors=[])
+
+
+class LearningPreferencesUpdate(APIModel):
+    """Body of `PATCH /profile/preferences`.
+
+    Every field is optional; only the ones supplied are merged into the
+    stored preferences. The keys are declared explicitly rather than taken as
+    a free-form mapping so a caller cannot write arbitrary keys into the
+    profile's JSON column -- these are exactly the flags the teaching planner
+    reads (`app.agents.planner.build_plan`).
+    """
+
+    prefers_hints: bool | None = None
+    likes_step_by_step: bool | None = None
+    wants_line_by_line_explanations: bool | None = None
+
+    def as_mapping(self) -> dict[str, bool]:
+        """The supplied flags only, ready to merge."""
+        return {key: value for key, value in self.model_dump().items() if value is not None}

@@ -21,7 +21,7 @@ from app.memory.conversation import (
     rename_conversation,
     start_conversation,
 )
-from app.memory.profile import get_profile
+from app.memory.profile import get_profile, set_learning_preferences
 from app.schemas.auth import AuthUser
 from app.schemas.conversation import (
     ConversationCreateRequest,
@@ -30,7 +30,7 @@ from app.schemas.conversation import (
     ConversationSummary,
     MessageView,
 )
-from app.schemas.profile import LearnerProfileView
+from app.schemas.profile import LearnerProfileView, LearningPreferencesUpdate
 
 __all__ = ["router"]
 
@@ -128,3 +128,26 @@ async def read_conversation_messages(
         )
     except ConversationNotFoundError:
         raise HTTPException(status_code=404, detail=DETAIL_CONVERSATION_NOT_FOUND) from None
+
+
+@router.patch("/profile/preferences", response_model=LearnerProfileView)
+async def update_learning_preferences(
+    body: LearningPreferencesUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> LearnerProfileView:
+    """Merge the supplied learning preferences into the user's profile.
+
+    These are the learner's own declared preferences, so they are set here
+    rather than inferred from events: the teaching planner reads them when
+    choosing an assistance level. Only the flags present in the body are
+    changed; omitted ones keep their stored value. Returns the full updated
+    view so the caller never has to re-fetch.
+    """
+    updates = body.as_mapping()
+    if not updates:
+        return await get_profile(session, current_user.id)
+
+    view = await set_learning_preferences(session, current_user.id, updates)
+    await session.commit()
+    return view
