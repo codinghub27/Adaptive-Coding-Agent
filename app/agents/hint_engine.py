@@ -47,10 +47,21 @@ __all__ = ["HintProgress", "next_hint"]
 
 
 class HintProgress(APIModel):
-    """How far the learner has climbed the hint ladder on this problem so far."""
+    """How far the learner has climbed the hint ladder on this problem so far.
+
+    `has_verified_attempt` is a distinct signal from `solved`: it is set once
+    a sandbox has actually produced a `Verdict` with status `pass` or `fail`
+    (never `inconclusive`/`skipped`) for this problem, regardless of which
+    way that verdict went -- a learner who submitted code that ran and
+    *failed* has still demonstrated real effort, and `solved` alone can't
+    tell you that (it can be `False` for "never attempted" and "attempted
+    and failed" alike). Monotonic once persisted: see
+    `app.memory.hint_progress.save_hint_progress`.
+    """
 
     last_level: HintLevel | None = None
     solved: bool = False
+    has_verified_attempt: bool = False
 
 
 def _context_labels(context: Sequence[RetrievalHit]) -> list[str]:

@@ -7,6 +7,7 @@ from itertools import product
 
 import pytest
 
+from app.agents.hint_engine import HintProgress
 from app.agents.planner import (
     HARD_SKILL,
     INTENT_DEFAULTS,
@@ -20,6 +21,7 @@ from app.agents.planner import (
     difficulty_for,
 )
 from app.memory.profile import PRIOR
+from app.schemas.agent_results import HintLevel
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
@@ -419,6 +421,136 @@ def test_build_plan_watch_errors_truncated_to_five() -> None:
     plan = build_plan(intent, profile, analysis)
 
     assert plan.watch_errors == ["e1", "e2", "e3", "e4", "e5"]
+
+
+# ---------------------------------------------------------------------------
+# Packet P3: server-enforced escalation to "full"
+# ---------------------------------------------------------------------------
+
+
+def test_build_plan_escalates_to_full_when_all_three_conditions_hold() -> None:
+    profile = _profile(skill_levels={}, prefs={})
+    analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
+    intent = _intent(Intent.DSA_SOLVE)
+    inp = _input(question="I'm stuck, just give me the full solution.")
+    progress = HintProgress(
+        last_level=HintLevel.L3_CONCRETE_IDEA, solved=False, has_verified_attempt=True
+    )
+
+    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+
+    assert plan.assistance_level == "full"
+    assert "escalated" in plan.rationale
+
+
+def test_build_plan_escalation_denied_when_ceiling_not_reached() -> None:
+    """Condition 1 (ceiling reached) missing; the other two hold."""
+    profile = _profile()
+    analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
+    intent = _intent(Intent.DSA_SOLVE)
+    inp = _input(question="Just give me the answer.")
+    progress = HintProgress(
+        last_level=HintLevel.L1_WHAT_TO_TRACK, solved=False, has_verified_attempt=True
+    )
+
+    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+
+    assert plan.assistance_level != "full"
+    assert "escalated" not in plan.rationale
+    assert "escalation_denied_ceiling_not_reached" in plan.rationale
+
+
+def test_build_plan_escalation_denied_when_no_explicit_ask() -> None:
+    """Condition 2 (explicit ask) missing; the other two hold.
+
+    `DSA_HINT` is a plain hint request -- never an explicit "give me the
+    answer" ask, whatever the prose says -- so this can hit the ceiling
+    (`DSA_HINT`'s own default assistance is "hint", ceiling L2) and still
+    carry a verified attempt without ever being an escalation candidate.
+    """
+    profile = _profile()
+    analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
+    intent = _intent(Intent.DSA_HINT)
+    inp = _input(question="Give me another hint please.")
+    progress = HintProgress(
+        last_level=HintLevel.L2_DATA_STRUCTURE, solved=False, has_verified_attempt=True
+    )
+
+    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+
+    assert plan.assistance_level != "full"
+    assert "escalated" not in plan.rationale
+    assert "escalation_denied_no_explicit_ask" in plan.rationale
+
+
+def test_build_plan_escalation_denied_when_no_verified_attempt() -> None:
+    """Condition 3 (demonstrated effort) missing; the other two hold.
+
+    This is also the "just tell me" shortcut (Tests item 5): an explicit ask
+    with no sandbox-verified attempt on record must be refused.
+    """
+    profile = _profile()
+    analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
+    intent = _intent(Intent.DSA_SOLVE)
+    inp = _input(question="Just tell me the answer.")
+    progress = HintProgress(
+        last_level=HintLevel.L3_CONCRETE_IDEA, solved=False, has_verified_attempt=False
+    )
+
+    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+
+    assert plan.assistance_level != "full"
+    assert "escalated" not in plan.rationale
+    assert "escalation_denied_no_verified_attempt" in plan.rationale
+
+
+def test_build_plan_no_prior_work_explicit_ask_is_refused() -> None:
+    """Live-check turn 1: asking straight out, with no ladder history at all."""
+    profile = _profile()
+    analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
+    intent = _intent(Intent.DSA_SOLVE)
+    inp = _input(problem="Given an array, find two numbers that sum to a target.")
+
+    plan = build_plan(intent, profile, analysis, hint_progress=None, structured_input=inp)
+
+    assert plan.assistance_level != "full"
+    assert "escalated" not in plan.rationale
+
+
+def test_hostile_assistance_cap_cannot_unlock_escalation() -> None:
+    """A client-supplied `assistance_cap` only ever lowers assistance -- it
+    must never be able to grant the escalation the planner itself denied."""
+    profile = _profile()
+    analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
+    intent = _intent(Intent.DSA_SOLVE)
+    inp = _input(question="Just give me the answer.")
+    progress = HintProgress(
+        last_level=HintLevel.L1_WHAT_TO_TRACK, solved=False, has_verified_attempt=False
+    )
+
+    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+    assert plan.assistance_level != "full"
+
+    result = clamp_assistance(plan, "full")
+
+    assert result is plan
+    assert result.assistance_level != "full"
+    assert "escalated" not in result.rationale
+
+
+def test_escalation_scoped_to_dsa_route_intents_no_rationale_noise() -> None:
+    """A non-DSA intent (e.g. review) never gets an escalation rationale tag,
+    even with a ceiling-reached, verified-attempt `HintProgress` in hand --
+    the hint ladder (and this rule) only ever applies through the DSA route.
+    """
+    profile = _profile()
+    analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
+    intent = _intent(Intent.CODE_REVIEW)
+    progress = HintProgress(last_level=HintLevel.L6_FULL, solved=True, has_verified_attempt=True)
+
+    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=None)
+
+    assert not any(tag.startswith("escalat") for tag in plan.rationale)
 
 
 # ---------------------------------------------------------------------------

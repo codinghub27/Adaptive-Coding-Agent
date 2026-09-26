@@ -39,7 +39,11 @@ async def get_hint_progress(
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         return HintProgress()
-    return HintProgress(last_level=HintLevel(row.level), solved=row.solved)
+    return HintProgress(
+        last_level=HintLevel(row.level),
+        solved=row.solved,
+        has_verified_attempt=row.has_verified_attempt,
+    )
 
 
 async def get_latest_hint_progress(
@@ -72,12 +76,21 @@ async def save_hint_progress(
     topic: str,
     level: int,
     solved: bool,
+    has_verified_attempt: bool = False,
 ) -> None:
     """Upsert this `(user, conversation, topic)`'s hint-ladder progress.
 
-    Inserts a new row, or updates `level`/`solved` (and `updated_at`) in
-    place if a row already exists for the same `(user_id, conversation_id,
-    topic)` -- there is never more than one row per triple.
+    Inserts a new row, or updates `level`/`solved`/`has_verified_attempt`
+    (and `updated_at`) in place if a row already exists for the same
+    `(user_id, conversation_id, topic)` -- there is never more than one row
+    per triple.
+
+    `has_verified_attempt` is written exactly as passed -- this function does
+    not itself OR it with any prior stored value. Callers that want the
+    monotonic "once true, always true" behaviour documented on
+    `app.agents.hint_engine.HintProgress` (e.g. `app.graph.nodes.dsa_agent`)
+    must read the prior value first and pass forward `already_true or
+    this_turn`.
 
     `updated_at` is set explicitly to `func.now()` in the `SET` clause below:
     the column's `onupdate=func.now()` (see `app.db.models.hint_progress`) is
@@ -93,6 +106,7 @@ async def save_hint_progress(
         topic=topic,
         level=level,
         solved=solved,
+        has_verified_attempt=has_verified_attempt,
     )
     upsert_stmt = insert_stmt.on_conflict_do_update(
         index_elements=[
@@ -103,6 +117,7 @@ async def save_hint_progress(
         set_={
             "level": insert_stmt.excluded.level,
             "solved": insert_stmt.excluded.solved,
+            "has_verified_attempt": insert_stmt.excluded.has_verified_attempt,
             "updated_at": func.now(),
         },
     )

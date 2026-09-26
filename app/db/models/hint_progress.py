@@ -38,6 +38,7 @@ class HintProgress(Base):
     topic: Mapped[str] = mapped_column(String(64), nullable=False)
     level: Mapped[int] = mapped_column(Integer, nullable=False)
     solved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_verified_attempt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -4,8 +4,14 @@ Pure and LLM-free by design (Phase 4 scope): every decision here is a fixed
 rule applied to the classified intent, the learner profile, and a topic/skill
 analysis of the current turn, so it is testable and auditable without a
 model in the loop. The planner only ever proposes assistance up to
-`MAX_INITIAL_ASSISTANCE` on a first turn -- "full" is reached later, by the
-Phase 7 hint ladder as a learner works through progressively stronger hints.
+`MAX_INITIAL_ASSISTANCE` on an ordinary turn -- "full" is normally reached
+only later, by the Phase 7 hint ladder as a learner works through
+progressively stronger hints. The one exception is `build_plan`'s Packet P3
+escalation rule: assistance may jump straight to "full" on a single turn, but
+only when the learner has already been served this problem's hint-ladder
+ceiling, explicitly asks for the solution, and has a sandbox-verified
+pass/fail attempt on record for it. See `build_plan`'s docstring and the
+block it guards for the exact rule.
 """
 
 import re
@@ -13,9 +19,15 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Final, Literal
 
+# `HintProgress` is the hint-ladder's own conversation-state record (see
+# `app.memory.hint_progress`); the planner only ever reads it, never writes
+# it, to decide whether this turn may escalate past `MAX_INITIAL_ASSISTANCE`.
+from app.agents.hint_engine import HintProgress
+
 # `PRIOR` (the neutral starting skill for an unseen topic) is owned by the
 # profile store; the planner reuses it rather than redefining its own.
 from app.memory.profile import PRIOR
+from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE
 from app.schemas.base import APIModel
 from app.schemas.event import Difficulty, slug_tag
 from app.schemas.input import StructuredInput
@@ -25,6 +37,7 @@ from app.schemas.plan import ASSISTANCE_ORDER, AssistanceLevel, SolutionStrategy
 from app.schemas.profile import LearnerProfileView
 
 __all__ = [
+    "DSA_ROUTE_INTENTS",
     "HARD_SKILL",
     "INTENT_DEFAULTS",
     "MAX_INITIAL_ASSISTANCE",
@@ -59,6 +72,53 @@ INTENT_DEFAULTS: Final[Mapping[Intent, tuple[AssistanceLevel, SolutionStrategy]]
         }
     )
 )
+
+#: The intents `app.graph.routing.INTENT_ROUTES` sends to the DSA subgraph --
+#: the only route with a hint ladder, and therefore the only route the
+#: Packet P3 escalation-to-`full` rule ever applies to. Kept in lockstep with
+#: that mapping deliberately (not imported from it): `app.graph.routing`
+#: imports `app.graph.state`, and `app.agents.planner` must stay import-clean
+#: of the graph package, so this is a small, intentional duplication rather
+#: than a dependency in the wrong direction.
+DSA_ROUTE_INTENTS: Final[frozenset[Intent]] = frozenset(
+    {Intent.DSA_SOLVE, Intent.DSA_HINT, Intent.APPROACH_DISCUSSION}
+)
+
+#: Owner-approved policy (Packet P3): a narrow, deterministic phrase match for
+#: "this turn explicitly asks for the solution/answer" -- never an LLM
+#: judgement call over free-form learner text, which could be talked into
+#: firing. Always combined with `intent.intent is Intent.DSA_SOLVE` (see
+#: `_explicit_solution_request`): the classifier already reserves
+#: `DSA_HINT` for an explicit hint/nudge ask, so this regex only needs to
+#: separate a genuine "give me the answer" plea from `DSA_SOLVE`'s *other*
+#: common case -- a bare first problem statement with no ask of its own at
+#: all (see `app.input.intent.rule_intent`).
+_EXPLICIT_ASK_RE: Final = re.compile(
+    r"\b("
+    r"just (?:give|tell|show) me|"
+    r"give me the (?:full |complete |entire )?(?:solution|answer|code)|"
+    r"(?:full|complete|entire) solution|"
+    r"the answer|"
+    r"solve (?:it|this) for me|"
+    r"show me the (?:solution|code|answer)|"
+    r"i give up|"
+    r"tell me the answer"
+    r")\b"
+)
+
+
+def _explicit_solution_request(
+    intent: IntentResult, structured_input: StructuredInput | None
+) -> bool:
+    """This turn explicitly asks for the solution/answer -- condition 2 of 3.
+
+    Deliberately requires BOTH the classifier's categorical `DSA_SOLVE`
+    intent AND a narrow keyword match against the learner's own prose (never
+    an LLM prompt over that prose -- see `_EXPLICIT_ASK_RE`'s docstring).
+    """
+    if intent.intent is not Intent.DSA_SOLVE:
+        return False
+    return bool(_EXPLICIT_ASK_RE.search(_prose(structured_input).lower()))
 
 
 class ProblemAnalysis(APIModel):
@@ -221,8 +281,19 @@ def build_plan(
     intent: IntentResult | None,
     profile: LearnerProfileView,
     analysis: ProblemAnalysis,
+    *,
+    hint_progress: HintProgress | None = None,
+    structured_input: StructuredInput | None = None,
 ) -> TeachingPlan:
-    """Apply the deterministic rule ladder to produce this turn's `TeachingPlan`."""
+    """Apply the deterministic rule ladder to produce this turn's `TeachingPlan`.
+
+    `hint_progress` and `structured_input` feed only the Packet P3
+    escalation rule below (see the block after `capped_initial_assistance`);
+    every other rule in this function is unchanged and neither parameter is
+    consulted before that point. Both default to `None` (treated as "no
+    escalation possible") so every existing caller/test that doesn't pass
+    them keeps its exact prior behaviour.
+    """
     if intent is None or intent.low_confidence:
         rationale = ["no_intent"] if intent is None else ["low_confidence"]
         return TeachingPlan(
@@ -260,6 +331,41 @@ def build_plan(
     if ASSISTANCE_ORDER.index(assistance) > ASSISTANCE_ORDER.index(MAX_INITIAL_ASSISTANCE):
         assistance = MAX_INITIAL_ASSISTANCE
         rationale.append("capped_initial_assistance")
+
+    # --- Packet P3: server-enforced escalation past MAX_INITIAL_ASSISTANCE ---
+    #
+    # Owner-approved policy: assistance may rise to "full" (unlocking hint
+    # ladder rung L6, and with it `DSAResult.code`) only when ALL THREE hold,
+    # for THIS problem:
+    #   1. ceiling reached  -- the learner has already been served the
+    #      highest rung `assistance` (as computed above, before this block)
+    #      allows,
+    #   2. explicit ask     -- this turn is a genuine "give me the answer"
+    #      plea, not just any `DSA_SOLVE` classification,
+    #   3. demonstrated effort -- a sandbox actually ran this learner's code
+    #      on this problem, earlier in its history, and returned pass/fail.
+    #
+    # Scoped to `DSA_ROUTE_INTENTS`: assistance escalation only has any
+    # effect through the DSA hint ladder, so every other intent is left
+    # exactly as today with no rationale noise. If any of the three is
+    # missing, a distinct tag names which one -- the audit trail for "why
+    # did/didn't it give the answer" -- even when the other two hold.
+    if intent.intent in DSA_ROUTE_INTENTS:
+        progress = hint_progress if hint_progress is not None else HintProgress()
+        ceiling = MAX_HINT_LEVEL_FOR_ASSISTANCE[assistance]
+        ceiling_reached = progress.last_level is not None and progress.last_level >= ceiling
+        explicit_ask = _explicit_solution_request(intent, structured_input)
+        verified_attempt = progress.has_verified_attempt
+
+        if ceiling_reached and explicit_ask and verified_attempt:
+            assistance = "full"
+            rationale.append("escalated")
+        elif not ceiling_reached:
+            rationale.append("escalation_denied_ceiling_not_reached")
+        elif not explicit_ask:
+            rationale.append("escalation_denied_no_explicit_ask")
+        else:
+            rationale.append("escalation_denied_no_verified_attempt")
 
     if profile.learning_preferences.get("likes_step_by_step", False):
         step_by_step = True
