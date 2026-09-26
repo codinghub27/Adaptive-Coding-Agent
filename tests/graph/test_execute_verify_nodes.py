@@ -225,16 +225,18 @@ async def test_no_execution_request_leaves_agent_text_untouched_by_execute_and_v
     """Renamed from the retired `..._identical_to_pre_phase6_stub_text`: that
     name asserted a specific Phase 04 stub string. The real guarantee this
     test protects is that `execute_code`/`verify` never rewrite an agent's
-    `response` text when no `execution_request` was set for this turn --
-    proven here by running the same input twice and checking the response is
-    stable and matches the agent output's own text exactly, byte for byte."""
+    output when no `execution_request` was set for this turn -- proven here
+    by checking the Phase 08 response layer's rendered reply still embeds
+    the agent's own hint text verbatim (it no longer matches byte for byte,
+    since the response layer now wraps it in a titled markdown section)."""
     fake = FakeLLMClient(chat_content=_DSA_CHAT_CONTENT)
     result = await run_graph(RawInput(text=_DSA_TEXT), llm=fake)
 
     state = result.state
     assert state.execution_request is None
     assert state.agent_output is not None
-    assert state.response == state.agent_output.text
+    assert state.response is not None
+    assert state.agent_output.text in state.response
 
 
 # --------------------------------------------------------------------------

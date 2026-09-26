@@ -129,6 +129,42 @@ ruff check . && ruff format --check .
 
 ---
 
+## Running the frontend
+
+The Streamlit UI talks to the FastAPI backend over HTTP only. Start the API
+first, then the frontend, in two terminals:
+
+```bash
+# terminal 1: the API (from "Getting started" above)
+uvicorn app.main:app --reload
+
+# terminal 2: the Streamlit UI
+streamlit run frontend/app.py
+```
+
+By default the frontend calls `http://127.0.0.1:8000`. Point it at a
+different backend with `API_BASE_URL`:
+
+```bash
+API_BASE_URL=http://127.0.0.1:8000 streamlit run frontend/app.py
+```
+
+On first run, use the **Register** tab to create an account, then log in — every
+endpoint the UI calls requires a bearer token. Two things are worth knowing:
+
+- **Keep the conversation and topic stable to climb the hint ladder.** Progress
+  is keyed on `(user, conversation, topic)` server-side, so "Show me the next
+  hint" re-sends the same problem on the same conversation. Starting a new
+  conversation restarts the ladder at the first rung.
+- **Debugging needs Docker.** Verified fixes come from running your code in the
+  sandbox; without a reachable Docker daemon the agent still explains the bug but
+  will say it could not verify a fix, rather than claiming one.
+
+Streamlit caches imported modules, so restart it after editing anything under
+`frontend/`.
+
+---
+
 ## Repository layout
 
 ```

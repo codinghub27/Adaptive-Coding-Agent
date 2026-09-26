@@ -126,10 +126,12 @@ async def test_manual_1_debug_turn_for_weak_skill_hint_preferring_learner(
 
     # No sandbox runner is configured for this test (`run_graph` is called
     # without one), so `run_debug` short-circuits before any code executes
-    # and before any filler text of its own -- the response is the empty
-    # string, not a stub placeholder.
+    # and before any filler text of its own; the Phase 08 response layer
+    # still renders the (skipped) verification outcome, so the response is
+    # non-empty rather than a stub placeholder.
     assert state.response is not None
-    assert state.response == ""
+    assert state.response != ""
+    assert "stub" not in state.response.lower()
 
     assert len(state.events) == 1
     event = state.events[0]

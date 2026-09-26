@@ -339,17 +339,24 @@ untouched.
 - **`list_events` pages 50 rows and filters in Python** rather than filtering by
   `conversation_id`/`topic` in SQL. No longer on the hint path (that moved to
   the dedicated store), but still true for other callers.
-- **Duplicate static findings for nested functions:** `_check_unused_and_shadowed`
-  walks into nested `def`s and `generic_visit` then re-visits them, so a finding
-  inside a nested function is emitted twice and double-counted in the event's
-  `errors` list. Scope the walk at function/class boundaries to fix.
-- **Nothing upstream populates `state.execution_request.tests`.** The debugger
-  and reviewer take their `TestSuite` from `state.execution_request.tests`, but
-  no node sets it before the debug/explain routes run, so a real user turn
-  currently degrades to a script-mode run and a "no_tests"/"inconclusive"
-  verdict. Extracting test cases from a natural-language problem statement is a
-  separate feature (Phase 08 or later); Manual Test 2 supplies the suite
-  directly. The degradation is safe -- it never claims a fix it cannot verify.
+- ~~**Duplicate static findings for nested functions.**~~ **FIXED in Phase 08.**
+  `_check_unused_and_shadowed` now walks only its own scope, stopping at nested
+  `def`/`async def`/`class` boundaries, so each finding is emitted once.
+  Regression tests in `tests/agents/test_debugger.py`.
+- ~~**Nothing upstream populates `state.execution_request.tests`.**~~ **FIXED in
+  Phase 08.** `app/execution/testgen.py::extract_test_suite` derives a
+  `TestSuite` from the statement's worked examples (`Input:`/`Output:`, markdown
+  tolerant) plus the entrypoint of the learner's own code, parsing values with
+  `ast.literal_eval` only and returning `None` rather than guessing.
+  `debug_agent` and the review branch of `explain_agent` pass it through;
+  an explicit suite already on the state still wins. Verified end to end against
+  the real stack: `verification=status=pass cases=2/2` on a buggy `two_sum`.
+- **A related, far worse defect was found while verifying that fix, and is also
+  FIXED in Phase 08:** `visit_Compare` zipped `sides` (N+1) against `node.ops`
+  (N) under `strict=True`, so `static_analysis` raised `ValueError` on **any**
+  comparison -- meaning the debugger failed on essentially every real
+  submission, degraded by `safe_node` into a generic apology. The Phase 07 suite
+  was green throughout because no unit test fed it a comparison.
 - **The debugger deliberately runs code twice** (internal exploratory runs plus
   the authoritative outer `execute_code -> verify`). Accepted trade-off, see
   Architecture Decision 4; costs one extra sandbox run per debug turn.

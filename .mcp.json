@@ -13,6 +13,16 @@
         "-y",
         "@playwright/mcp@latest"
       ]
+    },
+    "token-savior": {
+      "type": "stdio",
+      "command": "C:\\tools\\token-savior-venv\\Scripts\\token-savior.exe",
+      "args": [],
+      "env": {
+        "WORKSPACE_ROOTS": "C:\\Users\\srava\\OneDrive\\Documents\\Desktop\\Adaptive coding agent",
+        "TOKEN_SAVIOR_CLIENT": "claude-code",
+        "TOKEN_SAVIOR_PROFILE": "optimized"
+      }
     }
   }
 }

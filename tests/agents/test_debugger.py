@@ -89,7 +89,11 @@ def _passed_result() -> ExecutionResult:
         phase="tests",
         cases=[
             CaseResult(
-                name="c1", passed=True, actual=4, actual_repr="4", actual_sha256=_sha256(4),
+                name="c1",
+                passed=True,
+                actual=4,
+                actual_repr="4",
+                actual_sha256=_sha256(4),
                 duration_ms=1.0,
             )
         ],
@@ -102,7 +106,11 @@ def _failed_result() -> ExecutionResult:
         phase="tests",
         cases=[
             CaseResult(
-                name="c1", passed=False, actual=3, actual_repr="3", actual_sha256=_sha256(3),
+                name="c1",
+                passed=False,
+                actual=3,
+                actual_repr="3",
+                actual_sha256=_sha256(3),
                 duration_ms=1.0,
             )
         ],
@@ -223,6 +231,65 @@ async def test_runner_none_degrades_cleanly() -> None:
 # --------------------------------------------------------------------------
 # Syntactically broken code: tree-sitter fallback still produces findings
 # --------------------------------------------------------------------------
+
+
+def test_unused_variable_in_nested_function_reported_exactly_once() -> None:
+    """Regression: `_check_unused_and_shadowed` must not double-count a finding
+    from a nested `def` (once via the outer function's walk, once via the
+    nested function's own visit)."""
+    code = (
+        "def outer():\n    def inner():\n        unused = 1\n        return 2\n    return inner()\n"
+    )
+    findings = static_analysis(code)
+    messages = [f.message for f in findings if f.message == "'unused' is assigned but never used"]
+    assert messages == ["'unused' is assigned but never used"]
+
+
+def test_unused_variable_in_non_nested_function_unchanged() -> None:
+    code = "def f():\n    unused = 1\n    return 2\n"
+    findings = static_analysis(code)
+    messages = [f.message for f in findings if f.message == "'unused' is assigned but never used"]
+    assert messages == ["'unused' is assigned but never used"]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        pytest.param("def f(x):\n    if x > 0:\n        return 1\n    return 0\n", id="gt"),
+        pytest.param(
+            "def f(d, k):\n    if k in d:\n        return d[k]\n    return None\n", id="in"
+        ),
+        pytest.param("def f(x):\n    return 0 < x < 10\n", id="chained"),
+        pytest.param("def f(x):\n    return x is None\n", id="is-none"),
+        pytest.param("def f(a, b):\n    return a != b\n", id="ne"),
+        pytest.param(
+            "def two_sum(nums, target):\n"
+            "    seen = {}\n"
+            "    for i, n in enumerate(nums):\n"
+            "        if target - n in seen:\n"
+            "            return [seen[target - n], i]\n"
+            "        seen[n] = i\n"
+            "    return []\n",
+            id="realistic-submission",
+        ),
+    ],
+)
+def test_static_analysis_handles_every_comparison_shape(code: str) -> None:
+    """`visit_Compare` zipped `sides` (N+1) against `node.ops` (N) under
+    `strict=True`, so it raised `ValueError` on *any* comparison -- which
+    `safe_node` turned into a generic apology, making the debugger fail on
+    essentially all real submissions while the suite stayed green.
+    """
+    static_analysis(code)  # must not raise
+
+
+def test_static_analysis_still_flags_identity_comparison_against_a_literal() -> None:
+    """The fix must not cost the check its actual purpose."""
+    assert [f.message for f in static_analysis("def f(x):\n    return x is 5\n")] == [
+        "comparing with 'is'/'is not' against a literal value; use '==' or '!=' instead"
+    ]
+    # ...and `is None` remains legitimate, so it is not flagged.
+    assert static_analysis("def f(x):\n    return x is None\n") == []
 
 
 def test_syntactically_broken_code_still_produces_findings_via_tree_sitter() -> None:

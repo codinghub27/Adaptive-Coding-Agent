@@ -63,15 +63,18 @@ async def test_end_to_end_debug_route_with_zero_llm_calls() -> None:
     circuits before spending any of the turn's LLM budget (the "zero LLM
     calls" property this test name promises still holds for the real
     debugger, not just the retired stub). With no runner, `DebugResult`
-    carries no filler text of its own, so the turn's response is the empty
-    string rather than a stub placeholder."""
+    carries no filler text of its own; the Phase 08 response layer still
+    renders what little the sandbox reported (a skipped verdict), so the
+    turn's response is that verification text rather than empty or a stub
+    placeholder."""
     fake = FakeLLMClient()
 
     result = await run_graph(RawInput(text=_DEBUG_TEXT), llm=fake)
 
     assert result.llm_calls == 0
     assert result.state.route == "debug"
-    assert result.state.response == ""
+    assert result.state.response is not None
+    assert "stub" not in result.state.response.lower()
     assert result.state.plan is not None
     assert result.state.errors == []
 

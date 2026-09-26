@@ -27,6 +27,7 @@ reason about (see `app.agents.dsa_solver`'s module docstring), never echoed
 into `DSAResult`'s free-text fields.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from typing import Final, TypedDict
@@ -258,6 +259,27 @@ class DSARunResult:
     execution_request: ExecutionRequest | None
 
 
+def _citation_labels(context: Sequence[RetrievalHit]) -> list[str]:
+    """Human-readable citation labels for the chunks this turn drew on.
+
+    These are shown to the learner, so they must read as sources rather than
+    storage keys: citing `1a9847c1-88f9-5c46-b9b3-4a79ccb3b135` tells a learner
+    nothing. `KnowledgeChunk.title`/`heading` carry the meaning, so a citation
+    becomes e.g. "Sliding Window - Shrinking the window". Duplicates collapse,
+    since several retrieved chunks often share one heading. The groundedness
+    evaluation planned for a later phase reads `state.retrieved_context`
+    directly, so no machine linkage is lost by not emitting ids here.
+    """
+    labels: list[str] = []
+    for hit in context:
+        chunk = hit.chunk
+        parts = [part for part in (chunk.title.strip(), chunk.heading.strip()) if part]
+        label = " - ".join(parts) or chunk.source.strip() or chunk.id
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
 async def run_dsa(
     state: AgentState,
     runtime: Runtime[GraphContext],
@@ -283,7 +305,7 @@ async def run_dsa(
         initial, context=runtime.context
     )
 
-    citations = [hit.chunk.id for hit in state.retrieved_context]
+    citations = _citation_labels(state.retrieved_context)
     result = DSAResult(
         topic=final_state.get("topic"),
         pattern=final_state.get("pattern"),

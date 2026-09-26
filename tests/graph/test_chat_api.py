@@ -23,6 +23,7 @@ from app.config import Settings
 from app.db.session import get_session
 from app.input.api import get_llm
 from app.input.vision import MAX_IMAGE_BYTES
+from app.llm.base import LLMClient
 from app.main import create_app
 from app.memory.conversation import get_recent_context, start_conversation
 from app.memory.profile import ensure_profile, get_profile, set_learning_preferences
@@ -110,7 +111,10 @@ _DEFAULT_TEST_USER = AuthUser(id=uuid4(), handle="test-user", session_id=uuid4()
 @asynccontextmanager
 async def _client_for(
     make_settings: MakeSettings,
-    fake: FakeLLMClient,
+    # Widened from `FakeLLMClient` to the protocol: this helper only passes
+    # `fake` to `dependency_overrides[get_llm]`, and other suites legitimately
+    # supply a different `LLMClient` double (e.g. `_RoutedLLM`).
+    fake: LLMClient,
     session_override: Callable[..., AsyncIterator[Any]] = _stub_session,
     current_user: AuthUser = _DEFAULT_TEST_USER,
 ) -> AsyncGenerator[httpx.AsyncClient]:
@@ -141,9 +145,11 @@ async def test_code_and_indexerror_returns_debug_route_with_zero_llm_calls(
     assert body["plan"]["assistance_level"] is not None
     # No sandbox runner is wired up for this test (`app.state.runner` is
     # unset), so `run_debug` short-circuits before any LLM call and before
-    # producing any filler text of its own -- the response is the empty
-    # string, not a stub placeholder.
-    assert body["response"] == ""
+    # producing any filler text of its own; the Phase 08 response layer
+    # still renders the (skipped) verification outcome, so the response is
+    # non-empty rather than a stub placeholder.
+    assert body["response"] != ""
+    assert "stub" not in body["response"].lower()
     assert body["llm_calls"] == 0
     # No topic could be inferred (empty profile, no topic hint), so
     # `update_learner_model` never builds a learning event for this turn.

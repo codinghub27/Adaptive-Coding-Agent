@@ -229,16 +229,25 @@ async def test_no_problem_skips_llm_but_still_computes_hint() -> None:
     assert len(llm.chat_calls) == 0
 
 
-async def test_citations_come_from_retrieved_context_chunk_ids() -> None:
+async def test_citations_are_human_readable_labels_from_retrieved_context() -> None:
+    """Citations are shown to the learner, so they read as sources rather than
+    storage keys: citing a chunk id like `1a9847c1-88f9-...` tells a learner
+    nothing. Duplicates collapse, since retrieved chunks often share a heading.
+    The groundedness evaluation planned for a later phase reads
+    `state.retrieved_context` directly, so no machine linkage is lost.
+    """
     plan = _plan("hint")
-    hit = RetrievalHit(chunk=_chunk("chunk-1"), score=0.8, retrievers=("bm25",), reranked=False)
+    hits = [
+        RetrievalHit(chunk=_chunk("chunk-1"), score=0.8, retrievers=("bm25",), reranked=False),
+        # Same title/heading, different id -> one label, not two.
+        RetrievalHit(chunk=_chunk("chunk-2"), score=0.7, retrievers=("bm25",), reranked=False),
+    ]
     llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
 
-    run = await run_dsa(
-        _state(plan=plan, problem=_problem(), context=[hit]), _runtime(llm)
-    )
+    run = await run_dsa(_state(plan=plan, problem=_problem(), context=hits), _runtime(llm))
 
-    assert run.result.citations == ["chunk-1"]
+    assert run.result.citations == ["Two Pointers - Overview"]
+    assert "chunk-1" not in run.result.citations
 
 
 async def test_no_untrusted_echo_in_free_text_fields() -> None:

@@ -17,11 +17,11 @@ specialized-agent nodes now flow through `execute_code` -> `verify` (wired via
 skips straight to `final_response` since it never runs code.
 """
 
-from collections.abc import Hashable, Mapping
+from collections.abc import AsyncIterator, Hashable, Mapping
 from dataclasses import dataclass
 from functools import cache
 from types import MappingProxyType
-from typing import Final
+from typing import Final, cast
 from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph  # pyright: ignore[reportMissingTypeStubs]
@@ -51,6 +51,7 @@ from app.graph.nodes import (
     verify_execution,
 )
 from app.graph.routing import ROUTE_NODES, VERIFY_NODES, route_after, verify_after
+from app.graph.stages import DEFAULT_STAGE_LABEL, STAGE_LABELS
 from app.graph.state import AgentState, GraphContext, RawInput
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
@@ -59,10 +60,14 @@ from app.llm.budget import DEFAULT_MAX_LLM_CALLS, BudgetedLLMClient
 __all__ = [
     "NODE_FUNCTIONS",
     "RECURSION_LIMIT",
+    "GraphResultEvent",
     "GraphRunResult",
+    "GraphStageEvent",
+    "GraphStreamEvent",
     "build_graph",
     "get_graph",
     "run_graph",
+    "stream_graph",
 ]
 
 # The graph is a DAG with ~8 steps per turn; this is a guard against an
@@ -158,6 +163,32 @@ class GraphRunResult:
     llm_calls: int
 
 
+def _build_run_context(
+    llm: LLMClient,
+    *,
+    session: AsyncSession | None,
+    user_id: UUID | None,
+    conversation_id: UUID | None,
+    max_llm_calls: int,
+    retriever: Retriever | None,
+    knowledge_top_k: int,
+    runner: CodeRunner | None,
+) -> tuple[BudgetedLLMClient, GraphContext]:
+    """Build the `BudgetedLLMClient` + `GraphContext` pair shared by `run_graph`
+    and `stream_graph`, so the two entry points cannot drift apart."""
+    budgeted = BudgetedLLMClient(llm, max_llm_calls)
+    context = GraphContext(
+        llm=budgeted,
+        session=session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        retriever=retriever,
+        knowledge_top_k=knowledge_top_k,
+        runner=runner,
+    )
+    return budgeted, context
+
+
 async def run_graph(
     raw: RawInput,
     *,
@@ -181,12 +212,12 @@ async def run_graph(
     `app.execution.runner.build_sandbox_runner`) -- `execute_code` degrades
     to a `sandbox_error` result rather than failing the run.
     """
-    budgeted = BudgetedLLMClient(llm, max_llm_calls)
-    context = GraphContext(
-        llm=budgeted,
+    budgeted, context = _build_run_context(
+        llm,
         session=session,
         user_id=user_id,
         conversation_id=conversation_id,
+        max_llm_calls=max_llm_calls,
         retriever=retriever,
         knowledge_top_k=knowledge_top_k,
         runner=runner,
@@ -198,3 +229,78 @@ async def run_graph(
     )
     state = AgentState.model_validate(result)
     return GraphRunResult(state=state, llm_calls=budgeted.calls)
+
+
+@dataclass(frozen=True, slots=True)
+class GraphStageEvent:
+    """One node's arrival, emitted while `stream_graph` is still running."""
+
+    node: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class GraphResultEvent:
+    """The terminal event `stream_graph` yields exactly once, at the end."""
+
+    result: GraphRunResult
+
+
+GraphStreamEvent = GraphStageEvent | GraphResultEvent
+
+
+async def stream_graph(
+    raw: RawInput,
+    *,
+    llm: LLMClient,
+    session: AsyncSession | None = None,
+    user_id: UUID | None = None,
+    conversation_id: UUID | None = None,
+    max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
+    retriever: Retriever | None = None,
+    knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K,
+    runner: CodeRunner | None = None,
+) -> AsyncIterator[GraphStreamEvent]:
+    """Run the teaching graph once, yielding a `GraphStageEvent` as each node
+    finishes and exactly one terminal `GraphResultEvent` at the end.
+
+    Mirrors `run_graph`'s semantics exactly (same budgeted LLM client, same
+    context, never commits `session`) but drives `get_graph().astream(...)`
+    with `stream_mode=["updates", "values"]` instead of `ainvoke` so callers
+    can surface progress. Node names from `"updates"` chunks are used only to
+    build `GraphStageEvent`s (never their payloads, which may carry untrusted
+    state) -- see `app.graph.stages` for the fixed label lookup callers are
+    expected to pair this with.
+    """
+    budgeted, context = _build_run_context(
+        llm,
+        session=session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        max_llm_calls=max_llm_calls,
+        retriever=retriever,
+        knowledge_top_k=knowledge_top_k,
+        runner=runner,
+    )
+
+    last_values: dict[str, object] | None = None
+    stream = get_graph().astream(  # pyright: ignore[reportUnknownMemberType]
+        AgentState(input=raw),
+        config={"recursion_limit": RECURSION_LIMIT, "run_name": "teaching_graph"},
+        context=context,
+        stream_mode=["updates", "values"],
+    )
+    async for mode, chunk in stream:
+        mode = cast("str", mode)
+        if mode == "updates":
+            update = cast("Mapping[str, object]", chunk)
+            for node in update:
+                yield GraphStageEvent(node=node, label=STAGE_LABELS.get(node, DEFAULT_STAGE_LABEL))
+        elif mode == "values":
+            last_values = cast("dict[str, object]", chunk)
+
+    if last_values is None:
+        raise RuntimeError("stream_graph: no 'values' chunk was ever emitted")
+
+    state = AgentState.model_validate(last_values)
+    yield GraphResultEvent(GraphRunResult(state=state, llm_calls=budgeted.calls))

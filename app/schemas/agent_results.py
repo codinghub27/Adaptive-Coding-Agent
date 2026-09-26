@@ -22,7 +22,7 @@ callers must use to compute each turn's ceiling.
 from collections.abc import Mapping
 from enum import IntEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import Field, model_validator
 
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 __all__ = [
     "solved_from_verdict",
     "MAX_HINT_LEVEL_FOR_ASSISTANCE",
+    "AgentResult",
     "BugLocation",
     "CodeStructureNode",
     "DSAResult",
@@ -128,6 +129,10 @@ class DSAResult(APIModel):
     (untrusted) problem statement and code; treat them as display-only data.
     """
 
+    # Discriminator for the `AgentResult` union below -- required because the
+    # four result models otherwise have all-optional fields, which would make
+    # an untagged union ambiguous on revalidation.
+    kind: Literal["dsa"] = "dsa"
     topic: str | None = Field(default=None, max_length=64)
     pattern: str | None = Field(default=None, max_length=64)
     hint: HintResult | None = None
@@ -203,6 +208,8 @@ class DebugResult(APIModel):
     `final_verdict.status == "pass"`, never from an LLM's own claim.
     """
 
+    # Discriminator for the `AgentResult` union below -- see `DSAResult.kind`.
+    kind: Literal["debug"] = "debug"
     static_findings: list[StaticFinding] = Field(default_factory=list[StaticFinding])
     inferred_approach: str | None = None
     failing_case: str | None = None
@@ -270,6 +277,8 @@ class LineExplanation(APIModel):
 class ExplainResult(APIModel):
     """Structured output of the code-explanation pipeline for a turn."""
 
+    # Discriminator for the `AgentResult` union below -- see `DSAResult.kind`.
+    kind: Literal["explain"] = "explain"
     structure: CodeStructureNode | None = None
     line_explanations: list[LineExplanation] = Field(default_factory=list[LineExplanation])
     complexity_time: str | None = None
@@ -317,6 +326,8 @@ class ReviewFinding(APIModel):
 class ReviewResult(APIModel):
     """Structured output of the code-review pipeline for a turn."""
 
+    # Discriminator for the `AgentResult` union below -- see `DSAResult.kind`.
+    kind: Literal["review"] = "review"
     correctness_verdict: Verdict | None = None
     findings: list[ReviewFinding] = Field(default_factory=list[ReviewFinding])
 
@@ -349,3 +360,16 @@ class ReviewResult(APIModel):
                 finding.message for finding in self.findings if finding.severity == "major"
             ],
         )
+
+
+AgentResult = Annotated[
+    DSAResult | DebugResult | ExplainResult | ReviewResult, Field(discriminator="kind")
+]
+"""The discriminated union of all Phase 07 agent results, tagged by `kind`.
+
+Used by `AgentState.agent_result` so the Phase 08 response layer receives the
+full structured result (not the lossy `AgentOutcome` projection), and so it
+round-trips through `model_dump()`/`model_validate()` (as `run_graph` does)
+without ambiguity -- all four member models have otherwise all-optional
+fields, so an untagged union would silently coerce to the wrong type.
+"""

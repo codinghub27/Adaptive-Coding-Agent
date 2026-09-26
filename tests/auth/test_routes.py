@@ -249,10 +249,18 @@ async def test_login_persists_hashed_refresh_token_without_raw_values(
         response = await _login(client, handle)
 
     body = response.json()
-    row = (await db_session.execute(select(RefreshToken))).scalars().one()
-    assert row.token_hash == hash_token(body["refresh_token"])
-
     user_row = (await db_session.execute(select(User).where(User.handle == handle))).scalar_one()
+
+    # Scoped to the user this test just registered: an unfiltered select
+    # assumes a globally empty `refresh_tokens` table, which is false on any
+    # dev DB that has been used (the fixture rolls back its own rows, not
+    # pre-existing ones).
+    row = (
+        (await db_session.execute(select(RefreshToken).where(RefreshToken.user_id == user_row.id)))
+        .scalars()
+        .one()
+    )
+    assert row.token_hash == hash_token(body["refresh_token"])
 
     for column in RefreshToken.__table__.columns:
         value = str(getattr(row, column.name))

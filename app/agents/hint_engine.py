@@ -66,15 +66,38 @@ def _context_labels(context: Sequence[RetrievalHit]) -> list[str]:
     return seen
 
 
+def _humanize(label: str) -> str:
+    """Turn an internal slug (`sliding_window`) into prose (`sliding window`).
+
+    Topic/pattern labels are storage slugs; showing them raw to a learner
+    leaks internal formatting into the teaching voice.
+    """
+    return label.replace("_", " ").replace("-", " ").strip()
+
+
+def _shape_hint(topic: str | None, context_labels: Sequence[str]) -> str:
+    """Pick a data-structure hint that says something the topic has not.
+
+    The first retrieved label is often *the topic itself*, which produced the
+    self-referential "For a sliding_window problem, sliding_window is often
+    the right shape". Only a label that differs from the topic adds
+    information; otherwise fall back to the generic phrasing.
+    """
+    topic_key = (topic or "").replace("_", " ").replace("-", " ").strip().casefold()
+    for label in context_labels:
+        if _humanize(label).casefold() != topic_key:
+            return _humanize(label)
+    return "a structure that supports fast lookups or ordered access"
+
+
 def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[str]) -> str:
     """Compose the guidance-level text for one ladder rung.
 
     Built only from `plan`'s structured fields and `context_labels`; never
     from the learner's raw question/problem/code/error text.
     """
-    topic = plan.topic or "this problem"
+    topic = _humanize(plan.topic) if plan.topic else "this problem"
     watch = ", ".join(plan.watch_errors) if plan.watch_errors else None
-    pattern_hint = context_labels[0] if context_labels else None
 
     if level == HintLevel.L0_NUDGE:
         return (
@@ -95,7 +118,7 @@ def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[st
         return text
 
     if level == HintLevel.L2_DATA_STRUCTURE:
-        shape = pattern_hint or "a structure that supports fast lookups or ordered access"
+        shape = _shape_hint(plan.topic, context_labels)
         return (
             f"Consider what data structure would let you track that state "
             f"efficiently. For a {topic} problem, {shape} is often the right shape "

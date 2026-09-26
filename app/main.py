@@ -32,6 +32,7 @@ from app.knowledge.ingest import CorpusError
 from app.knowledge.retrieve import create_retriever
 from app.llm import get_llm_client
 from app.llm.client import Tracer
+from app.memory.api import router as memory_router
 from app.schemas import HealthResponse
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(input_router)
     app.include_router(chat_router)
     app.include_router(auth_router)
+    app.include_router(memory_router)
 
     @app.get("/health", response_model=HealthResponse)
     async def health(request: Request) -> JSONResponse:

@@ -340,7 +340,9 @@ def _is_fixed(verdict: Verdict | None) -> bool:
     return verdict is not None and verdict.status == "pass"
 
 
-async def run_debug(state: AgentState, runtime: Runtime[GraphContext]) -> DebugRunResult:
+async def run_debug(
+    state: AgentState, runtime: Runtime[GraphContext], *, tests: TestSuite | None = None
+) -> DebugRunResult:
     """Run the debugger subgraph for this turn and map the result back.
 
     `runtime.context.runner is None` (sandbox disabled/unavailable) short-circuits
@@ -348,6 +350,10 @@ async def run_debug(state: AgentState, runtime: Runtime[GraphContext]) -> DebugR
     `DebugResult` whose `initial_verdict`/`final_verdict` are both the
     verifier's own "skipped" output and `fixed=False`: never raises, never
     claims a fix, never spends the run's LLM budget on an unverifiable guess.
+
+    `state.execution_request.tests`, when already set, always wins over the
+    `tests` parameter -- callers that already have a real `ExecutionRequest`
+    on the state must not be overridden by a caller-derived fallback suite.
     """
     if runtime.context.runner is None:
         skipped = verify(None)
@@ -357,7 +363,9 @@ async def run_debug(state: AgentState, runtime: Runtime[GraphContext]) -> DebugR
         )
 
     problem = state.structured_input
-    available_tests = state.execution_request.tests if state.execution_request is not None else None
+    available_tests = (
+        state.execution_request.tests if state.execution_request is not None else None
+    ) or tests
     initial: DebugState = {
         "problem": problem,
         "code": extract_learner_code(problem),

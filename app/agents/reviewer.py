@@ -528,7 +528,9 @@ class ReviewRunResult:
     execution_request: ExecutionRequest | None
 
 
-async def review_code(state: AgentState, runtime: Runtime[GraphContext]) -> ReviewRunResult:
+async def review_code(
+    state: AgentState, runtime: Runtime[GraphContext], *, tests: TestSuite | None = None
+) -> ReviewRunResult:
     """Run the code-review pipeline for this turn.
 
     Correctness is checked in the sandbox first (grounding
@@ -538,10 +540,15 @@ async def review_code(state: AgentState, runtime: Runtime[GraphContext]) -> Revi
     edge-case/improvement suggestions. Degrades gracefully at every stage:
     no runner, no tests, or an `LLMError` never crashes this function and
     never fabricates a correctness claim.
+
+    `state.execution_request.tests`, when already set, always wins over the
+    `tests` parameter (mirrors `app.graph.subgraphs.debug.run_debug`).
     """
     problem = state.structured_input
     code = extract_learner_code(problem)
-    tests = state.execution_request.tests if state.execution_request is not None else None
+    tests = (
+        state.execution_request.tests if state.execution_request is not None else None
+    ) or tests
 
     correctness_verdict, execution_request = await _correctness(code, tests, runtime.context.runner)
 

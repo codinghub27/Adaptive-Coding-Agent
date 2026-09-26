@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.execution.base import CodeRunner
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
+from app.schemas.agent_results import AgentResult
 from app.schemas.base import APIModel
 from app.schemas.conversation import MessageView
 from app.schemas.event import LearningEventCreate
@@ -29,6 +30,7 @@ from app.schemas.intent import IntentResult
 from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
+from app.schemas.response import GeneratedResponse
 
 __all__ = [
     "AgentOutcome",
@@ -64,6 +66,11 @@ class AgentOutcome(APIModel):
     A stub today; a full subgraph in Phase 07. `solved=None` means no
     observed outcome, so the caller must not persist a learning event for
     this turn.
+
+    This is a **lossy projection** of a Phase 07 agent's full result (see
+    `app.schemas.agent_results.AgentResult`), used for learning events and as
+    a degraded fallback. The full structured result consumed by the Phase 08
+    response layer lives on `AgentState.agent_result`.
     """
 
     text: str
@@ -93,6 +100,10 @@ class AgentState(BaseModel):
     Frozen: nodes must never mutate this in place. Each node returns a
     partial `AgentStateUpdate`; LangGraph merges it into a new `AgentState`
     (using the `operator.add` reducers for `events` and `errors`).
+
+    `agent_output` is the lossy `AgentOutcome` projection used for learning
+    events; `agent_result` is the full structured `AgentResult` consumed by
+    the Phase 08 response layer.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -109,7 +120,9 @@ class AgentState(BaseModel):
     verification: Verdict | None = None
     route: RouteKey | None = None
     agent_output: AgentOutcome | None = None
+    agent_result: AgentResult | None = None
     response: str | None = None
+    generated_response: GeneratedResponse | None = None
     events: Annotated[list[LearningEventCreate], operator.add] = Field(
         default_factory=list[LearningEventCreate]
     )
@@ -132,7 +145,9 @@ class AgentStateUpdate(TypedDict, total=False):
     verification: Verdict | None
     route: RouteKey | None
     agent_output: AgentOutcome | None
+    agent_result: AgentResult | None
     response: str | None
+    generated_response: GeneratedResponse | None
     events: list[LearningEventCreate]
     events_persisted: list[UUID]
     errors: list[NodeError]

@@ -126,6 +126,15 @@ _DSA_SLIDING_WINDOW_TEXT = (
     "- 0 <= s.length <= 5 * 10^4\n"
 )
 
+#: `FakeLLMClient` returns one canned string for *every* `chat()` call, and it
+#: asserts when given none. A `dsa` route reaches the DSA solver, which makes a
+#: real LLM call, so the DSA tests below must supply one -- otherwise the solver
+#: raises inside `dsa_agent`, `safe_node` degrades it to a `NodeError`, and the
+#: turn silently reports a fallback instead of the behaviour under test. The
+#: payload only has to be parseable; these tests assert on retrieval, not on
+#: solver output.
+_FAKE_CHAT_CONTENT = '{"intent": "DSA_SOLVE", "confidence": 0.95, "rationale": "clear"}'
+
 _DEBUG_RULE_TEXT = (
     "```python\n"
     "def get_item(items, idx):\n"
@@ -139,7 +148,7 @@ _DEBUG_RULE_TEXT = (
 async def test_manual_2a_dsa_solve_retrieves_sliding_window_context(
     live_retriever: Retriever,
 ) -> None:
-    fake = FakeLLMClient()
+    fake = FakeLLMClient(chat_content=_FAKE_CHAT_CONTENT)
     raw = RawInput(text=_DSA_SLIDING_WINDOW_TEXT, topic_hint="sliding_window")
 
     result = await run_graph(raw, llm=fake, retriever=live_retriever, knowledge_top_k=4)
@@ -154,6 +163,9 @@ async def test_manual_2a_dsa_solve_retrieves_sliding_window_context(
     )
 
     assert state.route == "dsa"
+    # Guards the gap that let a degraded DSA turn pass unnoticed here while
+    # test 2c (which does assert on errors) failed.
+    assert state.errors == []
     assert state.retrieved_context
     assert state.retrieved_context[0].chunk.pattern == "sliding_window"
     for hit in state.retrieved_context:
@@ -184,7 +196,7 @@ async def test_manual_2b_runtime_error_debug_skips_retrieval(
 async def test_manual_2c_dead_qdrant_degrades_to_bm25_only(
     dead_qdrant_retriever: Retriever,
 ) -> None:
-    fake = FakeLLMClient()
+    fake = FakeLLMClient(chat_content=_FAKE_CHAT_CONTENT)
     raw = RawInput(text=_DSA_SLIDING_WINDOW_TEXT, topic_hint="sliding_window")
 
     result = await run_graph(raw, llm=fake, retriever=dead_qdrant_retriever, knowledge_top_k=4)

@@ -117,6 +117,30 @@ def _is_len_plus_one(node: ast.expr) -> bool:
     )
 
 
+def _iter_own_scope(node: ast.AST) -> Sequence[ast.AST]:
+    """Descendants of `node`'s own function/class scope only.
+
+    Like `ast.walk(node)` but does not descend into nested `def`/`async def`/
+    `class` bodies -- those are separate scopes with their own name binding,
+    and (for functions) are visited independently via `visit_FunctionDef` /
+    `visit_AsyncFunctionDef`. Without this boundary, a name assigned inside a
+    nested function would be counted both here (via the outer function's
+    walk) and again when the nested function is visited on its own,
+    double-reporting the same finding.
+    """
+    result: list[ast.AST] = []
+
+    def _walk(current: ast.AST) -> None:
+        for child in ast.iter_child_nodes(current):
+            result.append(child)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            _walk(child)
+
+    _walk(node)
+    return result
+
+
 class _StaticVisitor(ast.NodeVisitor):
     """Single-pass `ast` visitor collecting a small, defensible set of findings:
     unused/shadowed names, suspicious `is`/`is not` comparisons, off-by-one-prone
@@ -136,7 +160,8 @@ class _StaticVisitor(ast.NodeVisitor):
 
     def _check_unused_and_shadowed(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         assigned: dict[str, int] = {}
-        for child in ast.walk(node):
+        scope = list(_iter_own_scope(node))
+        for child in scope:
             if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
                 if not child.id.startswith("_"):
                     assigned.setdefault(child.id, child.lineno)
@@ -149,6 +174,17 @@ class _StaticVisitor(ast.NodeVisitor):
                             severity="minor",
                         )
                     )
+        # Reads are collected from the FULL subtree (`ast.walk`), not the
+        # scoped walk used for `assigned`. A closure reads its enclosing
+        # function's bindings from a nested `def`, so scoping this too would
+        # report every closed-over variable as dead:
+        #     def make_counter(start):
+        #         total = start        # <- read only by `bump` below
+        #         def bump(n):
+        #             return total + n
+        #         return bump
+        # Scoping `assigned` is what fixes the double-report; scoping `loaded`
+        # would be a different bug.
         loaded = {
             child.id
             for child in ast.walk(node)
@@ -166,8 +202,13 @@ class _StaticVisitor(ast.NodeVisitor):
                 )
 
     def visit_Compare(self, node: ast.Compare) -> None:  # noqa: N802
+        # An `ast.Compare` has N ops and N comparators, so `sides` holds N+1
+        # expressions and op `i` joins `sides[i]` to `sides[i + 1]`. Zipping
+        # `sides` (N+1) rather than `sides[:-1]` (N) made every one of these
+        # lengths disagree, and `strict=True` then raised on *any* comparison
+        # -- which `safe_node` degraded into a generic apology, hiding it.
         sides: list[ast.expr] = [node.left, *node.comparators]
-        for op, left, right in zip(node.ops, sides, sides[1:], strict=True):
+        for op, left, right in zip(node.ops, sides[:-1], sides[1:], strict=True):
             if isinstance(op, (ast.Is, ast.IsNot)):
                 for side in (left, right):
                     if isinstance(side, ast.Constant) and _is_flaggable_literal(side.value):

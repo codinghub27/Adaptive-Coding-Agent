@@ -13,7 +13,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 [tool.pyright]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
-include = ["app", "tests"]
+include = ["app", "tests", "frontend"]
 exclude = ["venv", "alembic"]
 venvPath = "."
 venv = "venv"

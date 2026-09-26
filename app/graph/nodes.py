@@ -31,6 +31,7 @@ from langgraph.runtime import Runtime
 from app.agents.hint_engine import HintProgress
 from app.agents.planner import INTENT_DEFAULTS, analyze_problem, build_plan
 from app.agents.reviewer import review_code
+from app.execution.testgen import extract_test_suite
 from app.execution.verification import verify as verify_result
 from app.graph.routing import select_route
 from app.graph.state import (
@@ -51,6 +52,8 @@ from app.memory.conversation import add_turn, get_recent_context
 from app.memory.events import record_event, requested_help_for
 from app.memory.hint_progress import get_hint_progress, save_hint_progress
 from app.memory.profile import PRIOR, get_profile
+from app.response.format import SAFE_FALLBACK_RESPONSE
+from app.response.generate import generate_response
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, Verdict
 from app.schemas.intent import Intent
@@ -402,7 +405,10 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     ctx = runtime.context
     progress = await resolve_hint_progress(state, ctx)
     run = await run_dsa(state, runtime, progress=progress)
-    update: AgentStateUpdate = {"agent_output": run.result.to_outcome()}
+    update: AgentStateUpdate = {
+        "agent_output": run.result.to_outcome(),
+        "agent_result": run.result,
+    }
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request
 
@@ -433,9 +439,19 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
 
 
 async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
-    """Run the debugger subgraph for this turn."""
-    run = await run_debug(state, runtime)
-    update: AgentStateUpdate = {"agent_output": run.result.to_outcome()}
+    """Run the debugger subgraph for this turn.
+
+    `extract_test_suite` derives a fallback `TestSuite` from the learner's own
+    problem statement + code (deterministic, no LLM) so a real debug turn can
+    still verify a fix even when nothing earlier in the graph populated
+    `state.execution_request.tests` -- that still wins when present.
+    """
+    tests = extract_test_suite(state.structured_input)
+    run = await run_debug(state, runtime, tests=tests)
+    update: AgentStateUpdate = {
+        "agent_output": run.result.to_outcome(),
+        "agent_result": run.result,
+    }
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request
     return update
@@ -450,14 +466,21 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     intents route to this node, but need the reviewer's pipeline instead)."""
     intent = state.intent
     if intent is not None and intent.intent in _REVIEW_INTENTS:
-        review_run = await review_code(state, runtime)
-        update: AgentStateUpdate = {"agent_output": review_run.result.to_outcome()}
+        tests = extract_test_suite(state.structured_input)
+        review_run = await review_code(state, runtime, tests=tests)
+        update: AgentStateUpdate = {
+            "agent_output": review_run.result.to_outcome(),
+            "agent_result": review_run.result,
+        }
         if review_run.execution_request is not None:
             update["execution_request"] = review_run.execution_request
         return update
 
     explain_run = await run_explain(state, runtime)
-    update = {"agent_output": explain_run.result.to_outcome()}
+    update = {
+        "agent_output": explain_run.result.to_outcome(),
+        "agent_result": explain_run.result,
+    }
     if explain_run.execution_request is not None:
         update["execution_request"] = explain_run.execution_request
     return update
@@ -585,21 +608,23 @@ async def clarify(state: AgentState, runtime: Runtime[GraphContext]) -> AgentSta
 
 # --- final_response -----------------------------------------------------------
 
-SAFE_FALLBACK_RESPONSE: Final = (
-    "I wasn't able to put together a full response for that -- could you try again?"
-)
-
 
 async def final_response(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
-    """Surface the specialized agent's text as this turn's response.
+    """Assemble the final learner-facing reply from this turn's agent result.
 
-    Phase 08 replaces this with real response generation (tone, formatting,
-    etc.); today it's a pass-through of `agent_output.text`.
+    Delegates to the pure, LLM-free `app.response.generate.generate_response`,
+    which selects and arranges the prose already produced by the Phase 07
+    agent according to this turn's `TeachingPlan` -- it never generates new
+    content and never reveals code above the turn's assistance level.
     """
     del runtime
-    agent_output = state.agent_output
-    response = agent_output.text if agent_output is not None else SAFE_FALLBACK_RESPONSE
-    return {"response": response}
+    generated = generate_response(
+        result=state.agent_result,
+        plan=state.plan,
+        verification=state.verification,
+        fallback_text=state.agent_output.text if state.agent_output is not None else None,
+    )
+    return {"response": generated.text, "generated_response": generated}
 
 
 def _final_response_fallback(state: AgentState) -> AgentStateUpdate:

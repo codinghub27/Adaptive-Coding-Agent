@@ -61,7 +61,10 @@ async def test_create_refresh_token_never_stores_raw_token(db_session: AsyncSess
     user_id = await _make_user(db_session)
     _, token, _ = await _make_token(db_session, user_id=user_id)
 
-    result = await db_session.execute(select(RefreshToken))
+    # Scoped to this test's own user: an unfiltered select assumes a globally
+    # empty `refresh_tokens` table, which is false on any dev DB that has been
+    # used (the fixture rolls back its own rows, not pre-existing ones).
+    result = await db_session.execute(select(RefreshToken).where(RefreshToken.user_id == user_id))
     row = result.scalar_one()
 
     for column in RefreshToken.__table__.columns:

@@ -202,6 +202,55 @@ async def test_debug_agent_with_runner_and_code_sets_execution_request() -> None
     assert "stub" not in outcome.text.lower()
 
 
+async def test_debug_agent_threads_extracted_tests_into_sandbox_request() -> None:
+    """A debug turn whose `structured_input` carries worked examples must reach
+    the sandbox with a derived `TestSuite` (Phase 07 Known Issue defect 1),
+    even though nothing earlier in the graph populated `state.execution_request`.
+    """
+    statement = "Example 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\n"
+    state = _pipeline_state(
+        route_key="debug",
+        intent=Intent.CODE_DEBUG,
+        structured=StructuredInput(
+            source="text",
+            problem=statement,
+            code=[CodeBlock(content="def two_sum(nums, target):\n    return None\n")],
+        ),
+    )
+    runner = FakeRunner(ExecutionResult(status="completed", phase="script"))
+    llm = FakeLLMClient(chat_content="ok")
+
+    await debug_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert runner.calls, "expected the sandbox to be invoked"
+    assert runner.calls[0].tests is not None
+    assert runner.calls[0].tests.entrypoint == "two_sum"
+
+
+async def test_debug_agent_explicit_execution_request_tests_take_precedence() -> None:
+    """`state.execution_request.tests`, when already set, must keep winning
+    over the extractor's derived suite."""
+    explicit_tests = TestSuite(
+        entrypoint="two_sum", cases=[TestCase(name="c1", args=[1], expected=1)]
+    )
+    statement = "Example 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\n"
+    code = "def two_sum(nums, target):\n    return None\n"
+    state = _pipeline_state(
+        route_key="debug",
+        intent=Intent.CODE_DEBUG,
+        structured=StructuredInput(
+            source="text", problem=statement, code=[CodeBlock(content=code)]
+        ),
+        execution_request=ExecutionRequest(code=code, tests=explicit_tests),
+    )
+    runner = FakeRunner(ExecutionResult(status="completed", phase="script"))
+    llm = FakeLLMClient(chat_content="ok")
+
+    await debug_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert runner.calls[0].tests == explicit_tests
+
+
 # ---------------------------------------------------------------------------
 # explain_agent: dispatch + real outcomes + execution_request
 # ---------------------------------------------------------------------------
@@ -213,9 +262,9 @@ async def test_explain_agent_dispatches_review_and_explain_intents(
     calls: list[str] = []
 
     async def fake_review_code(
-        state: AgentState, runtime: Runtime[GraphContext]
+        state: AgentState, runtime: Runtime[GraphContext], *, tests: TestSuite | None = None
     ) -> ReviewRunResult:
-        del state, runtime
+        del state, runtime, tests
         calls.append("review")
         return ReviewRunResult(result=ReviewResult(), execution_request=None)
 

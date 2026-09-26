@@ -12,7 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.planner import INTENT_DEFAULTS
-from app.db.models import Message
+from app.db.models import Conversation, Message
 from app.graph.nodes import (
     FALLBACKS,
     Node,
@@ -480,8 +480,14 @@ async def test_update_learner_model_unknown_user_id_records_node_error_and_sessi
     assert errors[0].node == "update_learner_model"
     assert not update.get("events_persisted")
 
-    # The session must still be usable after the rolled-back savepoint.
-    result = await db_session.execute(select(Message).limit(1))
+    # The session must still be usable after the rolled-back savepoint. Scoped
+    # to this turn's own (unknown) user rather than the whole `messages` table:
+    # an unfiltered select asserts the table is globally empty, which is false
+    # on any dev DB that has been used (the fixture rolls back its own rows,
+    # not pre-existing ones).
+    result = await db_session.execute(
+        select(Message).join(Conversation).where(Conversation.user_id == unknown_user_id)
+    )
     assert result.scalars().all() == []
 
 

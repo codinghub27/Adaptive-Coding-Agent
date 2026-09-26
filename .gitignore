@@ -23,3 +23,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .idea/
+
+# Playwright MCP session artifacts (UI verification runs)
+.playwright-mcp/

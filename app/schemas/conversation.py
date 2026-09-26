@@ -9,14 +9,33 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from app.schemas.base import APIModel
 from app.schemas.intent import Intent
 
-__all__ = ["MessageView", "Role"]
+__all__ = [
+    "ConversationCreateRequest",
+    "ConversationCreateResponse",
+    "MessageView",
+    "Role",
+]
 
 Role = Literal["user", "assistant"]
+
+
+class ConversationCreateRequest(APIModel):
+    """Body of `POST /conversations`. `title` matches `start_conversation`'s
+    own 200-character limit."""
+
+    title: str | None = Field(default=None, max_length=200)
+
+
+class ConversationCreateResponse(APIModel):
+    """Response body of `POST /conversations`."""
+
+    conversation_id: UUID
+    title: str | None
 
 
 class MessageView(APIModel):
