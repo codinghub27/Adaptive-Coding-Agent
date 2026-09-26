@@ -20,9 +20,15 @@ from langchain_core.outputs import ChatGeneration
 from langchain_core.outputs import ChatResult as LCChatResult
 from langsmith import Client as LangSmithClient
 
-from app.config import Settings
-from app.llm.base import ChatMessage, LLMError
-from app.llm.client import LangChainLLMClient, Tracer, get_llm_client
+from app.config import OPENROUTER_DEFAULT_MODEL, Settings
+from app.llm.base import ChatMessage, ChatResult, LLMError, LLMRateLimitError
+from app.llm.client import (
+    FailoverLLMClient,
+    LangChainLLMClient,
+    Tracer,
+    get_llm_client,
+    is_rate_limit,
+)
 
 MakeSettings = Callable[..., Settings]
 
@@ -259,7 +265,11 @@ async def test_vision_without_vision_model_raises_llm_error() -> None:
 
 
 async def test_get_llm_client_builds_vision_model(make_settings: MakeSettings) -> None:
-    settings = make_settings(llm_provider="groq", groq_api_key="test-key")
+    # `openrouter_api_key=None` keeps this a SINGLE-credential build. The
+    # `make_settings` fixture keys both providers, which is now a two-link
+    # failover chain and therefore a `FailoverLLMClient`; this test is about
+    # how one credentialed client is constructed, so it pins one credential.
+    settings = make_settings(llm_provider="groq", groq_api_key="test-key", openrouter_api_key=None)
     client = get_llm_client(settings)
     assert isinstance(client, LangChainLLMClient)
     assert client._vision_model is not None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -282,7 +292,8 @@ def test_tracer_from_settings_disabled_when_key_missing(make_settings: MakeSetti
 
 
 def test_get_llm_client_groq_construction_only(make_settings: MakeSettings) -> None:
-    settings = make_settings(llm_provider="groq", groq_api_key="test-key")
+    # Single credential on purpose -- see `test_get_llm_client_builds_vision_model`.
+    settings = make_settings(llm_provider="groq", groq_api_key="test-key", openrouter_api_key=None)
     client = get_llm_client(settings)
     assert isinstance(client, LangChainLLMClient)
     assert client._model == settings.resolved_llm_model  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -365,3 +376,200 @@ async def test_tracer_run_enabled_without_outputs_fn_does_not_call_end() -> None
     assert result == "value"
     create_run = cast(MagicMock, mock_client.create_run)  # pyright: ignore[reportAttributeAccessIssue]
     assert create_run.called
+
+
+# --------------------------------------------------------------------------
+# Rate-limit classification and credential failover
+# --------------------------------------------------------------------------
+
+
+class _FakeRateLimitError(Exception):
+    """Stands in for a provider SDK's typed 429, which is never imported here."""
+
+    status_code = 429
+
+
+class _StubClient:
+    """A minimal `LLMClient` that records calls and fails on demand."""
+
+    def __init__(self, name: str, *, fail: Exception | None = None) -> None:
+        self.name = name
+        self.fail = fail
+        self.calls = 0
+
+    async def chat(
+        self,
+        messages: object,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        del messages, temperature, max_tokens
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return ChatResult(content=self.name, provider="stub", model=self.name)
+
+    async def embed(self, texts: object) -> list[list[float]]:
+        del texts
+        self.calls += 1
+        return [[0.0]]
+
+    async def vision(
+        self, image: bytes, prompt: str, *, mime_type: str = "image/png"
+    ) -> ChatResult:
+        del image, prompt, mime_type
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        return ChatResult(content=self.name, provider="stub", model=self.name)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _FakeRateLimitError(),
+        Exception("Error code: 429 - rate limit reached for model"),
+        Exception("You exceeded your current quota"),
+        Exception("Too Many Requests"),
+    ],
+)
+def testis_rate_limit_recognises_provider_shapes(exc: Exception) -> None:
+    assert is_rate_limit(exc) is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [Exception("connection reset"), Exception("404 model not found"), ValueError("bad request")],
+)
+def testis_rate_limit_rejects_other_failures(exc: Exception) -> None:
+    assert is_rate_limit(exc) is False
+
+
+def testis_rate_limit_walks_the_cause_chain() -> None:
+    inner = _FakeRateLimitError()
+    outer = Exception("langchain wrapped this")
+    outer.__cause__ = inner
+    assert is_rate_limit(outer) is True
+
+
+async def test_failover_advances_past_a_rate_limited_key() -> None:
+    first = _StubClient("k1", fail=LLMRateLimitError("groq chat call failed: RateLimitError"))
+    second = _StubClient("k2")
+    client = FailoverLLMClient([first, second])
+
+    result = await client.chat([ChatMessage(role="user", content="hi")])
+
+    assert result.content == "k2"
+    assert (first.calls, second.calls) == (1, 1)
+
+
+async def test_failover_cursor_is_sticky() -> None:
+    first = _StubClient("k1", fail=LLMRateLimitError("limited"))
+    second = _StubClient("k2")
+    client = FailoverLLMClient([first, second])
+
+    await client.chat([ChatMessage(role="user", content="a")])
+    await client.chat([ChatMessage(role="user", content="b")])
+
+    # The exhausted key costs ONE failed call in total, not one per turn.
+    assert first.calls == 1
+    assert second.calls == 2
+    assert client.active_index == 1
+
+
+async def test_failover_does_not_burn_keys_on_a_non_rate_limit_error() -> None:
+    first = _StubClient("k1", fail=LLMError("groq chat call failed: BadRequestError"))
+    second = _StubClient("k2")
+    client = FailoverLLMClient([first, second])
+
+    with pytest.raises(LLMError):
+        await client.chat([ChatMessage(role="user", content="hi")])
+
+    assert second.calls == 0
+    assert client.active_index == 0
+
+
+async def test_failover_raises_when_every_credential_is_limited() -> None:
+    clients = [_StubClient(f"k{i}", fail=LLMRateLimitError("limited")) for i in range(3)]
+    client = FailoverLLMClient(clients)
+
+    with pytest.raises(LLMRateLimitError):
+        await client.chat([ChatMessage(role="user", content="hi")])
+
+    assert [c.calls for c in clients] == [1, 1, 1]
+
+
+async def test_failover_applies_to_vision_too() -> None:
+    first = _StubClient("k1", fail=LLMRateLimitError("limited"))
+    second = _StubClient("k2")
+    client = FailoverLLMClient([first, second])
+
+    result = await client.vision(b"bytes", "prompt")
+
+    assert result.content == "k2"
+
+
+def test_failover_requires_at_least_one_client() -> None:
+    with pytest.raises(ValueError, match="at least one client"):
+        FailoverLLMClient([])
+
+
+def test_get_llm_client_builds_the_whole_chain(make_settings: MakeSettings) -> None:
+    settings = make_settings(
+        llm_provider="groq",
+        groq_api_key=None,
+        groq_api_key_1="k1",
+        groq_api_key_2="k2",
+        groq_api_key_3="k3",
+        openrouter_api_key="or-key",
+    )
+    client = get_llm_client(settings)
+    assert isinstance(client, FailoverLLMClient)
+
+    built = [cast("LangChainLLMClient", c) for c in client.clients]
+    providers = [c._provider for c in built]  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert providers == ["groq", "groq", "groq", "openrouter"]
+
+
+def test_openrouter_fallback_does_not_inherit_the_groq_model_override(
+    make_settings: MakeSettings,
+) -> None:
+    settings = make_settings(
+        llm_provider="groq",
+        groq_api_key="k1",
+        openrouter_api_key="or-key",
+        llm_model="a-groq-only-model",
+    )
+    client = get_llm_client(settings)
+    assert isinstance(client, FailoverLLMClient)
+
+    groq_client, openrouter_client = (cast("LangChainLLMClient", c) for c in client.clients)
+    assert groq_client._model == "a-groq-only-model"  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert openrouter_client._model == OPENROUTER_DEFAULT_MODEL  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+class _RateLimitedChatModel(FakeChatModel):
+    """A chat model whose provider call fails the way a 429 does."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> LCChatResult:
+        del messages, stop, run_manager, kwargs
+        raise _FakeRateLimitError("429 rate limit reached; key=should-not-leak")
+
+
+async def test_chat_maps_a_429_to_llm_rate_limit_error() -> None:
+    client = _client(chat_model=_RateLimitedChatModel(), provider="groq")
+
+    with pytest.raises(LLMRateLimitError) as exc_info:
+        await client.chat([ChatMessage(role="user", content="hi")])
+
+    # Still provider + exception class name only: the underlying text is
+    # inspected to classify the failure but never carried into the message.
+    assert str(exc_info.value) == "groq chat call failed: _FakeRateLimitError"
+    assert "should-not-leak" not in str(exc_info.value)

@@ -16,6 +16,8 @@ from sqlalchemy.engine import make_url
 
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K
 
+LLMProvider = Literal["groq", "openrouter"]
+
 GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b"
 #: Free-tier OpenRouter defaults, chosen by probing the live model list on
 #: 2026-09-26: both answered a real request, while `qwen/qwen3.8-27b:free` and
@@ -120,10 +122,18 @@ class Settings(BaseSettings):
     #: hatch tests use to skip the (multi-second) embedder/reranker model load.
     knowledge_enabled: bool = True
 
-    llm_provider: Literal["groq", "openrouter"] = "openrouter"
+    llm_provider: LLMProvider = "openrouter"
     llm_model: str | None = None
     llm_vision_model: str | None = None
     groq_api_key: SecretStr | None = None
+    #: Additional Groq keys (`GROQ_API_KEY_1` .. `GROQ_API_KEY_4`), tried in
+    #: this order after `groq_api_key` when the key in use is rate-limited.
+    #: Groq's free tier is per-key, so several keys is the supported way to
+    #: keep a session going; see `llm_failover_chain`.
+    groq_api_key_1: SecretStr | None = None
+    groq_api_key_2: SecretStr | None = None
+    groq_api_key_3: SecretStr | None = None
+    groq_api_key_4: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
 
     langsmith_tracing: bool = False
@@ -197,6 +207,10 @@ class Settings(BaseSettings):
     @field_validator(
         "qdrant_api_key",
         "groq_api_key",
+        "groq_api_key_1",
+        "groq_api_key_2",
+        "groq_api_key_3",
+        "groq_api_key_4",
         "openrouter_api_key",
         "llm_model",
         "llm_vision_model",
@@ -214,37 +228,98 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_active_provider_key(self) -> "Settings":
-        if self.llm_provider == "groq" and self.groq_api_key is None:
-            raise ValueError("GROQ_API_KEY is required when LLM_PROVIDER=groq")
+        if self.llm_provider == "groq" and not self.groq_api_keys:
+            raise ValueError(
+                "GROQ_API_KEY (or GROQ_API_KEY_1..4) is required when LLM_PROVIDER=groq"
+            )
         if self.llm_provider == "openrouter" and self.openrouter_api_key is None:
             raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
         return self
 
     @property
+    def groq_api_keys(self) -> list[SecretStr]:
+        """Every configured Groq key, in failover order, de-duplicated.
+
+        `GROQ_API_KEY` first (when set), then `GROQ_API_KEY_1` .. `_4`. A key
+        repeated across two variables is kept once: retrying the same
+        credential after it was rate-limited only spends another failed call.
+        """
+        keys: list[SecretStr] = []
+        seen: set[str] = set()
+        for key in (
+            self.groq_api_key,
+            self.groq_api_key_1,
+            self.groq_api_key_2,
+            self.groq_api_key_3,
+            self.groq_api_key_4,
+        ):
+            if key is None:
+                continue
+            secret = key.get_secret_value()
+            if not secret or secret in seen:
+                continue
+            seen.add(secret)
+            keys.append(key)
+        return keys
+
+    @property
+    def llm_failover_chain(self) -> list[tuple[LLMProvider, SecretStr]]:
+        """Provider/key pairs to try in order when one is rate-limited.
+
+        The configured `llm_provider`'s credentials come first, then the other
+        provider's as a last resort: exhausting every Groq key should degrade
+        to OpenRouter rather than fail the turn. Empty only if nothing at all
+        is configured -- `_require_active_provider_key` already rejects that
+        for the active provider.
+        """
+        groq: list[tuple[LLMProvider, SecretStr]] = [("groq", key) for key in self.groq_api_keys]
+        openrouter: list[tuple[LLMProvider, SecretStr]] = (
+            [("openrouter", self.openrouter_api_key)] if self.openrouter_api_key is not None else []
+        )
+        if self.llm_provider == "groq":
+            return groq + openrouter
+        return openrouter + groq
+
+    def model_for(self, provider: LLMProvider) -> str:
+        """The chat model to use with `provider`.
+
+        An explicit `LLM_MODEL` names a model on the *configured* provider, so
+        it is deliberately not carried over to a fallback on the other one: a
+        Groq model id means nothing to OpenRouter, and passing it across would
+        turn a rate-limit failover into a 404.
+        """
+        if provider == self.llm_provider and self.llm_model is not None:
+            return self.llm_model
+        return GROQ_DEFAULT_MODEL if provider == "groq" else OPENROUTER_DEFAULT_MODEL
+
+    def vision_model_for(self, provider: LLMProvider) -> str:
+        """The vision model to use with `provider`; see `model_for`."""
+        if provider == self.llm_provider and self.llm_vision_model is not None:
+            return self.llm_vision_model
+        return GROQ_DEFAULT_VISION_MODEL if provider == "groq" else OPENROUTER_DEFAULT_VISION_MODEL
+
+    @property
     def resolved_llm_model(self) -> str:
         """The effective model name: explicit override or provider default."""
-        if self.llm_model is not None:
-            return self.llm_model
-        if self.llm_provider == "groq":
-            return GROQ_DEFAULT_MODEL
-        return OPENROUTER_DEFAULT_MODEL
+        return self.model_for(self.llm_provider)
 
     @property
     def resolved_llm_vision_model(self) -> str:
         """The effective vision model name: explicit override or provider default."""
-        if self.llm_vision_model is not None:
-            return self.llm_vision_model
-        if self.llm_provider == "groq":
-            return GROQ_DEFAULT_VISION_MODEL
-        return OPENROUTER_DEFAULT_VISION_MODEL
+        return self.vision_model_for(self.llm_provider)
 
     @property
     def llm_api_key(self) -> SecretStr:
-        """The API key for the currently selected LLM provider."""
+        """The first API key for the currently selected LLM provider.
+
+        This is the credential the failover chain starts from; the rest are in
+        `llm_failover_chain`.
+        """
         if self.llm_provider == "groq":
-            if self.groq_api_key is None:
+            keys = self.groq_api_keys
+            if not keys:
                 raise RuntimeError("GROQ_API_KEY is not configured")
-            return self.groq_api_key
+            return keys[0]
         if self.openrouter_api_key is None:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
         return self.openrouter_api_key

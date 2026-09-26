@@ -45,6 +45,17 @@ class LLMError(Exception):
     """
 
 
+class LLMRateLimitError(LLMError):
+    """The provider refused the call because a rate or quota limit was hit.
+
+    Separated from a plain `LLMError` so `app.llm.client.FailoverLLMClient`
+    can move to the next configured credential instead of failing the turn.
+    Every other failure stays an `LLMError`: retrying it on another key would
+    just repeat it. The same secret-safety rule applies -- the message carries
+    only the provider name and the underlying exception's class name.
+    """
+
+
 @runtime_checkable
 class LLMClient(Protocol):
     """Provider-agnostic interface for chat, embedding, and vision calls."""
