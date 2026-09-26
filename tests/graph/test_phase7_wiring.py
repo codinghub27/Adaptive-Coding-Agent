@@ -243,6 +243,73 @@ async def test_debug_agent_threads_extracted_tests_into_sandbox_request() -> Non
     assert runner.calls[0].tests.entrypoint == "two_sum"
 
 
+async def test_debug_agent_falls_back_to_synthesis_when_extraction_finds_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No worked examples for `extract_test_suite` to recover -> falls back to
+    `synthesize_test_suite`, and `suite_source` records that it did."""
+    synthesised = TestSuite(entrypoint="f", cases=[TestCase(name="c1", args=[], expected=1)])
+
+    async def fake_synthesize(
+        problem: StructuredInput | None, llm: object, runner: object
+    ) -> TestSuite | None:
+        del problem, llm, runner
+        return synthesised
+
+    monkeypatch.setattr("app.graph.nodes.synthesize_test_suite", fake_synthesize)
+    state = _pipeline_state(
+        route_key="debug",
+        intent=Intent.CODE_DEBUG,
+        structured=StructuredInput(
+            source="text", question="why does this fail", code=[CodeBlock(content="def f(): 1/0")]
+        ),
+    )
+    runner = FakeRunner(ExecutionResult(status="completed", phase="script"))
+    llm = FakeLLMClient(chat_content="ok")
+
+    update = await debug_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert update.get("suite_source") == "synthesised"
+    assert runner.calls[0].tests == synthesised
+
+
+async def test_debug_agent_suite_source_extracted_when_worked_examples_present() -> None:
+    """Worked examples in the problem statement mean `extract_test_suite`
+    succeeds, so synthesis is never reached and `suite_source` says so."""
+    statement = "Example 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\n"
+    state = _pipeline_state(
+        route_key="debug",
+        intent=Intent.CODE_DEBUG,
+        structured=StructuredInput(
+            source="text",
+            problem=statement,
+            code=[CodeBlock(content="def two_sum(nums, target):\n    return None\n")],
+        ),
+    )
+    runner = FakeRunner(ExecutionResult(status="completed", phase="script"))
+    llm = FakeLLMClient(chat_content="ok")
+
+    update = await debug_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert update.get("suite_source") == "extracted"
+
+
+async def test_debug_agent_suite_source_none_when_nothing_found() -> None:
+    """No worked examples and no runner (synthesis needs a sandbox) -> no
+    suite at all, and `suite_source` says so."""
+    state = _pipeline_state(
+        route_key="debug",
+        intent=Intent.CODE_DEBUG,
+        structured=StructuredInput(
+            source="text", question="why does this fail", code=[CodeBlock(content="def f(): 1/0")]
+        ),
+    )
+
+    update = await debug_agent(state, _runtime())
+
+    assert update.get("suite_source") == "none"
+
+
 async def test_debug_agent_explicit_execution_request_tests_take_precedence() -> None:
     """`state.execution_request.tests`, when already set, must keep winning
     over the extractor's derived suite."""
@@ -348,6 +415,37 @@ async def test_explain_agent_review_intent_sets_execution_request_when_possible(
     outcome = update.get("agent_output")
     assert outcome is not None
     assert "stub" not in outcome.text.lower()
+
+
+async def test_explain_agent_review_intent_falls_back_to_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The review branch resolves its `TestSuite` the same way `debug_agent`
+    does: extraction first, synthesis only when extraction finds nothing."""
+    synthesised = TestSuite(entrypoint="f", cases=[TestCase(name="c1", args=[], expected=1)])
+
+    async def fake_synthesize(
+        problem: StructuredInput | None, llm: object, runner: object
+    ) -> TestSuite | None:
+        del problem, llm, runner
+        return synthesised
+
+    monkeypatch.setattr("app.graph.nodes.synthesize_test_suite", fake_synthesize)
+    code = "def f():\n    return 1\n"
+    structured = StructuredInput(
+        source="text", question="review this", code=[CodeBlock(content=code)]
+    )
+    state = _pipeline_state(
+        route_key="explain",
+        intent=Intent.CODE_REVIEW,
+        structured=structured,
+    )
+    runner = FakeRunner(ExecutionResult(status="runtime_error", phase="tests"))
+    llm = FakeLLMClient(chat_content='{"findings": []}')
+
+    update = await explain_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert update.get("suite_source") == "synthesised"
 
 
 async def test_explain_agent_review_intent_no_runner_never_sets_execution_request() -> None:

@@ -38,6 +38,7 @@ from app.agents.planner import (
     clamp_assistance,
 )
 from app.agents.reviewer import review_code
+from app.execution.synth import synthesize_test_suite
 from app.execution.testgen import extract_test_suite
 from app.execution.verification import verify as verify_result
 from app.graph.routing import select_route
@@ -47,6 +48,7 @@ from app.graph.state import (
     AgentStateUpdate,
     GraphContext,
     NodeError,
+    SuiteSource,
 )
 from app.graph.subgraphs.debug import run_debug
 from app.graph.subgraphs.dsa import run_dsa
@@ -62,7 +64,7 @@ from app.memory.profile import PRIOR, get_profile
 from app.response.format import SAFE_FALLBACK_RESPONSE
 from app.response.generate import generate_response
 from app.schemas.event import LearningEventCreate, slug_tag
-from app.schemas.execution import ExecutionResult, HarnessError, Verdict
+from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verdict
 from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent
 from app.schemas.knowledge import RetrievalHit
@@ -577,19 +579,44 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     return update
 
 
+async def _resolve_test_suite(
+    state: AgentState, runtime: Runtime[GraphContext]
+) -> tuple[TestSuite | None, SuiteSource]:
+    """This turn's `TestSuite`, and where it came from.
+
+    `extract_test_suite` is tried first -- deterministic and free, recovered
+    only from worked examples already in the learner's own problem statement.
+    Only when it finds nothing does this fall back to
+    `synthesize_test_suite` (LLM-proposed, sandbox-validated before it is
+    ever trusted -- see `app.execution.synth`), so a real debug/review turn
+    can still verify a fix even when the statement has no worked examples.
+    """
+    tests = extract_test_suite(state.structured_input)
+    if tests is not None:
+        return tests, "extracted"
+    tests = await synthesize_test_suite(
+        state.structured_input, runtime.context.llm, runtime.context.runner
+    )
+    if tests is not None:
+        return tests, "synthesised"
+    return None, "none"
+
+
 async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
     """Run the debugger subgraph for this turn.
 
-    `extract_test_suite` derives a fallback `TestSuite` from the learner's own
-    problem statement + code (deterministic, no LLM) so a real debug turn can
-    still verify a fix even when nothing earlier in the graph populated
-    `state.execution_request.tests` -- that still wins when present.
+    See `_resolve_test_suite` for how this turn's `TestSuite` (if any) is
+    found; that still loses to `state.execution_request.tests` when the
+    latter is already set. `suite_source` records which path produced it so
+    `_build_learning_event` can gate a synthesised suite's verdict on a real
+    problem statement.
     """
-    tests = extract_test_suite(state.structured_input)
+    tests, suite_source = await _resolve_test_suite(state, runtime)
     run = await run_debug(state, runtime, tests=tests)
     update: AgentStateUpdate = {
         "agent_output": run.result.to_outcome(),
         "agent_result": run.result,
+        "suite_source": suite_source,
     }
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request
@@ -605,11 +632,12 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     intents route to this node, but need the reviewer's pipeline instead)."""
     intent = state.intent
     if intent is not None and intent.intent in _REVIEW_INTENTS:
-        tests = extract_test_suite(state.structured_input)
+        tests, suite_source = await _resolve_test_suite(state, runtime)
         review_run = await review_code(state, runtime, tests=tests)
         update: AgentStateUpdate = {
             "agent_output": review_run.result.to_outcome(),
             "agent_result": review_run.result,
+            "suite_source": suite_source,
         }
         if review_run.execution_request is not None:
             update["execution_request"] = review_run.execution_request
@@ -816,6 +844,21 @@ def _event_topic(plan: TeachingPlan | None) -> str | None:
 
 
 def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> LearningEventCreate:
+    """Build this turn's `LearningEventCreate`.
+
+    Gates a synthesised suite's verdict on a real problem statement: when
+    `state.suite_source == "synthesised"` and `state.structured_input.problem`
+    is absent/blank, `solved` is forced to `None` here regardless of what the
+    agent reported. With no problem statement, the learner's own (possibly
+    buggy) code is the only spec `synthesize_test_suite` had to work from, so
+    it can propose test cases that match the bug AND a reference solution
+    that reproduces it -- a pair that is self-consistent, passes the sandbox
+    check, and would otherwise certify broken code as `solved=True`. The
+    suite is still worth having (it makes the debugging/review answer
+    better); it must simply never be used to judge the learner. An
+    `extracted` suite is not gated: its cases come from the statement's own
+    worked examples, not an LLM guess.
+    """
     agent_output = state.agent_output
     intent_result = state.intent
     if agent_output is None or intent_result is None:
@@ -825,6 +868,13 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
 
     structured = state.structured_input
     problem = (structured.problem or structured.question) if structured is not None else None
+
+    solved = agent_output.solved
+    has_problem_statement = bool(
+        structured is not None and structured.problem and structured.problem.strip()
+    )
+    if state.suite_source == "synthesised" and not has_problem_statement:
+        solved = None
     # `pattern` becomes a second skill key (see `app.memory.profile.skill_keys`)
     # and is LLM-authored like `topic` was, so it is kept only when this turn's
     # retrieval vouches for it.
@@ -846,7 +896,7 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
         hints_used=agent_output.hints_used,
         needed_full_solution=agent_output.needed_full_solution,
         errors=agent_output.errors,
-        solved=agent_output.solved,
+        solved=solved,
     )
 
 

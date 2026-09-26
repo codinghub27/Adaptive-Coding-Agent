@@ -230,13 +230,18 @@ class DebugResult(APIModel):
     def to_outcome(self) -> "AgentOutcome":
         """Project this result onto the Phase 04 `AgentOutcome` shape.
 
-        `solved` comes from `final_verdict` (sandbox ground truth) via
-        `solved_from_verdict`: `None` whenever nothing conclusive ran, so an
-        unavailable sandbox is never mistaken for an observed failure.
+        `solved` comes from `initial_verdict`, not `final_verdict`, via
+        `solved_from_verdict`. `final_verdict` is the verdict AFTER the
+        debugger has patched the learner's code -- a pass there is evidence
+        the *agent* fixed the bug, not evidence about the *learner*.
+        `initial_verdict` is the verdict on the code the learner actually
+        submitted, which is the only thing this outcome may be used to judge
+        them on. `None` whenever nothing conclusive ran, so an unavailable
+        sandbox is never mistaken for an observed failure.
         """
         from app.graph.state import AgentOutcome
 
-        solved = solved_from_verdict(self.final_verdict)
+        solved = solved_from_verdict(self.initial_verdict)
         text = self.bug_explanation or self.inferred_approach or ""
         return AgentOutcome(
             text=text,

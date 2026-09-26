@@ -157,6 +157,99 @@ clusters. It separates "a real question" from "no question at all", not
 if `reranker_model` or the corpus changes. A test pins the measured values so
 the constant cannot be moved silently.
 
+## P1 — an outcome signal (2026-09-26)
+
+Known Issue #1 below said skills start and stay at `PRIOR` because nothing
+observes whether a learner succeeded. P1 builds that observation.
+
+### The approved design
+
+The LLM proposes a reference solution **and** test cases. The sandbox runs the
+REFERENCE against those cases first, and the suite is discarded unless the
+reference passes every one. Only a suite that survives that check is ever used
+to judge a learner. Both directions count: a pass raises the skill, a failure
+lowers it.
+
+### What shipped
+
+**P1a (`85c1e77`)** — `app/execution/synth.py::synthesize_test_suite`.
+`testgen.py`'s three `ast` helpers became public for reuse; it stays LLM-free.
+The entrypoint is always chosen from the learner's own code via
+`select_entrypoint`, never the LLM's free-text name: an invented name makes the
+sandbox report `entrypoint_missing`, which `verify` turns into a real `fail` —
+a false failure recorded against the learner.
+
+**P1b** — wired into `debug_agent` and the review branch of `explain_agent`
+via `_resolve_test_suite` (extraction first, synthesis only as fallback), plus
+two semantic fixes:
+
+1. **`DebugResult.to_outcome` now derives `solved` from `initial_verdict`, not
+   `final_verdict`.** `final_verdict` is the verdict *after the debugger
+   patched the code*, so "the agent fixed it" was being recorded as evidence
+   about the learner. `initial_verdict` is the verdict on the code they
+   actually submitted.
+2. **A synthesised suite may only set `solved` when the turn carries a real
+   problem statement** (`AgentState.suite_source` + the gate in
+   `_build_learning_event`). With no statement, the learner's buggy code is the
+   only spec the synthesiser has, so it can write cases matching the bug AND a
+   reference reproducing it — self-consistent, sandbox-passing, and it would
+   certify broken code as `solved=True`. The suite is still used to produce a
+   better answer; it just never judges the learner. An `extracted` suite is not
+   gated: its cases come from the statement's own worked examples.
+
+The gate is not theoretical. Driving a bare `factorial` paste live, the
+synthesiser reproduced the off-by-one in **both** its cases and its reference,
+the sandbox returned `pass` on 5/5, and the gate forced `solved=None` anyway.
+
+### Measured, over the real HTTP API on a brand-new account
+
+```
+START                                        skills={}
+
+TURN A  statement + CORRECT code
+  route=explain  topic='hashing'         verification=pass(6 cases, synthesised)
+  event.solved=True                          skills={'hashing': 0.6}        ABOVE prior
+
+TURN B  statement + BUGGY code
+  route=debug    topic='sliding_window'  verification=pass(6 cases, synthesised)
+  event.solved=False                         skills={..., 'sliding_window': 0.42}  BELOW prior
+
+TURN C  code only, NO problem statement
+  route=debug    topic=None              verification=pass(5 cases, synthesised)
+  events_persisted=0                         skills unchanged, bit-identical
+```
+
+Turn B is worth reading twice: the turn's `verification` says `pass` (the
+debugger's patch works) while the event says `solved=False` (the learner's own
+code did not). That is fix #1 doing its job.
+
+`pytest tests -q` -> **1486 passed, 2 skipped**. pyright strict: 0 errors on
+every file this work touched. ruff + `alembic check`: clean.
+
+### Known issues from P1
+
+1. **A reference and its cases can be wrong together in the same way.** The
+   sandbox check catches an *inconsistent* suite, not a confidently wrong one.
+   With a problem statement present this is much less likely, which is exactly
+   what the gate leans on — but it is not eliminated.
+2. **Turn C's skill map is bit-identical only because no topic was inferred.**
+   When a topic *is* inferred from a contentless turn, the documented exposure
+   path still creates that key at `PRIOR`. That is by design (Packet C), not a
+   P1 regression — but it means a wrong topic still costs a junk key. Observed
+   live: a `factorial` off-by-one was filed under `binary_search_on_answer`.
+   That is F2, and it is P2's job.
+3. **Synthesis costs one LLM call plus one sandbox run** on every debug/review
+   turn with no worked examples, and there is no kill switch. `GraphContext`
+   carries no settings, and threading one through means editing
+   `app/graph/build.py`, which currently holds unrelated uncommitted work.
+4. **`_resolve_test_suite` runs even when `state.execution_request.tests` is
+   already set**, in which case `run_debug` discards the synthesised suite and
+   the LLM call is wasted — and `suite_source` would mislabel the turn.
+   Unreachable today (nothing populates `execution_request` before the agent
+   node), so it is recorded rather than fixed.
+5. **The DSA route still reports `solved=None` always.** Option (c) — a learner
+   submission verified against a validated suite — is P1c, not yet built.
+
 ## Known Issues
 
 1. **Skill levels start and stay at `PRIOR` (0.5) until a turn is solved.**

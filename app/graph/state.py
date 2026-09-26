@@ -40,9 +40,16 @@ __all__ = [
     "NodeError",
     "RawInput",
     "RouteKey",
+    "SuiteSource",
 ]
 
 RouteKey = Literal["dsa", "debug", "explain", "clarify"]
+
+# Where this turn's `TestSuite` (if any) came from -- see `debug_agent` and the
+# review branch of `explain_agent` in `app.graph.nodes`, and the gating this
+# enables in `_build_learning_event`: a "synthesised" suite may only produce a
+# `solved` verdict when the turn also carries a real problem statement.
+SuiteSource = Literal["none", "extracted", "synthesised"]
 
 
 class RawInput(APIModel):
@@ -126,6 +133,7 @@ class AgentState(BaseModel):
     route: RouteKey | None = None
     agent_output: AgentOutcome | None = None
     agent_result: AgentResult | None = None
+    suite_source: SuiteSource = "none"
     response: str | None = None
     generated_response: GeneratedResponse | None = None
     events: Annotated[list[LearningEventCreate], operator.add] = Field(
@@ -151,6 +159,7 @@ class AgentStateUpdate(TypedDict, total=False):
     route: RouteKey | None
     agent_output: AgentOutcome | None
     agent_result: AgentResult | None
+    suite_source: SuiteSource
     response: str | None
     generated_response: GeneratedResponse | None
     events: list[LearningEventCreate]

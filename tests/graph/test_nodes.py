@@ -38,6 +38,7 @@ from app.graph.state import (
     GraphContext,
     NodeError,
     RawInput,
+    SuiteSource,
 )
 from app.input.normalize import normalize_text
 from app.llm.base import LLMClient
@@ -127,15 +128,22 @@ def _pipeline_state(
     agent_output: AgentOutcome | None = None,
     plan: TeachingPlan | None = None,
     response: str | None = "ok",
+    structured_input: StructuredInput | None = None,
+    suite_source: SuiteSource = "none",
 ) -> AgentState:
     return AgentState(
         input=RawInput(text=text),
-        structured_input=StructuredInput(source="text", question=text),
+        structured_input=(
+            structured_input
+            if structured_input is not None
+            else StructuredInput(source="text", question=text)
+        ),
         intent=IntentResult(intent=intent, confidence=0.9, source="rule"),
         plan=plan if plan is not None else _plan(),
         route=route_key,  # type: ignore[arg-type]
         agent_output=agent_output,
         response=response,
+        suite_source=suite_source,
     )
 
 
@@ -427,6 +435,77 @@ async def test_update_learner_model_persists_observed_outcome(
 
     profile = await get_profile(db_session, user_id)
     assert profile.skill_levels["arrays"] > PRIOR
+
+
+@pytest.mark.db
+async def test_update_learner_model_synthesised_suite_without_problem_forces_solved_none(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A synthesised suite (`suite_source="synthesised"`) with no problem
+    statement is judging the learner against a case pair the LLM invented
+    from their own (possibly buggy) code alone -- that must never certify
+    `solved`, so the event is forced to `solved=None` even though the agent
+    reported `solved=True`."""
+    structured = StructuredInput(source="text", question="why does this fail")
+    state = _pipeline_state(
+        agent_output=_outcome(solved=True),
+        structured_input=structured,
+        suite_source="synthesised",
+    )
+
+    update = await update_learner_model(state, _runtime(session=db_session, user_id=user_id))
+
+    events = update.get("events")
+    assert events is not None and len(events) == 1
+    assert events[0].solved is None
+
+    profile = await get_profile(db_session, user_id)
+    assert profile.skill_levels == {"arrays": PRIOR}
+
+
+@pytest.mark.db
+async def test_update_learner_model_synthesised_suite_with_problem_keeps_solved(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """The same synthesised suite, but this turn DID carry a real problem
+    statement: the suite's cases came from a spec independent of the
+    learner's code, so the reported `solved` stands."""
+    structured = StructuredInput(
+        source="text", problem="Return double the input value.", question="why does this fail"
+    )
+    state = _pipeline_state(
+        agent_output=_outcome(solved=True),
+        structured_input=structured,
+        suite_source="synthesised",
+    )
+
+    update = await update_learner_model(state, _runtime(session=db_session, user_id=user_id))
+
+    events = update.get("events")
+    assert events is not None and len(events) == 1
+    assert events[0].solved is True
+
+
+@pytest.mark.db
+async def test_update_learner_model_extracted_suite_without_problem_not_gated(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """`suite_source="extracted"` is never gated -- extraction only ever
+    succeeds when there IS a problem statement with worked examples, but
+    this guards the gate against the wrong source, not just the wrong
+    problem field."""
+    structured = StructuredInput(source="text", question="why does this fail")
+    state = _pipeline_state(
+        agent_output=_outcome(solved=True),
+        structured_input=structured,
+        suite_source="extracted",
+    )
+
+    update = await update_learner_model(state, _runtime(session=db_session, user_id=user_id))
+
+    events = update.get("events")
+    assert events is not None and len(events) == 1
+    assert events[0].solved is True
 
 
 @pytest.mark.db
