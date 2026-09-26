@@ -31,6 +31,7 @@ from uuid import UUID
 
 from langgraph.runtime import Runtime
 
+from app.agents.debugger import extract_learner_code
 from app.agents.hint_engine import HintProgress
 from app.agents.planner import (
     INTENT_DEFAULTS,
@@ -675,13 +676,32 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     missing, the ladder produced no hint this turn (already solved), or the
     write itself fails -- a failed write must never cost the learner their
     turn's response.
+
+    `solved` is no longer always absent evidence: when the learner actually
+    submitted code this turn, `_resolve_test_suite` is consulted (extraction
+    first, LLM synthesis only as a fallback -- see its docstring) and, when a
+    suite survives, `run_dsa` runs THEIR code against it internally and
+    attaches the resulting verdict to `DSAResult.initial_verdict`, which
+    `to_outcome` turns into `solved`. A pure hint-only turn (no code
+    submitted) short-circuits before any of that -- no suite lookup, no
+    synthesis LLM call, no sandbox run -- so asking for a hint never spends
+    budget it does not need and never risks becoming evidence against the
+    learner. `suite_source` is recorded either way (`"none"` on the
+    short-circuit path) so `_build_learning_event` can gate a synthesised
+    suite's verdict on a real problem statement here exactly as it does for
+    `debug_agent`.
     """
     ctx = runtime.context
     progress = await resolve_hint_progress(state, ctx)
-    run = await run_dsa(state, runtime, progress=progress)
+    if extract_learner_code(state.structured_input) is not None:
+        tests, suite_source = await _resolve_test_suite(state, runtime)
+    else:
+        tests, suite_source = None, "none"
+    run = await run_dsa(state, runtime, progress=progress, tests=tests)
     update: AgentStateUpdate = {
         "agent_output": run.result.to_outcome(),
         "agent_result": run.result,
+        "suite_source": suite_source,
     }
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request

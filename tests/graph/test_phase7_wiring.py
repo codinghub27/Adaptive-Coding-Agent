@@ -10,11 +10,13 @@ no real LLM/provider calls -- `FakeLLMClient`/`FakeRunner` throughout.
 """
 
 import uuid
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Final, NoReturn
 
 import pytest
 from langgraph.runtime import Runtime
+from pydantic import JsonValue
 from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,18 +35,28 @@ from app.graph.nodes import (
     explain_agent,
     resolve_hint_progress,
     safe_node,
+    update_learner_model,
 )
 from app.graph.state import AgentState, GraphContext, RawInput
 from app.graph.subgraphs.explain import ExplainRunResult
 from app.llm.base import LLMClient
 from app.memory.conversation import start_conversation
 from app.memory.hint_progress import get_hint_progress, save_hint_progress
-from app.schemas.agent_results import ExplainResult, HintLevel, ReviewResult
-from app.schemas.execution import ExecutionRequest, ExecutionResult, TestCase, TestSuite
+from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel, ReviewResult
+from app.schemas.execution import (
+    CaseResult,
+    ExecutionRequest,
+    ExecutionResult,
+    TestCase,
+    TestSuite,
+)
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.plan import AssistanceLevel, TeachingPlan
-from tests.graph.test_execute_verify_nodes import FakeRunner
+from tests.graph.test_execute_verify_nodes import (
+    FakeRunner,
+    _sha256,  # pyright: ignore[reportPrivateUsage]
+)
 from tests.input.fakes import FakeLLMClient
 
 _DSA_PROBLEM_TEXT: Final = (
@@ -171,6 +183,223 @@ async def test_dsa_agent_sets_execution_request_once_ladder_reaches_full(
     assert outcome is not None
     assert outcome.needed_full_solution is True
     assert outcome.hints_used == 7
+
+
+def _fake_extract_test_suite(
+    suite: TestSuite | None,
+) -> Callable[[StructuredInput | None], TestSuite | None]:
+    def _extract(problem: StructuredInput | None) -> TestSuite | None:
+        del problem
+        return suite
+
+    return _extract
+
+
+def _dsa_passed_result(case_name: str, actual: JsonValue) -> ExecutionResult:
+    return ExecutionResult(
+        status="passed",
+        phase="tests",
+        cases=[
+            CaseResult(
+                name=case_name,
+                passed=True,
+                actual=actual,
+                actual_repr=repr(actual),
+                actual_sha256=_sha256(actual),
+                duration_ms=1.0,
+            )
+        ],
+    )
+
+
+def _dsa_failed_result(case_name: str, wrong_actual: JsonValue) -> ExecutionResult:
+    return ExecutionResult(
+        status="failed",
+        phase="tests",
+        cases=[
+            CaseResult(
+                name=case_name,
+                passed=False,
+                actual=wrong_actual,
+                actual_repr=repr(wrong_actual),
+                actual_sha256=_sha256(wrong_actual),
+                duration_ms=1.0,
+            )
+        ],
+    )
+
+
+async def test_dsa_agent_code_submitted_and_suite_passes_sets_solved_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A learner who submits code this turn gets it verified in the sandbox
+    against a validated `TestSuite`, and a passing verdict becomes `solved`."""
+    suite = TestSuite(entrypoint="two_sum", cases=[TestCase(name="c1", args=[], expected=[0, 1])])
+    monkeypatch.setattr("app.graph.nodes.extract_test_suite", _fake_extract_test_suite(suite))
+    code = "def two_sum(nums, target):\n    return [0, 1]\n"
+    state = _pipeline_state(
+        structured=StructuredInput(
+            source="text",
+            problem="Return indices of the two numbers that add up to target.",
+            code=[CodeBlock(content=code)],
+        ),
+        plan=_plan(topic="arrays", assistance_level="hint"),
+    )
+    runner = FakeRunner(_dsa_passed_result("c1", [0, 1]))
+    llm = FakeLLMClient(chat_content="{}")
+
+    update = await dsa_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert update.get("suite_source") == "extracted"
+    result = update.get("agent_result")
+    assert isinstance(result, DSAResult)
+    assert result.initial_verdict is not None
+    assert result.initial_verdict.status == "pass"
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert outcome.solved is True
+    request = update.get("execution_request")
+    assert request is not None
+    assert request.code == code
+    assert runner.calls and runner.calls[0].tests == suite
+
+
+async def test_dsa_agent_code_submitted_and_suite_fails_sets_solved_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same shape, but the sandbox reports a mismatched case -> `solved=False`."""
+    suite = TestSuite(entrypoint="two_sum", cases=[TestCase(name="c1", args=[], expected=[0, 1])])
+    monkeypatch.setattr("app.graph.nodes.extract_test_suite", _fake_extract_test_suite(suite))
+    code = "def two_sum(nums, target):\n    return None\n"
+    state = _pipeline_state(
+        structured=StructuredInput(
+            source="text",
+            problem="Return indices of the two numbers that add up to target.",
+            code=[CodeBlock(content=code)],
+        ),
+        plan=_plan(topic="arrays", assistance_level="hint"),
+    )
+    runner = FakeRunner(_dsa_failed_result("c1", None))
+    llm = FakeLLMClient(chat_content="{}")
+
+    update = await dsa_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert update.get("suite_source") == "extracted"
+    result = update.get("agent_result")
+    assert isinstance(result, DSAResult)
+    assert result.initial_verdict is not None
+    assert result.initial_verdict.status == "fail"
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert outcome.solved is False
+
+
+async def test_dsa_agent_hint_only_turn_skips_synthesis_and_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No code submitted this turn -> no suite lookup at all: no synthesis
+    LLM call, no sandbox run, and `solved` stays `None` (asking for a hint is
+    exposure, never failure)."""
+
+    async def fail_synthesize(*args: object, **kwargs: object) -> None:
+        raise AssertionError("synthesis must never be attempted on a hint-only turn")
+
+    monkeypatch.setattr("app.graph.nodes.synthesize_test_suite", fail_synthesize)
+    state = _pipeline_state(
+        structured=StructuredInput(
+            source="text",
+            problem="Given an array of integers, ...",
+            question="can I get a hint?",
+        ),
+        plan=_plan(topic="arrays", assistance_level="hint"),
+    )
+    runner = FakeRunner()
+    llm = FakeLLMClient(chat_content="{}")
+
+    update = await dsa_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert update.get("suite_source") == "none"
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert outcome.solved is None
+    assert "execution_request" not in update
+    assert runner.calls == []
+    assert len(llm.chat_calls) == 1
+
+
+async def test_dsa_agent_no_suite_survives_solved_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Code submitted, but neither extraction nor synthesis produces a
+    validated suite -> nothing ran, so `solved` stays `None`."""
+    monkeypatch.setattr("app.graph.nodes.extract_test_suite", _fake_extract_test_suite(None))
+
+    async def no_synthesis(
+        problem: StructuredInput | None, llm: object, runner: object
+    ) -> TestSuite | None:
+        del problem, llm, runner
+        return None
+
+    monkeypatch.setattr("app.graph.nodes.synthesize_test_suite", no_synthesis)
+    state = _pipeline_state(
+        structured=StructuredInput(
+            source="text",
+            question="why is this wrong",
+            code=[CodeBlock(content="def f():\n    return 1\n")],
+        ),
+        plan=_plan(topic="arrays", assistance_level="hint"),
+    )
+    runner = FakeRunner()
+    llm = FakeLLMClient(chat_content="{}")
+
+    update = await dsa_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert update.get("suite_source") == "none"
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert outcome.solved is None
+    assert runner.calls == []
+
+
+async def test_dsa_agent_synthesised_suite_without_problem_is_gated_by_learning_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A synthesised suite built from the learner's own (possibly buggy) code
+    alone must never certify `solved` -- `_build_learning_event`'s gate
+    applies to the DSA route exactly as it does to `debug_agent`, even
+    though `dsa_agent` itself faithfully reports the sandbox's own verdict."""
+    monkeypatch.setattr("app.graph.nodes.extract_test_suite", _fake_extract_test_suite(None))
+    synthesised = TestSuite(entrypoint="f", cases=[TestCase(name="c1", args=[], expected=1)])
+
+    async def fake_synthesize(
+        problem: StructuredInput | None, llm: object, runner: object
+    ) -> TestSuite | None:
+        del problem, llm, runner
+        return synthesised
+
+    monkeypatch.setattr("app.graph.nodes.synthesize_test_suite", fake_synthesize)
+    state = _pipeline_state(
+        structured=StructuredInput(
+            source="text",
+            question="why is this wrong",
+            code=[CodeBlock(content="def f():\n    return 1\n")],
+        ),
+        plan=_plan(topic="arrays", assistance_level="hint"),
+    )
+    runner = FakeRunner(_dsa_passed_result("c1", 1))
+    llm = FakeLLMClient(chat_content="{}")
+
+    dsa_update = await dsa_agent(state, _runtime(llm=llm, runner=runner))
+
+    assert dsa_update.get("suite_source") == "synthesised"
+    outcome = dsa_update.get("agent_output")
+    assert outcome is not None
+    assert outcome.solved is True  # dsa_agent's own faithful report
+
+    merged_state = state.model_copy(update=dsa_update)
+    learning_update = await update_learner_model(merged_state, _runtime())
+
+    events = learning_update.get("events")
+    assert events is not None and len(events) == 1
+    assert events[0].solved is None
 
 
 # ---------------------------------------------------------------------------

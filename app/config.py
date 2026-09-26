@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     groq_api_key_2: SecretStr | None = None
     groq_api_key_3: SecretStr | None = None
     groq_api_key_4: SecretStr | None = None
+    groq_api_key_5: SecretStr | None = None
+    groq_api_key_6: SecretStr | None = None
+    groq_api_key_7: SecretStr | None = None
+    groq_api_key_8: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
 
     langsmith_tracing: bool = False
@@ -211,6 +215,10 @@ class Settings(BaseSettings):
         "groq_api_key_2",
         "groq_api_key_3",
         "groq_api_key_4",
+        "groq_api_key_5",
+        "groq_api_key_6",
+        "groq_api_key_7",
+        "groq_api_key_8",
         "openrouter_api_key",
         "llm_model",
         "llm_vision_model",
@@ -230,7 +238,7 @@ class Settings(BaseSettings):
     def _require_active_provider_key(self) -> "Settings":
         if self.llm_provider == "groq" and not self.groq_api_keys:
             raise ValueError(
-                "GROQ_API_KEY (or GROQ_API_KEY_1..4) is required when LLM_PROVIDER=groq"
+                "GROQ_API_KEY (or GROQ_API_KEY_1..8) is required when LLM_PROVIDER=groq"
             )
         if self.llm_provider == "openrouter" and self.openrouter_api_key is None:
             raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
@@ -240,7 +248,7 @@ class Settings(BaseSettings):
     def groq_api_keys(self) -> list[SecretStr]:
         """Every configured Groq key, in failover order, de-duplicated.
 
-        `GROQ_API_KEY` first (when set), then `GROQ_API_KEY_1` .. `_4`. A key
+        `GROQ_API_KEY` first (when set), then `GROQ_API_KEY_1` .. `_8`. A key
         repeated across two variables is kept once: retrying the same
         credential after it was rate-limited only spends another failed call.
         """
@@ -252,6 +260,10 @@ class Settings(BaseSettings):
             self.groq_api_key_2,
             self.groq_api_key_3,
             self.groq_api_key_4,
+            self.groq_api_key_5,
+            self.groq_api_key_6,
+            self.groq_api_key_7,
+            self.groq_api_key_8,
         ):
             if key is None:
                 continue

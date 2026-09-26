@@ -20,6 +20,17 @@ determine this turn's gating level; again here for the attached result)
 because it is a deterministic, side-effect-free function of unchanged
 inputs.
 
+After that compiled pipeline finishes, `run_dsa` runs one more (non-LLM)
+pass of its own, outside the `StateGraph`: when the learner submitted code
+this turn AND a validated `TestSuite` was handed in (see
+`app.graph.nodes._resolve_test_suite`), their code is run once against it
+via `runtime.context.runner` -- the only sandbox ground truth
+`DSAResult.initial_verdict` may ever carry. That same request is also
+returned as `DSARunResult.execution_request` so the outer graph's
+`execute_code -> verify` edges re-run it and produce `state.verification`;
+running the learner's code twice this way is a deliberate, accepted
+double-run, mirroring `app.graph.subgraphs.debug.run_debug`.
+
 `state["problem"]` (sourced from `AgentState.structured_input`) is untrusted
 learner content, exactly as documented in `app.graph.nodes`'s module
 docstring; it is only ever handed to the LLM as clearly-delimited data to
@@ -38,11 +49,19 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
 )
 from langgraph.runtime import Runtime
 
+from app.agents.debugger import extract_learner_code
 from app.agents.dsa_solver import DSAAnalysis, analyze_dsa_problem, build_execution_request
 from app.agents.hint_engine import HintProgress, next_hint
+from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
 from app.schemas.agent_results import DSAResult, HintLevel, HintResult
-from app.schemas.execution import ExecutionRequest
+from app.schemas.execution import (
+    ExecutionRequest,
+    ExecutionResult,
+    HarnessError,
+    TestSuite,
+    Verdict,
+)
 from app.schemas.input import StructuredInput
 from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import TeachingPlan
@@ -248,15 +267,44 @@ def get_dsa_graph() -> _CompiledDSAGraph:
 class DSARunResult:
     """The outcome of one `run_dsa` call.
 
-    `execution_request` is only ever set alongside `result.code` (an L6 full
-    solution) -- P7's `dsa_agent` node body puts it on
+    `execution_request` is set from one of two sources, in priority order:
+    the learner's own submitted code (paired with the `TestSuite` that
+    already produced `result.initial_verdict` inside this call -- see the
+    module docstring), or, failing that, `result.code` (an L6 full solution
+    the agent itself revealed). Either way, `dsa_agent` puts it on
     `AgentState.execution_request` so the outer `execute_code -> verify`
-    edges (already wired, Phase 06) run it in the sandbox and produce the
-    authoritative `Verdict`. This module never runs it itself.
+    edges (Phase 06) re-run it and produce `state.verification`.
     """
 
     result: DSAResult
     execution_request: ExecutionRequest | None
+
+
+_LEARNER_RUN_FAILED_MESSAGE: Final = "running your code failed unexpectedly"
+
+
+def _sandbox_error_result(request: ExecutionRequest) -> ExecutionResult:
+    return ExecutionResult(
+        status="sandbox_error",
+        language=request.language,
+        error=HarnessError(type="DSARunFailed", message=_LEARNER_RUN_FAILED_MESSAGE),
+    )
+
+
+async def _run_learner_code(
+    request: ExecutionRequest, runtime: Runtime[GraphContext]
+) -> ExecutionResult:
+    """Run `request` via `runtime.context.runner`, degrading any raised
+    exception to a `sandbox_error` result rather than propagating it (which
+    could otherwise leak raw exception text from an untrusted run) -- mirrors
+    `app.graph.subgraphs.debug._run_in_sandbox`."""
+    runner = runtime.context.runner
+    if runner is None:
+        return _sandbox_error_result(request)
+    try:
+        return await runner.run(request)
+    except Exception:  # noqa: BLE001 - never leak the raw exception from an untrusted run
+        return _sandbox_error_result(request)
 
 
 def _citation_labels(context: Sequence[RetrievalHit]) -> list[str]:
@@ -285,6 +333,7 @@ async def run_dsa(
     runtime: Runtime[GraphContext],
     *,
     progress: HintProgress = _DEFAULT_PROGRESS,
+    tests: TestSuite | None = None,
 ) -> DSARunResult:
     """Run the DSA solver subgraph for this turn and map the result back.
 
@@ -294,6 +343,13 @@ async def run_dsa(
     over. Passing an explicit `progress` (e.g. from a caller that tracks it
     elsewhere) lets a turn resume mid-ladder without changing this
     function's primary two-argument shape that `dsa_agent` calls.
+
+    `tests` is this turn's validated `TestSuite`, if `dsa_agent` resolved
+    one (only attempted when the learner actually submitted code -- see its
+    docstring). When both the learner's code and `tests` are present, that
+    code is run once against it here to produce `result.initial_verdict`;
+    otherwise `initial_verdict` stays `None`, so `DSAResult.to_outcome`
+    reports `solved=None` rather than fabricating evidence.
     """
     initial: DSAState = {
         "problem": state.structured_input,
@@ -304,6 +360,14 @@ async def run_dsa(
     final_state = await get_dsa_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         initial, context=runtime.context
     )
+
+    learner_code = extract_learner_code(state.structured_input)
+    learner_request: ExecutionRequest | None = None
+    initial_verdict: Verdict | None = None
+    if learner_code is not None and tests is not None:
+        learner_request = ExecutionRequest(code=learner_code, tests=tests)
+        learner_result = await _run_learner_code(learner_request, runtime)
+        initial_verdict = verify(learner_result, learner_request)
 
     citations = _citation_labels(state.retrieved_context)
     result = DSAResult(
@@ -321,6 +385,8 @@ async def run_dsa(
         complexity_space=final_state.get("complexity_space"),
         common_mistakes=final_state.get("common_mistakes") or [],
         citations=citations,
+        initial_verdict=initial_verdict,
     )
-    execution_request = build_execution_request(result.code) if result.code else None
+    solution_request = build_execution_request(result.code) if result.code else None
+    execution_request = learner_request or solution_request
     return DSARunResult(result=result, execution_request=execution_request)

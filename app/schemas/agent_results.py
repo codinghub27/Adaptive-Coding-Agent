@@ -127,6 +127,13 @@ class DSAResult(APIModel):
     Free-text stage fields (`understanding`, `brute_force`, `pseudocode`,
     `code`, etc.) hold LLM-generated content grounded in the learner's
     (untrusted) problem statement and code; treat them as display-only data.
+
+    `initial_verdict` is sandbox ground truth on the code the LEARNER
+    THEMSELVES submitted this turn -- never the agent's own L6 revealed
+    solution -- populated only when they actually submitted code and a
+    validated `TestSuite` survived this turn (see
+    `app.graph.subgraphs.dsa.run_dsa`). It is the only evidence `to_outcome`
+    may use to set `solved`.
     """
 
     # Discriminator for the `AgentResult` union below -- required because the
@@ -149,6 +156,7 @@ class DSAResult(APIModel):
     citations: list[str] = Field(
         default_factory=list[str], description="Knowledge-chunk ids cited for this result."
     )
+    initial_verdict: Verdict | None = None
 
     @model_validator(mode="after")
     def _code_requires_full_hint_level(self) -> "DSAResult":
@@ -161,9 +169,12 @@ class DSAResult(APIModel):
 
         `hints_used` is the count of ladder rungs reached this turn
         (`level + 1`); `needed_full_solution` is true only when the ladder
-        actually reached L6. `solved` is left `None`: this result carries no
-        direct evidence of whether the learner ultimately solved the
-        problem.
+        actually reached L6 -- a learner who solved it after four hints
+        still solved it, `outcome_score`'s `HINT_PENALTY` is what prices
+        that in, not this method. `solved` comes from `initial_verdict` via
+        `solved_from_verdict`: `None` whenever the learner submitted no code,
+        no `TestSuite` survived this turn, or nothing conclusive ran --
+        asking for a hint is exposure, never failure.
         """
         from app.graph.state import AgentOutcome
 
@@ -174,7 +185,7 @@ class DSAResult(APIModel):
             text=text,
             topic=self.topic,
             pattern=self.pattern,
-            solved=None,
+            solved=solved_from_verdict(self.initial_verdict),
             hints_used=hints_used,
             needed_full_solution=needed_full_solution,
             errors=[],
