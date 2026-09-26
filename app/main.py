@@ -8,15 +8,16 @@ at first use.
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Final
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -37,6 +38,11 @@ from app.memory.api import router as memory_router
 from app.schemas import HealthResponse
 
 logger = logging.getLogger(__name__)
+
+#: The built pages served at extensionless URLs. A fixed, closed set:
+#: never derived from request input, since each name is joined onto a
+#: filesystem path.
+FRONTEND_PAGES: Final = ("login", "register", "chat")
 
 
 def _get_engine(app: FastAPI) -> AsyncEngine:
@@ -173,9 +179,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # route. Only mounted when the built frontend actually exists -- the
     # normal state in tests and before a `pnpm build` is no mount at all.
     if settings.frontend_dist_dir.is_dir():
-        app.mount(
-            "/", StaticFiles(directory=settings.frontend_dist_dir, html=True), name="frontend"
-        )
+        dist = settings.frontend_dist_dir
+
+        def _page(name: str) -> FileResponse:
+            """Serve one built page, never letting `name` reach the filesystem
+            unchecked: it only ever comes from `FRONTEND_PAGES` below."""
+            return FileResponse(dist / f"{name}.html")
+
+        # Extensionless page routes, registered before the catch-all mount so
+        # the UI has clean URLs (`/login`, not `/login.html`). Each one is a
+        # separate closure rather than a single `/{page}` route: a path
+        # parameter here would be caller-controlled input joined onto a
+        # filesystem path, and these must stay a fixed, closed set.
+        for page in FRONTEND_PAGES:
+            # A dist that does not carry this page gets no route for it, so a
+            # partial or hand-made bundle degrades to whatever StaticFiles can
+            # serve instead of 500ing on a missing file.
+            if not (dist / f"{page}.html").is_file():
+                continue
+
+            def _make_handler(name: str) -> Callable[[], FileResponse]:
+                async def _handler() -> FileResponse:  # pyright: ignore[reportUnusedFunction]
+                    return _page(name)
+
+                return _handler  # pyright: ignore[reportReturnType]
+
+            app.add_api_route(
+                f"/{page}",
+                _make_handler(page),
+                methods=["GET"],
+                include_in_schema=False,
+                response_class=FileResponse,
+            )
+
+            # Anyone arriving on the old `.html` URL (a bookmark, a link in a
+            # previous build) lands on the canonical one instead of getting
+            # two live URLs for the same page.
+            def _make_redirect(name: str) -> Callable[[], RedirectResponse]:
+                async def _redirect() -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
+                    return RedirectResponse(f"/{name}", status_code=301)
+
+                return _redirect  # pyright: ignore[reportReturnType]
+
+            app.add_api_route(
+                f"/{page}.html",
+                _make_redirect(page),
+                methods=["GET"],
+                include_in_schema=False,
+                response_class=RedirectResponse,
+            )
+
+        if (dist / "chat.html").is_file():
+
+            @app.get("/", include_in_schema=False)
+            async def _index() -> RedirectResponse:
+                """The workspace is the entry point; its own route guard sends
+                an unauthenticated visitor to `/login`. Only registered when
+                the workspace page exists -- otherwise `/` falls through to
+                StaticFiles and its `index.html`."""
+                return RedirectResponse("/chat", status_code=302)
+
+        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
     else:
         logger.info("frontend bundle not built: no static mount registered")
 

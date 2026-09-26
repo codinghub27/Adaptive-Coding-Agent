@@ -21,7 +21,7 @@
 
 import { streamChat as streamChatRequest } from "./streaming.js";
 
-const LOGIN_URL = "/login.html";
+const LOGIN_URL = "/login";
 const DISPLAY_TITLE_FALLBACK = "Untitled learning session";
 
 /** In-memory only. Deliberately not persisted anywhere. */
@@ -47,7 +47,7 @@ function setAccessToken(token) {
 
 function redirectToLogin() {
   accessToken = null;
-  if (!window.location.pathname.endsWith("/login.html")) window.location.replace(LOGIN_URL);
+  if (!window.location.pathname.endsWith("/login")) window.location.replace(LOGIN_URL);
 }
 
 /** Pull a human-readable message out of a FastAPI error body. */

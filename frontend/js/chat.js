@@ -346,7 +346,7 @@ async function openProfileModal() {
   });
   if (choice === "signout") {
     await api.logout();
-    window.location.href = "/login.html";
+    window.location.href = "/login";
   }
 }
 
@@ -384,7 +384,7 @@ async function initialize() {
     // Route guard: no valid session (or no refresh cookie) means no workspace.
     state.user = await api.getMe();
   } catch {
-    window.location.replace("/login.html");
+    window.location.replace("/login");
     return;
   }
   renderUserChip();

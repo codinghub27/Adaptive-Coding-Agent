@@ -71,3 +71,80 @@ def test_static_mount_serves_index_without_shadowing_health(
 
     assert health_response.status_code == 200
     assert health_response.json() == {"status": "ok", "db": "ok", "qdrant": "ok"}
+
+
+def _write_bundle(dist: Path) -> None:
+    """A minimal built bundle: the four pages Vite emits."""
+    dist.mkdir(parents=True, exist_ok=True)
+    for page in ("index", "login", "register", "chat"):
+        (dist / f"{page}.html").write_text(f"<html><body>{page}</body></html>", encoding="utf-8")
+
+
+def test_pages_are_served_at_extensionless_urls(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    """`/login`, `/register` and `/chat` serve their built pages, so the UI
+    never has to link to a `.html` URL."""
+    dist = tmp_path / "dist"
+    _write_bundle(dist)
+    app = create_app(make_settings(frontend_dist_dir=dist))
+
+    with TestClient(app) as client:
+        for page in ("login", "register", "chat"):
+            response = client.get(f"/{page}")
+            assert response.status_code == 200
+            assert page in response.text
+
+
+def test_html_urls_redirect_permanently_to_the_canonical_page(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    """An old `.html` bookmark lands on the canonical URL rather than leaving
+    two live URLs for the same page."""
+    dist = tmp_path / "dist"
+    _write_bundle(dist)
+    app = create_app(make_settings(frontend_dist_dir=dist))
+
+    with TestClient(app) as client:
+        for page in ("login", "register", "chat"):
+            response = client.get(f"/{page}.html", follow_redirects=False)
+            assert response.status_code == 301
+            assert response.headers["location"] == f"/{page}"
+
+
+def test_root_redirects_to_the_workspace(make_settings: MakeSettings, tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    _write_bundle(dist)
+    app = create_app(make_settings(frontend_dist_dir=dist))
+
+    with TestClient(app) as client:
+        response = client.get("/", follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers["location"] == "/chat"
+
+
+def test_page_routes_never_shadow_an_api_route(make_settings: MakeSettings, tmp_path: Path) -> None:
+    """The page routes and the catch-all mount are registered last, so the API
+    still answers -- including the 401 on a protected route."""
+    dist = tmp_path / "dist"
+    _write_bundle(dist)
+    app = create_app(make_settings(frontend_dist_dir=dist))
+
+    with TestClient(app) as client:
+        assert client.get("/health").json()["status"] in {"ok", "degraded"}
+        assert client.get("/conversations").status_code == 401
+
+
+def test_a_partial_bundle_registers_no_route_for_a_missing_page(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    """A dist without `chat.html` must not 500 on `/chat` or `/`; the page
+    route is simply not registered."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "login.html").write_text("<html><body>login</body></html>", encoding="utf-8")
+    app = create_app(make_settings(frontend_dist_dir=dist))
+
+    with TestClient(app) as client:
+        assert client.get("/login").status_code == 200
+        assert client.get("/chat", follow_redirects=False).status_code == 404

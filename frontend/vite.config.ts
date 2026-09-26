@@ -31,6 +31,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
 react(),
       tailwindcss(),
+      extensionlessPages(),
       figmaSiteConfiguration(siteConfiguration),
       figmaErrorOverlayReplay(),
       figmaReactRefreshBoundaryFallback(),
@@ -68,6 +69,31 @@ react(),
     },
   }
 })
+
+/**
+ * Serves /login, /register and /chat from their .html files, and sends / to
+ * /chat, so the dev server has the same extensionless routes FastAPI exposes
+ * in production (see app/main.py).
+ */
+function extensionlessPages(): Plugin {
+  const pages = ['login', 'register', 'chat']
+  return {
+    name: 'extensionless-pages',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const path = (req.url || '').split('?')[0]
+        if (path === '/') {
+          req.url = '/chat.html'
+        } else {
+          const page = path.replace(/^\//, '')
+          if (pages.includes(page)) req.url = (req.url || '').replace(path, `/${page}.html`)
+        }
+        next()
+      })
+    },
+  }
+}
 
 type FigmaSiteConfiguration = {
   title?: string

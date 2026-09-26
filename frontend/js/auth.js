@@ -72,7 +72,7 @@ function initLogin() {
     setLoading(form, true);
     try {
       await api.login({ username, password });
-      window.location.href = "/chat.html";
+      window.location.href = "/chat";
     } catch (error) {
       alert.textContent = error.message;
       alert.hidden = false;
@@ -116,7 +116,7 @@ function initRegister() {
       alert.textContent = "Workspace created. Taking you to sign in…";
       alert.hidden = false;
       showToast("Account created successfully");
-      setTimeout(() => (window.location.href = `/login.html?username=${encodeURIComponent(username)}`), 900);
+      setTimeout(() => (window.location.href = `/login?username=${encodeURIComponent(username)}`), 900);
     } catch (error) {
       alert.classList.remove("success");
       alert.textContent = error.message;
