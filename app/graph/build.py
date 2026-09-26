@@ -56,6 +56,7 @@ from app.graph.state import AgentState, GraphContext, RawInput
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
 from app.llm.budget import DEFAULT_MAX_LLM_CALLS, BudgetedLLMClient
+from app.llm.client import Tracer
 
 __all__ = [
     "NODE_FUNCTIONS",
@@ -189,6 +190,44 @@ def _build_run_context(
     return budgeted, context
 
 
+def _trace_inputs(
+    raw: RawInput,
+    *,
+    user_id: UUID | None,
+    conversation_id: UUID | None,
+    max_llm_calls: int,
+) -> dict[str, object]:
+    """Metadata-only inputs for the `teaching_graph` parent run.
+
+    Never the learner's text/code/image bytes themselves -- only ids, flags,
+    and enum-ish values (see `app.llm.client.Tracer.run`'s contract).
+    """
+    return {
+        "has_text": bool(raw.text and raw.text.strip()),
+        "has_image": raw.image is not None,
+        "language": raw.language,
+        "user_id": str(user_id) if user_id is not None else None,
+        "conversation_id": str(conversation_id) if conversation_id is not None else None,
+        "max_llm_calls": max_llm_calls,
+    }
+
+
+def _trace_outputs(state: AgentState, budgeted: BudgetedLLMClient) -> dict[str, object]:
+    """Metadata-only outputs for the `teaching_graph` parent run: counts and
+    enum-ish values, never the generated response or any retrieved text."""
+    return {
+        "route": state.route,
+        "intent": state.intent.intent.value if state.intent is not None else None,
+        "topic": state.plan.topic if state.plan is not None else None,
+        "verification_status": (
+            state.verification.status if state.verification is not None else None
+        ),
+        "error_count": len(state.errors),
+        "event_count": len(state.events),
+        "llm_calls": budgeted.calls,
+    }
+
+
 async def run_graph(
     raw: RawInput,
     *,
@@ -200,6 +239,7 @@ async def run_graph(
     retriever: Retriever | None = None,
     knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K,
     runner: CodeRunner | None = None,
+    tracer: Tracer | None = None,
 ) -> GraphRunResult:
     """Run the teaching graph once, for a single turn.
 
@@ -211,6 +251,13 @@ async def run_graph(
     is `None` whenever the sandbox is disabled or unavailable (see
     `app.execution.runner.build_sandbox_runner`) -- `execute_code` degrades
     to a `sandbox_error` result rather than failing the run.
+
+    `tracer`, when given, wraps the whole graph invocation in a single named
+    LangSmith parent run (`teaching_graph`) so every node's own run (and any
+    LLM call inside it) nests under one parent per turn instead of arriving
+    as flat, parentless runs. `tracer=None` (the default) makes this a
+    complete no-op -- identical to every caller/test that predates this
+    parameter.
     """
     budgeted, context = _build_run_context(
         llm,
@@ -222,12 +269,31 @@ async def run_graph(
         knowledge_top_k=knowledge_top_k,
         runner=runner,
     )
-    result = await get_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
-        AgentState(input=raw),
-        config={"recursion_limit": RECURSION_LIMIT, "run_name": "teaching_graph"},
-        context=context,
-    )
-    state = AgentState.model_validate(result)
+
+    async def _invoke_graph() -> AgentState:
+        result = await get_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
+            AgentState(input=raw),
+            config={"recursion_limit": RECURSION_LIMIT},
+            context=context,
+        )
+        return AgentState.model_validate(result)
+
+    if tracer is None:
+        state = await _invoke_graph()
+    else:
+        state = await tracer.run(
+            name="teaching_graph",
+            run_type="chain",
+            inputs=_trace_inputs(
+                raw,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                max_llm_calls=max_llm_calls,
+            ),
+            fn=_invoke_graph,
+            outputs=lambda result: _trace_outputs(result, budgeted),
+        )
+
     return GraphRunResult(state=state, llm_calls=budgeted.calls)
 
 
@@ -260,6 +326,7 @@ async def stream_graph(
     retriever: Retriever | None = None,
     knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K,
     runner: CodeRunner | None = None,
+    tracer: Tracer | None = None,
 ) -> AsyncIterator[GraphStreamEvent]:
     """Run the teaching graph once, yielding a `GraphStageEvent` as each node
     finishes and exactly one terminal `GraphResultEvent` at the end.
@@ -271,6 +338,18 @@ async def stream_graph(
     build `GraphStageEvent`s (never their payloads, which may carry untrusted
     state) -- see `app.graph.stages` for the fixed label lookup callers are
     expected to pair this with.
+
+    `tracer` is accepted for call-site symmetry with `run_graph` (so
+    `app.graph.api` can pass the same value to both) but is currently
+    **unused**: `Tracer.run` wraps a single `Callable[[], Awaitable[_T]]`,
+    which fits `run_graph`'s one-shot `ainvoke` but not this generator's
+    incremental yields -- buffering every `GraphStageEvent` until `fn`
+    returns would defeat the point of streaming, and reaching into `Tracer`'s
+    private tracing-context machinery from here would repeat exactly the
+    cross-module private-attribute reach this packet removed from
+    `run_graph`. Giving `Tracer` a public streaming-run API would fix this
+    cleanly but is a `Tracer` API change outside this packet's scope -- see
+    the PACKET P-LS report.
     """
     budgeted, context = _build_run_context(
         llm,

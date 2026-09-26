@@ -86,6 +86,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.session_factory = session_factory
             app.state.qdrant = qdrant
             app.state.llm = get_llm_client(settings)
+            # `Tracer.from_settings` never performs network I/O at construction
+            # time (mirrors the assumption `create_retriever` below already
+            # relies on), so this can't fail startup even if LangSmith itself
+            # is unreachable.
+            app.state.tracer = Tracer.from_settings(settings)
 
             if settings.knowledge_enabled:
                 try:

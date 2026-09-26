@@ -43,6 +43,85 @@ def _to_langchain_message(message: ChatMessage) -> BaseMessage:
     return AIMessage(content=message.content)
 
 
+#: Exactly the keys `app.graph.build._trace_inputs`/`_trace_outputs` emit for
+#: the `teaching_graph` parent run -- the only payload shape allowed to reach
+#: LangSmith unredacted. Kept honest by
+#: `tests/llm/test_client.py::test_trace_inputs_and_outputs_keys_are_all_allow_listed`,
+#: which calls those two functions directly and asserts every key they
+#: produce is in this set; this module deliberately never imports
+#: `app.graph.build` itself (that dependency would run the wrong way -- the
+#: graph module already depends on this one for `Tracer`).
+_ALLOWED_TRACE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        # `_trace_inputs`
+        "has_text",
+        "has_image",
+        "language",
+        "user_id",
+        "conversation_id",
+        "max_llm_calls",
+        # `_trace_outputs`
+        "route",
+        "intent",
+        "topic",
+        "verification_status",
+        "error_count",
+        "event_count",
+        "llm_calls",
+    }
+)
+
+#: The longest a `str` value is allowed to be for a payload to pass through
+#: `redact_trace_payload` unchanged. Long enough for the enum-ish/id-ish
+#: values `_trace_inputs`/`_trace_outputs` actually emit, short enough that no
+#: meaningful chunk of learner text, code, or a traceback can hide inside one.
+_MAX_TRACE_SCALAR_CHARS: Final = 64
+
+
+def _is_safe_trace_scalar(value: object) -> bool:
+    """Whether `value` is small and inert enough to leave the process."""
+    if value is None or isinstance(value, bool | int | float):
+        return True
+    if isinstance(value, str):
+        return len(value) <= _MAX_TRACE_SCALAR_CHARS
+    return False
+
+
+def redact_trace_payload(payload: object) -> dict[str, object]:
+    """Redact one LangSmith run's `inputs`/`outputs` before they ever leave the process.
+
+    This is wired onto `LangSmithClient(hide_inputs=..., hide_outputs=...)` in
+    `Tracer.from_settings`, which makes it **client-wide**: every run this
+    process's LangSmith client submits is passed through it -- not just the
+    `teaching_graph` parent run `app.graph.build.run_graph` creates
+    explicitly, but every node run LangGraph auto-instruments the moment the
+    ambient tracing context is open (`understand_input`, `debug_agent`,
+    `llm.chat`, ... every one of them), which otherwise carries the raw
+    learner state -- text, code, images, tracebacks -- straight into
+    LangSmith.
+
+    A payload is passed through completely unchanged only when it is a
+    non-empty `dict`, every key is one of `_ALLOWED_TRACE_METADATA_KEYS`
+    (exactly what `app.graph.build._trace_inputs`/`_trace_outputs` emit for
+    that one parent run), and every value is `None`, `bool`, `int`, `float`,
+    or a `str` no longer than `_MAX_TRACE_SCALAR_CHARS`. That allow-list is
+    the only reason the parent run's own metadata survives at all. Every
+    other payload -- which is to say, every node's raw inputs/outputs -- is
+    replaced by a marker (`{"redacted": True, "key_count": <n>}`) that names
+    nothing about what was redacted: never a value, and never even an
+    original key name outside the allow-list.
+    """
+    if isinstance(payload, dict):
+        items = cast("dict[str, object]", payload)
+        if items and all(
+            key in _ALLOWED_TRACE_METADATA_KEYS and _is_safe_trace_scalar(value)
+            for key, value in items.items()
+        ):
+            return items
+        return {"redacted": True, "key_count": len(items)}
+    return {"redacted": True, "key_count": 0}
+
+
 class Tracer:
     """Thin LangSmith tracing hook.
 
@@ -69,9 +148,18 @@ class Tracer:
         LangSmith API key is configured. The client/project are passed
         explicitly rather than relying on ambient environment variables,
         since `Settings` never exports values to `os.environ`.
+
+        `hide_inputs`/`hide_outputs` are both `redact_trace_payload`, so the
+        redaction is applied client-wide (see that function's docstring) --
+        every run this client submits, including our own `teaching_graph`
+        parent run, is passed through it before transmission.
         """
         if settings.langsmith_tracing and settings.langsmith_api_key is not None:
-            client = LangSmithClient(api_key=settings.langsmith_api_key.get_secret_value())
+            client = LangSmithClient(
+                api_key=settings.langsmith_api_key.get_secret_value(),
+                hide_inputs=redact_trace_payload,
+                hide_outputs=redact_trace_payload,
+            )
             return cls(enabled=True, client=client, project_name=settings.langsmith_project)
         return cls(enabled=False)
 

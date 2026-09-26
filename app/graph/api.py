@@ -44,6 +44,7 @@ from app.input.normalize import MAX_TEXT_CHARS
 from app.input.vision import MAX_IMAGE_BYTES, ImageValidationError, validate_image
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
+from app.llm.client import Tracer
 from app.schemas.auth import AuthUser
 from app.schemas.base import APIModel
 from app.schemas.event import LearningEventCreate
@@ -108,6 +109,17 @@ def _get_retriever(request: Request) -> Retriever | None:
     if isinstance(retriever, Retriever):
         return retriever
     return None
+
+
+def _get_tracer(request: Request) -> Tracer:
+    """Return the shared `Tracer` configured on `app.state`, falling back to
+    a disabled tracer when unconfigured (as in tests that build the app
+    without running its lifespan) -- that's a normal, expected state, not an
+    error, so (like `_get_retriever`) this never raises."""
+    tracer = getattr(request.app.state, "tracer", None)
+    if isinstance(tracer, Tracer):
+        return tracer
+    return Tracer.disabled()
 
 
 def _get_knowledge_top_k(request: Request) -> int:
@@ -217,6 +229,7 @@ async def chat(
         retriever=_get_retriever(request),
         knowledge_top_k=_get_knowledge_top_k(request),
         runner=_get_runner(request),
+        tracer=_get_tracer(request),
     )
     await session.commit()
 
@@ -282,6 +295,7 @@ async def _chat_stream_events(
                     retriever=_get_retriever(request),
                     knowledge_top_k=_get_knowledge_top_k(request),
                     runner=_get_runner(request),
+                    tracer=_get_tracer(request),
                 ):
                     if isinstance(event, GraphStageEvent):
                         yield _sse_frame("stage", {"node": event.node, "label": event.label})

@@ -11,6 +11,7 @@ below use a `unittest.mock.MagicMock(spec=Client)` in place of a real
 from collections.abc import Callable
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -21,14 +22,23 @@ from langchain_core.outputs import ChatResult as LCChatResult
 from langsmith import Client as LangSmithClient
 
 from app.config import OPENROUTER_DEFAULT_MODEL, Settings
+from app.graph.build import (
+    _trace_inputs,  # pyright: ignore[reportPrivateUsage]
+    _trace_outputs,  # pyright: ignore[reportPrivateUsage]
+)
+from app.graph.state import AgentState, RawInput
 from app.llm.base import ChatMessage, ChatResult, LLMError, LLMRateLimitError
+from app.llm.budget import BudgetedLLMClient
 from app.llm.client import (
+    _ALLOWED_TRACE_METADATA_KEYS,  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     FailoverLLMClient,
     LangChainLLMClient,
     Tracer,
     get_llm_client,
     is_rate_limit,
+    redact_trace_payload,
 )
+from tests.input.fakes import FakeLLMClient
 
 MakeSettings = Callable[..., Settings]
 
@@ -573,3 +583,92 @@ async def test_chat_maps_a_429_to_llm_rate_limit_error() -> None:
     # inspected to classify the failure but never carried into the message.
     assert str(exc_info.value) == "groq chat call failed: _FakeRateLimitError"
     assert "should-not-leak" not in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------
+# redact_trace_payload (PACKET P-LS2)
+# --------------------------------------------------------------------------
+
+_SENTINEL = "zzqxflarp_leak_sentinel_do_not_transmit"
+
+
+def test_realistic_node_payload_is_redacted_and_sentinel_is_gone() -> None:
+    """A shape like what LangGraph would hand `hide_inputs` for the
+    `understand_input` node -- nested, and carrying the learner's raw text --
+    must come back as a bare marker with the sentinel nowhere in it."""
+    node_payload = {
+        "input": {
+            "text": f"please help me fix this: {_SENTINEL}",
+            "language": "python",
+            "image": None,
+        },
+        "normalized": {"text": f"please help me fix this: {_SENTINEL}", "language": "python"},
+    }
+
+    result = redact_trace_payload(node_payload)
+
+    assert result == {"redacted": True, "key_count": 2}
+    assert _SENTINEL not in str(result)
+
+
+def test_real_trace_inputs_and_outputs_pass_through_unchanged() -> None:
+    """The actual `teaching_graph` parent-run payloads must survive redaction
+    byte-for-byte -- that's the entire point of the allow-list."""
+    inputs = _trace_inputs(
+        RawInput(text="hi"),
+        user_id=uuid4(),
+        conversation_id=uuid4(),
+        max_llm_calls=5,
+    )
+    outputs = _trace_outputs(
+        AgentState(input=RawInput(text="hi")), BudgetedLLMClient(FakeLLMClient(), 5)
+    )
+
+    assert redact_trace_payload(inputs) == inputs
+    assert redact_trace_payload(outputs) == outputs
+
+
+def test_allow_listed_keys_with_an_overlong_string_value_are_redacted() -> None:
+    """Every key being allow-listed is not enough on its own -- the length
+    rule must still do real work against an oversized value."""
+    payload = {"route": "x" * 65, "llm_calls": 1}
+
+    result = redact_trace_payload(payload)
+
+    assert result == {"redacted": True, "key_count": 2}
+
+
+def test_allow_listed_keys_with_a_max_length_string_value_pass_through() -> None:
+    """The boundary itself: exactly `_MAX_TRACE_SCALAR_CHARS` chars is fine."""
+    payload = {"route": "x" * 64, "llm_calls": 1}
+
+    assert redact_trace_payload(payload) == payload
+
+
+def test_non_dict_empty_dict_and_none_payloads_do_not_raise() -> None:
+    assert redact_trace_payload(None) == {"redacted": True, "key_count": 0}
+    assert redact_trace_payload({}) == {"redacted": True, "key_count": 0}
+    assert redact_trace_payload("not a dict") == {"redacted": True, "key_count": 0}
+    assert redact_trace_payload(["also", "not", "a", "dict"]) == {
+        "redacted": True,
+        "key_count": 0,
+    }
+
+
+def test_trace_inputs_and_outputs_keys_are_all_allow_listed() -> None:
+    """Guards against the allow-list and `_trace_inputs`/`_trace_outputs`
+    drifting apart silently: every key those two functions actually emit must
+    already be in `_ALLOWED_TRACE_METADATA_KEYS`, or the parent run's own
+    metadata would start being redacted too."""
+    inputs = _trace_inputs(
+        RawInput(text="hi"),
+        user_id=uuid4(),
+        conversation_id=uuid4(),
+        max_llm_calls=5,
+    )
+    outputs = _trace_outputs(
+        AgentState(input=RawInput(text="hi")), BudgetedLLMClient(FakeLLMClient(), 5)
+    )
+
+    assert set(inputs) <= _ALLOWED_TRACE_METADATA_KEYS
+    assert set(outputs) <= _ALLOWED_TRACE_METADATA_KEYS
