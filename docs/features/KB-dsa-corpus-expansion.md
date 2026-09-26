@@ -2,7 +2,7 @@
 
 ## Status
 Done (2026-09-26). Inspected at `bdf01c5`; rebased onto `df6c700`
-(two unrelated commits landed mid-feature). Commit hash recorded below.
+(two unrelated commits landed mid-feature). Commit `fd8f373`, pushed to `origin/main`.
 
 ## Goal
 Expand the Phase 05 knowledge corpus from 13 short pattern definitions to the
@@ -390,3 +390,10 @@ beats either retriever alone, so the Phase 5 invariant holds.
   top-k can still come entirely from one doc. With 30 docs and 10 sections each
   this matters more than it did at 13x6 -- Phase 07 may want a max-per-source
   cap.
+
+## Git Commit
+`fd8f373` — feat: expand DSA knowledge corpus to full spreadsheet-based pattern taxonomy
+
+## Next
+- Phase 07 should aggregate the learner profile on `pattern_family` (see Known
+  Issues); the field exists and is populated on all 300 chunks.
