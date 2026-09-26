@@ -117,9 +117,9 @@ def build_graph(node_overrides: Mapping[str, Node] | None = None) -> _CompiledGr
     builder.add_edge(START, "understand_input")
     builder.add_edge("understand_input", "classify_intent")
     builder.add_edge("classify_intent", "load_learner_profile")
-    builder.add_edge("load_learner_profile", "plan_teaching")
-    builder.add_edge("plan_teaching", "retrieve_knowledge")
-    builder.add_edge("retrieve_knowledge", "route")
+    builder.add_edge("load_learner_profile", "retrieve_knowledge")
+    builder.add_edge("retrieve_knowledge", "plan_teaching")
+    builder.add_edge("plan_teaching", "route")
     # `dict(ROUTE_NODES)` types as `dict[RouteKey, str]`, which pyright treats
     # as an invariant mismatch against `add_conditional_edges`'s
     # `dict[Hashable, str]` param; a comprehension lets bidirectional

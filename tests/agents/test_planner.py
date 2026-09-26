@@ -10,6 +10,7 @@ import pytest
 from app.agents.planner import (
     HARD_SKILL,
     INTENT_DEFAULTS,
+    MIN_RETRIEVAL_TOPIC_SCORE,
     STRONG_SKILL,
     WEAK_SKILL,
     ProblemAnalysis,
@@ -21,6 +22,7 @@ from app.agents.planner import (
 from app.memory.profile import PRIOR
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
+from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import ASSISTANCE_ORDER, AssistanceLevel, TeachingPlan
 from app.schemas.profile import LearnerProfileView
 
@@ -40,6 +42,19 @@ def _profile(
 
 def _intent(intent: Intent, confidence: float = 0.9) -> IntentResult:
     return IntentResult(intent=intent, confidence=confidence, source="rule")
+
+
+def _hit(*, topic: str, pattern: str, score: float = 0.9, reranked: bool = True) -> RetrievalHit:
+    chunk = KnowledgeChunk(
+        id="chunk-1",
+        text="chunk text",
+        source="source.md",
+        title="Title",
+        heading="Heading",
+        topic=topic,
+        pattern=pattern,
+    )
+    return RetrievalHit(chunk=chunk, score=score, retrievers=("bm25",), reranked=reranked)
 
 
 def _input(
@@ -160,6 +175,84 @@ def test_analyze_problem_no_prose_match_is_unknown() -> None:
     inp = _input(question="something unrelated entirely")
     result = analyze_problem(inp, profile)
     assert result == ProblemAnalysis(topic=None, skill_level=PRIOR, topic_source="unknown")
+
+
+# ---------------------------------------------------------------------------
+# analyze_problem -- retrieval-derived topic (Packet B)
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_problem_uses_top_retrieved_hit_with_empty_profile() -> None:
+    profile = _profile(skill_levels={})
+    hit = _hit(topic="arrays", pattern="two_pointers")
+    result = analyze_problem(None, profile, context=[hit])
+    assert result == ProblemAnalysis(
+        topic="two_pointers", skill_level=PRIOR, topic_source="retrieval"
+    )
+
+
+def test_analyze_problem_hint_wins_over_retrieval() -> None:
+    profile = _profile(skill_levels={})
+    hit = _hit(topic="arrays", pattern="two_pointers")
+    result = analyze_problem(None, profile, topic_hint="hashing", context=[hit])
+    assert result == ProblemAnalysis(topic="hashing", skill_level=PRIOR, topic_source="hint")
+
+
+def test_analyze_problem_profile_match_wins_over_retrieval() -> None:
+    profile = _profile(skill_levels={"arrays": 0.6})
+    inp = _input(question="explain arrays please")
+    hit = _hit(topic="graphs", pattern="bfs")
+    result = analyze_problem(inp, profile, context=[hit])
+    assert result == ProblemAnalysis(topic="arrays", skill_level=0.6, topic_source="profile_match")
+
+
+def test_analyze_problem_retrieval_beats_nothing() -> None:
+    profile = _profile(skill_levels={})
+    hit = _hit(topic="arrays", pattern="two_pointers")
+    result = analyze_problem(None, profile, context=[hit])
+    assert result.topic == "two_pointers"
+    assert result.topic_source == "retrieval"
+
+
+def test_analyze_problem_empty_context_and_profile_is_unknown() -> None:
+    profile = _profile(skill_levels={})
+    result = analyze_problem(None, profile, context=[])
+    assert result == ProblemAnalysis(topic=None, skill_level=PRIOR, topic_source="unknown")
+
+
+def test_analyze_problem_retrieval_topic_uses_existing_skill_level() -> None:
+    profile = _profile(skill_levels={"two_pointers": 0.8})
+    hit = _hit(topic="arrays", pattern="two_pointers")
+    result = analyze_problem(None, profile, context=[hit])
+    assert result == ProblemAnalysis(
+        topic="two_pointers", skill_level=0.8, topic_source="retrieval"
+    )
+
+
+def test_analyze_problem_retrieval_topic_falls_back_to_prior_when_unseen() -> None:
+    profile = _profile(skill_levels={"arrays": 0.9})
+    hit = _hit(topic="graphs", pattern="bfs")
+    result = analyze_problem(None, profile, context=[hit])
+    assert result == ProblemAnalysis(topic="bfs", skill_level=PRIOR, topic_source="retrieval")
+
+
+def test_analyze_problem_retrieval_ignores_negative_rerank_score() -> None:
+    """A raw cross-encoder rerank score can be negative even for a correct
+    match; `analyze_problem` trusts the retriever's rank ordering, not the
+    sign or magnitude of `score` (see the `analyze_problem` docstring)."""
+    profile = _profile(skill_levels={})
+    hit = _hit(topic="arrays", pattern="two_pointers", score=-2.45)
+    result = analyze_problem(None, profile, context=[hit])
+    assert result.topic == "two_pointers"
+    assert result.topic_source == "retrieval"
+
+
+def test_analyze_problem_retrieval_uses_only_the_top_hit() -> None:
+    top = _hit(topic="arrays", pattern="two_pointers")
+    second = _hit(topic="graphs", pattern="bfs")
+    profile = _profile(skill_levels={})
+    result = analyze_problem(None, profile, context=[top, second])
+    assert result.topic == "two_pointers"
 
 
 # ---------------------------------------------------------------------------
@@ -383,3 +476,69 @@ def test_clamp_assistance_is_monotonic_for_every_pair(
         assert result.assistance_level == level
     else:
         assert result.assistance_level == cap
+
+
+# --------------------------------------------------------------------------
+# MIN_RETRIEVAL_TOPIC_SCORE: a turn that names no subject has no topic
+# --------------------------------------------------------------------------
+
+
+def test_retrieval_topic_ignored_when_the_top_hit_scores_below_the_floor() -> None:
+    """A bare follow-up ("Give me the next hint.") still gets chunks back --
+    the retriever always returns its best four -- but they are noise. Adopting
+    one restarted the ladder on an unrelated subject and wrote a bogus skill
+    into the profile, so below the floor the turn simply has no topic."""
+    analysis = analyze_problem(
+        _input("Give me the next hint."),
+        LearnerProfileView.empty(),
+        None,
+        [_hit(topic="trees", pattern="trees", score=-8.39)],
+    )
+
+    assert analysis.topic is None
+    assert analysis.topic_source == "unknown"
+    assert analysis.skill_level == PRIOR
+
+
+def test_retrieval_topic_used_at_the_floor_exactly() -> None:
+    analysis = analyze_problem(
+        _input("two sum problem"),
+        LearnerProfileView.empty(),
+        None,
+        [_hit(topic="arrays", pattern="two_pointers", score=MIN_RETRIEVAL_TOPIC_SCORE)],
+    )
+
+    assert analysis.topic == "two_pointers"
+    assert analysis.topic_source == "retrieval"
+
+
+def test_the_floor_admits_every_measured_real_question_score() -> None:
+    """Measured against this corpus and reranker, real questions scored -2.15,
+    -3.25 and +6.63; bare follow-ups scored -8.39, -10.09 and -10.89. The floor
+    must sit in the empty band between those clusters -- this pins that, so a
+    future change to the constant cannot silently start dropping real topics."""
+    real_question_scores = (-2.15, -3.25, 6.63)
+    bare_followup_scores = (-8.39, -10.09, -10.89)
+
+    assert all(score >= MIN_RETRIEVAL_TOPIC_SCORE for score in real_question_scores)
+    assert all(score < MIN_RETRIEVAL_TOPIC_SCORE for score in bare_followup_scores)
+
+
+def test_a_profile_match_still_wins_over_a_high_scoring_retrieval_hit() -> None:
+    """The floor only gates the retrieval branch; it must not disturb the
+    precedence order above it."""
+    profile = LearnerProfileView(
+        language=None,
+        skill_levels={"binary_search": 0.8},
+        learning_preferences={},
+        common_errors=[],
+    )
+    analysis = analyze_problem(
+        _input("help me with binary search"),
+        profile,
+        None,
+        [_hit(topic="arrays", pattern="two_pointers", score=9.0)],
+    )
+
+    assert analysis.topic == "binary_search"
+    assert analysis.topic_source == "profile_match"

@@ -121,6 +121,36 @@ async def test_rebuild_profile_reproduces_incremental_projection_and_preserves_p
     assert rebuilt.learning_preferences == {"prefers_hints": True}
 
 
+async def test_rebuild_profile_mixed_outcomes_matches_incremental(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A stream mixing unobserved (`solved=None`), solved, and unsolved
+    events must rebuild to exactly the same profile the incremental path
+    produced -- `rebuild_profile` replays through the same `apply_event`."""
+    events = [
+        LearningEventCreate(topic="arrays", solved=None),
+        LearningEventCreate(topic="arrays", solved=True, hints_used=0),
+        LearningEventCreate(topic="dp", solved=False, errors=["off_by_one"]),
+        LearningEventCreate(topic="dp", solved=None),
+    ]
+    for event in events:
+        await record_event(db_session, user_id, event)
+
+    incremental = await get_profile(db_session, user_id)
+    assert incremental.skill_levels["arrays"] > 0.5
+    assert incremental.skill_levels["dp"] == pytest.approx(0.42)
+
+    # Corrupt the projection so a real rebuild is exercised.
+    profile_row = await ensure_profile(db_session, user_id, for_update=True)
+    profile_row.skill_levels = {"x": 0.9}
+    await db_session.flush()
+
+    rebuilt = await rebuild_profile(db_session, user_id)
+
+    assert rebuilt.skill_levels == incremental.skill_levels
+    assert rebuilt.common_errors == incremental.common_errors
+
+
 async def test_user_isolation_events_and_profile(
     db_session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
 ) -> None:

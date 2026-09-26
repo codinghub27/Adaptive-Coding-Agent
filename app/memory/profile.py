@@ -13,7 +13,9 @@ moving average (EWMA) of a per-event outcome score in `[0, 1]`:
     new = (1 - ALPHA) * old + ALPHA * outcome_score(event)
 
 with an unseen key starting from `PRIOR` instead of 0, so a single event
-doesn't swing a fresh skill to an extreme.
+doesn't swing a fresh skill to an extreme. This EWMA update only applies when
+an event carries an observed outcome (`event.solved is not None`); see
+`apply_event` for the "topic encountered, outcome unknown" case.
 
 None of the functions in this module commit the session — callers own the
 transaction and must `await session.commit()` (or roll back) themselves.
@@ -61,7 +63,15 @@ COMMON_ERRORS_TOP_N: Final = 5
 
 
 def outcome_score(event: LearningEventCreate) -> float:
-    """Map a learning event's outcome to a score in [0, 1] for EWMA input."""
+    """Map a learning event's outcome to a score in [0, 1] for EWMA input.
+
+    Requires an observed outcome: raises if `event.solved is None`. Callers
+    must branch on `event.solved is None` (see `apply_event`) before calling
+    this -- an unobserved outcome must never silently fall through to
+    `UNSOLVED_SCORE`.
+    """
+    if event.solved is None:
+        raise AssertionError("outcome_score requires an observed outcome (event.solved is None)")
     if event.solved and not event.needed_full_solution:
         return max(MIN_SOLVED_SCORE, 1.0 - HINT_PENALTY * event.hints_used)
     if event.solved and event.needed_full_solution:
@@ -92,13 +102,28 @@ def apply_event(
 ) -> tuple[dict[str, float], dict[str, int]]:
     """Pure projection step: fold one event into skill levels and error counts.
 
+    When `event.solved is None` (the topic was encountered this turn -- e.g.
+    a hint request -- but no outcome was observed), skill levels are **not**
+    EWMA-updated: exposure to a topic is not evidence of success or failure,
+    so smoothing toward a fixed outcome score would either falsely reward or
+    (via a mid-range `PRIOR`) falsely decay a skill just for asking a
+    question. Instead, a missing key is created at `PRIOR` (so the topic
+    shows up in the profile at all) and an existing key is left exactly as
+    it is -- bit-for-bit unchanged. Error tags in `event.errors` are still
+    counted either way.
+
     Returns new dicts; never mutates the inputs.
     """
-    outcome = outcome_score(event)
     new_skills = dict(skill_levels)
-    for key in skill_keys(event):
-        old = new_skills.get(key, PRIOR)
-        new_skills[key] = smooth(old, outcome)
+    if event.solved is None:
+        for key in skill_keys(event):
+            if key not in new_skills:
+                new_skills[key] = PRIOR
+    else:
+        outcome = outcome_score(event)
+        for key in skill_keys(event):
+            old = new_skills.get(key, PRIOR)
+            new_skills[key] = smooth(old, outcome)
 
     new_errors = dict(common_errors)
     for tag in event.errors:

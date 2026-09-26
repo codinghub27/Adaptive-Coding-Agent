@@ -16,6 +16,8 @@ from app.db.models import Conversation, Message
 from app.graph.nodes import (
     FALLBACKS,
     Node,
+    _event_topic,  # pyright: ignore[reportPrivateUsage]
+    _trusted_labels,  # pyright: ignore[reportPrivateUsage]
     clarify,
     classify_intent,
     debug_agent,
@@ -42,8 +44,10 @@ from app.llm.base import LLMClient
 from app.memory.conversation import get_recent_context, start_conversation
 from app.memory.events import list_events
 from app.memory.profile import PRIOR, get_profile, set_learning_preferences
+from app.schemas.event import LearningEventCreate
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
+from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
 from tests.input.fakes import FakeLLMClient
@@ -380,9 +384,13 @@ def test_plan_teaching_fallback_uses_intent_defaults_when_confident() -> None:
 
 
 @pytest.mark.db
-async def test_update_learner_model_stub_outcome_not_persisted(
+async def test_update_learner_model_unobserved_outcome_persists_and_sets_prior(
     db_session: AsyncSession, user_id: uuid.UUID
 ) -> None:
+    """A hint turn (`solved=None`) is exposure, not an outcome: it is still
+    built, persisted, and gains the topic in the profile at `PRIOR` -- not
+    moved by an EWMA update. This replaces the old `solved=None` coercion to
+    `False`, which silently treated "we don't know" as a failure."""
     state = _pipeline_state(agent_output=_outcome(solved=None))
 
     update = await update_learner_model(state, _runtime(session=db_session, user_id=user_id))
@@ -390,14 +398,17 @@ async def test_update_learner_model_stub_outcome_not_persisted(
     events = update.get("events")
     assert events is not None and len(events) == 1
     assert events[0].topic == "arrays"
-    assert not update.get("events_persisted")
+    assert events[0].solved is None
+    event_id = events[0].event_id
+    assert update.get("events_persisted") == [event_id]
     assert not update.get("errors")
 
     rows = await list_events(db_session, user_id)
-    assert rows == []
+    assert len(rows) == 1
+    assert rows[0].solved is None
 
     profile = await get_profile(db_session, user_id)
-    assert profile.skill_levels == {}
+    assert profile.skill_levels == {"arrays": PRIOR}
 
 
 @pytest.mark.db
@@ -416,6 +427,25 @@ async def test_update_learner_model_persists_observed_outcome(
 
     profile = await get_profile(db_session, user_id)
     assert profile.skill_levels["arrays"] > PRIOR
+
+
+@pytest.mark.db
+async def test_update_learner_model_solved_turn_after_hint_turn_moves_off_prior(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A hint turn (unobserved) followed by a solved turn on the same topic:
+    the first sets `arrays` to `PRIOR`, the second moves it up from there."""
+    hint_state = _pipeline_state(agent_output=_outcome(solved=None))
+    await update_learner_model(hint_state, _runtime(session=db_session, user_id=user_id))
+
+    profile_after_hint = await get_profile(db_session, user_id)
+    assert profile_after_hint.skill_levels == {"arrays": PRIOR}
+
+    solved_state = _pipeline_state(agent_output=_outcome(solved=True, hints_used=0))
+    await update_learner_model(solved_state, _runtime(session=db_session, user_id=user_id))
+
+    profile_after_solve = await get_profile(db_session, user_id)
+    assert profile_after_solve.skill_levels["arrays"] > PRIOR
 
 
 async def test_update_learner_model_clarify_route_no_event() -> None:
@@ -493,14 +523,27 @@ async def test_update_learner_model_unknown_user_id_records_node_error_and_sessi
 
 @pytest.mark.db
 async def test_update_learner_model_invalid_event_topic_still_saves_turns(
-    db_session: AsyncSession, user_id: uuid.UUID
+    db_session: AsyncSession,
+    user_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A learning event that fails `LearningEventCreate` validation must not
-    block turn persistence."""
+    """A learning event that fails to build must not block turn persistence.
+
+    This used to be triggered with an over-long `agent_output.topic`. That
+    route no longer exists: the event topic now comes only from `plan.topic`
+    (trusted, closed vocabulary), and `TeachingPlan.topic` is itself capped at
+    64 characters, so no caller-reachable value can fail validation any more.
+    The guard is still worth covering, so the build is made to raise directly.
+    """
     conversation_id = await start_conversation(db_session, user_id)
-    too_long_topic = "a" * 65
+
+    def _boom(*args: object, **kwargs: object) -> LearningEventCreate:
+        raise ValueError("event could not be built")
+
+    monkeypatch.setattr("app.graph.nodes._build_learning_event", _boom)
+
     state = _pipeline_state(
-        agent_output=_outcome(topic=too_long_topic, solved=None), response="here is a hint"
+        agent_output=_outcome(topic="two_pointers", solved=None), response="here is a hint"
     )
 
     update = await update_learner_model(
@@ -645,3 +688,71 @@ async def test_specialized_agents_and_clarify_return_real_outcomes() -> None:
         outcome = update.get("agent_output")
         assert outcome is not None
         assert "stub" not in outcome.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# _event_topic / _trusted_labels: the skill map's vocabulary is closed
+# ---------------------------------------------------------------------------
+
+
+def _chunk_hit(*, topic: str, pattern: str, score: float) -> RetrievalHit:
+    chunk = KnowledgeChunk(
+        id="c1",
+        text="text",
+        source="s.md",
+        title="T",
+        heading="H",
+        topic=topic,
+        pattern=pattern,
+    )
+    return RetrievalHit(chunk=chunk, score=score, retrievers=("bm25",), reranked=True)
+
+
+def test_event_topic_uses_the_plan_not_the_models_suggestion() -> None:
+    """`agent_output.topic` is free text the solver LLM was asked to invent. On
+    a turn naming no subject it answered "unknown", which was written into the
+    profile as a skill -- a key that can never match the planner's vocabulary."""
+    plan = TeachingPlan(
+        difficulty="medium",
+        assistance_level="hint",
+        solution_strategy="socratic_hints",
+        topic="two_pointers",
+        skill_level=0.5,
+    )
+
+    assert _event_topic(plan) == "two_pointers"
+
+
+def test_event_topic_is_none_when_the_plan_has_no_topic() -> None:
+    """No trusted topic means the turn is not recorded at all -- better than
+    inventing a skill key out of model output."""
+    plan = TeachingPlan(
+        difficulty="medium",
+        assistance_level="hint",
+        solution_strategy="socratic_hints",
+        topic=None,
+        skill_level=0.5,
+    )
+
+    assert _event_topic(plan) is None
+    assert _event_topic(None) is None
+
+
+def test_trusted_labels_ignores_hits_below_the_relevance_floor() -> None:
+    """The retriever always returns its best few chunks, so a contentless turn
+    still gets an answer back. Corroborating against that noise is no
+    corroboration -- it is how "trees" reached the profile for "Give me the
+    next hint."."""
+    good = _chunk_hit(topic="arrays", pattern="two_pointers", score=-2.15)
+    noise = _chunk_hit(topic="trees", pattern="postorder_traversal", score=-8.39)
+
+    labels = _trusted_labels([good, noise])
+
+    assert "two_pointers" in labels
+    assert "arrays" in labels
+    assert "trees" not in labels
+    assert "postorder_traversal" not in labels
+
+
+def test_trusted_labels_is_empty_without_context() -> None:
+    assert _trusted_labels([]) == frozenset()

@@ -22,7 +22,7 @@ user-supplied content, either of which might carry secrets or untrusted data.
 
 import hashlib
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from types import MappingProxyType
 from typing import Final, Protocol, cast
 from uuid import UUID
@@ -30,7 +30,13 @@ from uuid import UUID
 from langgraph.runtime import Runtime
 
 from app.agents.hint_engine import HintProgress
-from app.agents.planner import INTENT_DEFAULTS, analyze_problem, build_plan, clamp_assistance
+from app.agents.planner import (
+    INTENT_DEFAULTS,
+    MIN_RETRIEVAL_TOPIC_SCORE,
+    analyze_problem,
+    build_plan,
+    clamp_assistance,
+)
 from app.agents.reviewer import review_code
 from app.execution.testgen import extract_test_suite
 from app.execution.verification import verify as verify_result
@@ -59,6 +65,7 @@ from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, Verdict
 from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent
+from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
 
@@ -240,7 +247,12 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     """Build this turn's `TeachingPlan` from the classified intent and profile."""
     del runtime
     profile = state.profile if state.profile is not None else LearnerProfileView.empty()
-    analysis = analyze_problem(state.structured_input, profile, state.input.topic_hint)
+    analysis = analyze_problem(
+        state.structured_input,
+        profile,
+        state.input.topic_hint,
+        context=state.retrieved_context,
+    )
     plan = build_plan(state.intent, profile, analysis)
     plan = clamp_assistance(plan, state.input.assistance_cap)
     return {"plan": plan}
@@ -271,39 +283,43 @@ def _plan_teaching_fallback(state: AgentState) -> AgentStateUpdate:
 def should_retrieve(state: AgentState) -> bool:
     """Decide whether this turn should query the knowledge corpus.
 
-    False whenever `select_route` would send this turn to "clarify" (nothing
-    usable to search with yet: no/empty structured input, no/low-confidence
-    intent, or a plan that already decided to clarify -- the same checks
-    `select_route` makes, reused here rather than duplicated) or when this is
-    a pure runtime-error debugging turn (the debugger works from the
-    traceback itself, not pattern docs). Otherwise True: every DSA/explain
-    intent, plus the other debug-route intents (`ERROR_EXPLANATION`,
-    `TEST_CASE_ANALYSIS`), retrieve.
+    Retrieval now runs *before* `plan_teaching` (see `app.graph.build`), so
+    `state.plan` does not exist yet here and this gate cannot consult it.
+    It instead mirrors `select_route`'s first two guards directly -- no/empty
+    structured input, no/low-confidence intent -- since those are exactly the
+    "nothing usable to search with" conditions retrieval also needs to skip.
+    `select_route`'s third guard ("the plan already decided to clarify") is
+    intentionally dropped rather than reproduced: it cannot fire before the
+    plan is computed, so omitting it changes no behaviour, only removes a
+    check that could never have applied at this point in the graph. On top of
+    that, this also skips a pure runtime-error debugging turn (the debugger
+    works from the traceback itself, not pattern docs). Otherwise True: every
+    DSA/explain intent, plus the other debug-route intents
+    (`ERROR_EXPLANATION`, `TEST_CASE_ANALYSIS`), retrieve.
     """
     intent = state.intent
     structured = state.structured_input
-    return select_route(state) != "clarify" and not (
-        intent is not None
-        and structured is not None
-        and intent.intent == Intent.CODE_DEBUG
-        and structured.error
-    )
+    if structured is None or structured.is_empty:
+        return False
+    if intent is None or intent.low_confidence:
+        return False
+    return not (intent.intent == Intent.CODE_DEBUG and structured.error)
 
 
 def build_retrieval_query(state: AgentState) -> str:
     """Build the retrieval query text from trusted-shape signal fields only.
 
-    Joins (newline-separated) the plan's topic (`_` -> space), the question,
-    and the problem statement -- never `code` or `error` text, which is far
-    more likely to swamp a short knowledge-corpus query with noise. Duplicate
-    parts (e.g. the topic verbatim inside the question) are deduped,
-    order-preserving, so BM25 doesn't over-weight the repeated text. May
-    return "" if none of those are present.
+    Joins (newline-separated) the question and the problem statement -- never
+    `code` or `error` text, which is far more likely to swamp a short
+    knowledge-corpus query with noise. `state.plan` is never consulted: this
+    node now runs *before* `plan_teaching` (see `app.graph.build`), so a plan
+    doesn't exist yet at this point in the graph -- and joining it in was
+    always circular besides (the plan's topic itself needs to be inferred
+    from what retrieval returns). Duplicate parts (e.g. the question repeated
+    in the problem statement) are deduped, order-preserving, so BM25 doesn't
+    over-weight the repeated text. May return "" if neither is present.
     """
     parts: list[str] = []
-    plan = state.plan
-    if plan is not None and plan.topic:
-        parts.append(plan.topic.replace("_", " "))
     structured = state.structured_input
     if structured is not None:
         if structured.question:
@@ -762,8 +778,41 @@ _SAVE_EVENT_FAILED_MESSAGE: Final = "failed to save this turn's learning event"
 _SAVE_TURN_FAILED_MESSAGE: Final = "failed to save this turn's conversation history"
 
 
-def _event_topic(plan: TeachingPlan | None, agent_output: AgentOutcome) -> str | None:
-    return agent_output.topic or (plan.topic if plan is not None else None)
+def _trusted_labels(retrieved_context: Sequence[RetrievalHit]) -> frozenset[str]:
+    """Corpus labels this turn's retrieval actually vouches for.
+
+    Only hits at or above `MIN_RETRIEVAL_TOPIC_SCORE` count. The retriever
+    always returns its best few chunks, so a turn that names no subject still
+    gets an answer back -- just a meaningless one, and corroborating against
+    that noise is no corroboration at all.
+    """
+    return frozenset(
+        label
+        for hit in retrieved_context
+        if hit.score >= MIN_RETRIEVAL_TOPIC_SCORE
+        for label in (hit.chunk.pattern, hit.chunk.topic)
+        if label
+    )
+
+
+def _event_topic(plan: TeachingPlan | None) -> str | None:
+    """The topic this turn is recorded under, or `None` to record nothing.
+
+    A topic here becomes a **key in the learner's skill map**, so it may only
+    come from a trusted, closed vocabulary. `plan.topic` is exactly that: it
+    resolves from an explicit topic hint, a key already in the profile, or a
+    `KnowledgeChunk` label that cleared the relevance floor -- all validated
+    through `slug_tag`.
+
+    The solver's own `agent_output.topic` is deliberately NOT used. It is free
+    text the LLM was asked to produce ("A short topic tag for this problem"),
+    and on a turn that names no subject the model answered `"unknown"` -- which
+    was written into the profile as a skill. A key like that can never match
+    the vocabulary the planner matches against, so it would sit in the skill
+    map forever, unusable. When the plan has no topic, the turn is simply not
+    recorded; nothing is lost but noise.
+    """
+    return plan.topic if plan is not None else None
 
 
 def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> LearningEventCreate:
@@ -776,19 +825,28 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
 
     structured = state.structured_input
     problem = (structured.problem or structured.question) if structured is not None else None
+    # `pattern` becomes a second skill key (see `app.memory.profile.skill_keys`)
+    # and is LLM-authored like `topic` was, so it is kept only when this turn's
+    # retrieval vouches for it.
+    suggested = agent_output.pattern
+    pattern = (
+        suggested
+        if suggested and slug_tag(suggested) in _trusted_labels(state.retrieved_context)
+        else None
+    )
 
     return LearningEventCreate(
         conversation_id=ctx.conversation_id,
         intent=intent_result.intent,
         problem=problem,
         topic=topic,
-        pattern=agent_output.pattern,
+        pattern=pattern,
         difficulty=state.plan.difficulty if state.plan is not None else None,
         requested_help=requested_help_for(intent_result.intent),
         hints_used=agent_output.hints_used,
         needed_full_solution=agent_output.needed_full_solution,
         errors=agent_output.errors,
-        solved=agent_output.solved if agent_output.solved is not None else False,
+        solved=agent_output.solved,
     )
 
 
@@ -863,12 +921,15 @@ async def update_learner_model(
 ) -> AgentStateUpdate:
     """Emit (and, when safe, persist) this turn's learning event and conversation turns.
 
-    A learning event is only ever *saved* (see `_persist_event`) when the
-    agent reported an observed outcome (`agent_output.solved is not None`)
-    and a session/user/topic are all available -- a stub's `solved=None`
-    guess is surfaced via `events` for `/chat` to see, but never written to
-    the profile. Conversation turns are only saved when `conversation_id` is
-    set. Never commits: the caller owns the transaction.
+    A learning event is built whenever a topic is available (see
+    `_event_topic`) and is *saved* (see `_persist_event`) whenever a
+    session/user are both available -- regardless of whether this turn
+    carries an observed outcome. `agent_output.solved is None` (e.g. a hint
+    request) is still persisted: it records that the topic was encountered,
+    which `apply_event` treats as exposure, not as a pass or fail (see
+    `app.memory.profile.apply_event`). Conversation turns are only saved
+    when `conversation_id` is set. Never commits: the caller owns the
+    transaction.
     """
     ctx = runtime.context
     events: list[LearningEventCreate] = []
@@ -884,7 +945,7 @@ async def update_learner_model(
     ):
         event: LearningEventCreate | None = None
         try:
-            topic = _event_topic(state.plan, agent_output)
+            topic = _event_topic(state.plan)
             if topic is not None:
                 event = _build_learning_event(state, ctx, topic)
         except Exception as exc:
@@ -899,11 +960,7 @@ async def update_learner_model(
         if event is not None:
             events.append(event)
 
-            can_persist = (
-                agent_output.solved is not None
-                and ctx.session is not None
-                and ctx.user_id is not None
-            )
+            can_persist = ctx.session is not None and ctx.user_id is not None
             if can_persist:
                 persisted_id, event_error = await _persist_event(ctx, event)
                 if persisted_id is not None:

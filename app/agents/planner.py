@@ -9,7 +9,7 @@ Phase 7 hint ladder as a learner works through progressively stronger hints.
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Final, Literal
 
@@ -20,6 +20,7 @@ from app.schemas.base import APIModel
 from app.schemas.event import Difficulty, slug_tag
 from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent, IntentResult
+from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import ASSISTANCE_ORDER, AssistanceLevel, SolutionStrategy, TeachingPlan
 from app.schemas.profile import LearnerProfileView
 
@@ -65,7 +66,7 @@ class ProblemAnalysis(APIModel):
 
     topic: str | None
     skill_level: float
-    topic_source: Literal["hint", "profile_match", "unknown"]
+    topic_source: Literal["hint", "profile_match", "retrieval", "unknown"]
 
 
 def _prose(inp: StructuredInput | None) -> str:
@@ -104,17 +105,65 @@ def _best_topic_match(skill_levels: Mapping[str, float], prose_lower: str) -> st
     return matches[0]
 
 
+#: Minimum reranker score for a retrieved chunk to be trusted as *this turn's*
+#: topic.
+#:
+#: The retriever always returns its best four chunks, so a turn that names no
+#: subject at all ("Give me the next hint.") still gets an answer back -- just a
+#: meaningless one. Adopting it as the topic restarts the hint ladder on an
+#: unrelated subject and writes a bogus skill into the learner's profile, which
+#: is exactly what happened in testing: "Give me the next hint." came back as
+#: `trees`.
+#:
+#: This is NOT an absolute relevance cutoff -- the cross-encoder emits raw
+#: logits that are routinely negative for correct matches, so `score > 0` would
+#: throw away most good answers. It is calibrated to separate "a real question"
+#: from "no question at all", measured against this corpus and reranker:
+#:
+#:     real questions   top score  -2.15, -3.25, +6.63
+#:     bare follow-ups  top score  -8.39, -10.09, -10.89
+#:
+#: -6.0 sits in the empty band between those two clusters. It is corpus- and
+#: model-specific: re-measure it if `reranker_model` or the corpus changes.
+#: Below the floor the turn simply has no topic, and the hint ladder falls back
+#: to the conversation's most recent one (`app.graph.nodes._hint_topic_key`),
+#: which is the right behaviour for a follow-up.
+MIN_RETRIEVAL_TOPIC_SCORE: Final = -6.0
+
+
 def analyze_problem(
     inp: StructuredInput | None,
     profile: LearnerProfileView,
     topic_hint: str | None = None,
+    context: Sequence[RetrievalHit] = (),
 ) -> ProblemAnalysis:
     """Infer a topic and skill level for this turn.
 
-    An explicit `topic_hint` always wins. Otherwise, the learner's known
-    skill keys are matched against the prose of `inp` (question/problem/error
-    only). If nothing matches, the topic is unknown and skill defaults to
-    `PRIOR`.
+    Resolution order, first match wins:
+    1. an explicit `topic_hint` ("hint"),
+    2. the learner's known skill keys matched against the prose of `inp`
+       (question/problem/error only) ("profile_match"),
+    3. the top-ranked hit in `context`, the knowledge corpus chunks retrieved
+       for this turn ("retrieval"),
+    4. otherwise the topic is unknown and skill defaults to `PRIOR`
+       ("unknown").
+
+    `context` is assumed already ordered best-first by the retriever (see
+    `app.knowledge.retrieve.Retriever`), so only `context[0]` is ever
+    consulted -- its `pattern` is preferred, falling back to its `topic` if
+    `pattern` is somehow less specific. No relevance-score floor is applied:
+    the reranker returns raw cross-encoder logits, which are frequently
+    negative even for a correct match (e.g. a correct Two Sum hit scored
+    -2.45 in a live probe), so a naive `score > 0` cutoff would reject most
+    correct answers. There is no principled threshold derivable from that
+    distribution, so this deliberately trusts rank alone (the retriever's own
+    fusion + rerank already chose the best hit) rather than inventing one.
+
+    `chunk.topic`/`chunk.pattern` are corpus metadata validated through
+    `slug_tag` at ingestion time (`app.schemas.knowledge.KnowledgeChunk`) --
+    they come from the curated corpus, not from learner-authored input, so
+    (unlike raw prose) they are trusted as-is: safe to use as a skill-map key
+    and to compose directly into hint text.
     """
     if topic_hint is not None and topic_hint.strip():
         slug = slug_tag(topic_hint)
@@ -133,6 +182,15 @@ def analyze_problem(
                 skill_level=profile.skill_levels[matched],
                 topic_source="profile_match",
             )
+
+    if context and context[0].score >= MIN_RETRIEVAL_TOPIC_SCORE:
+        chunk = context[0].chunk
+        slug = chunk.pattern or chunk.topic
+        return ProblemAnalysis(
+            topic=slug,
+            skill_level=profile.skill_levels.get(slug, PRIOR),
+            topic_source="retrieval",
+        )
 
     return ProblemAnalysis(topic=None, skill_level=PRIOR, topic_source="unknown")
 

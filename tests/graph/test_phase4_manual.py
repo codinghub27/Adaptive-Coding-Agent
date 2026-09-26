@@ -138,21 +138,16 @@ async def test_manual_1_debug_turn_for_weak_skill_hint_preferring_learner(
     assert event.topic == "sliding_window"
     assert event.requested_help == "debug"
     assert event.difficulty == "easy"
-    # `DebugResult.to_outcome()` reports a definite `solved=False` (not
-    # `None`) even with no runner/verdict beyond "skipped" -- real, observed
-    # behavior as of this Phase 07 packet (see PHASE-07 Known Issues).
     # The sandbox runner is unavailable in this test, so the debugger never
-    # executed anything: the verdict is "skipped", `agent_output.solved` is
-    # None, and `update_learner_model` therefore surfaces the event but does
-    # NOT persist it. The learner's skill must be left untouched -- "we could
-    # not check" is not evidence that they got it wrong.
-    assert event.solved is False  # the surfaced event's required bool default
-    assert state.events_persisted == []
+    # executed anything: the verdict is "skipped", so `DebugResult.
+    # to_outcome()` reports `solved=None` ("we could not check", not
+    # evidence of failure). `update_learner_model` persists this event
+    # regardless -- it records exposure to the topic, not an outcome.
+    assert event.solved is None
+    assert len(state.events_persisted) == 1
 
-    # `solved=False` is treated as a confident, real outcome by the skill
-    # update (same "sandbox unavailable" concern flagged above), so
-    # `sliding_window` moves down from the seeded 0.3 even though no code
-    # was ever actually executed this turn.
+    # `solved=None` is exposure, not an observed outcome: `apply_event`
+    # leaves both already-seeded skill levels exactly as they were.
     profile_after = await get_profile(db_session, user_id)
     assert profile_after.skill_levels == {"sliding_window": 0.3, "arrays": 0.8}
 

@@ -53,7 +53,11 @@ class LearningEventCreate(APIModel):
     hints_used: int = Field(default=0, ge=0, le=1000)
     needed_full_solution: bool = False
     errors: list[str] = Field(default_factory=list[str])
-    solved: bool
+    # `True`/`False` are observed outcomes. `None` means the topic was
+    # encountered this turn (e.g. a hint request) but no outcome was
+    # observed -- exposure, not evidence of success or failure. See
+    # `app.memory.profile.apply_event`.
+    solved: bool | None
     time_spent: int | None = Field(
         default=None, ge=0, le=100_000, description="Minutes spent, if known."
     )
@@ -140,7 +144,7 @@ class LearningEventView(APIModel):
     hints_used: int
     needed_full_solution: bool
     errors: list[str]
-    solved: bool
+    solved: bool | None
     time_spent: int | None
     concepts: list[str]
     created_at: datetime

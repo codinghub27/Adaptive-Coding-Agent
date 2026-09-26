@@ -67,7 +67,10 @@ class LearningEvent(Base):
     errors: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
-    solved: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # NULL means "topic encountered, outcome unknown" (e.g. a hint request)
+    # -- distinct from `False` ("observed as unsolved"). See
+    # `app.memory.profile.apply_event`.
+    solved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     time_spent: Mapped[int | None] = mapped_column(Integer, nullable=True)  # minutes
     concepts: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")

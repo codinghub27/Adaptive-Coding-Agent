@@ -24,7 +24,7 @@ from app.knowledge.retrieve import Retriever
 from app.main import create_app
 from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent, IntentResult
-from app.schemas.knowledge import RetrievalHit
+from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import TeachingPlan
 from tests.input.fakes import FakeLLMClient
 
@@ -127,7 +127,7 @@ def _state(
     ],
 )
 def test_should_retrieve_true_for_dsa_and_explain_intents(intent_value: Intent) -> None:
-    state = _state(structured_input=_structured(), intent=_intent(intent_value), plan=_plan())
+    state = _state(structured_input=_structured(), intent=_intent(intent_value))
     assert should_retrieve(state) is True
 
 
@@ -135,7 +135,6 @@ def test_should_retrieve_false_for_code_debug_with_error() -> None:
     state = _state(
         structured_input=_structured(error="IndexError: boom"),
         intent=_intent(Intent.CODE_DEBUG),
-        plan=_plan(),
     )
     assert should_retrieve(state) is False
 
@@ -144,7 +143,6 @@ def test_should_retrieve_true_for_code_debug_without_error() -> None:
     state = _state(
         structured_input=_structured(error=None),
         intent=_intent(Intent.CODE_DEBUG),
-        plan=_plan(),
     )
     assert should_retrieve(state) is True
 
@@ -153,7 +151,6 @@ def test_should_retrieve_true_for_error_explanation_with_error() -> None:
     state = _state(
         structured_input=_structured(error="KeyError: 'x'"),
         intent=_intent(Intent.ERROR_EXPLANATION),
-        plan=_plan(),
     )
     assert should_retrieve(state) is True
 
@@ -162,30 +159,36 @@ def test_should_retrieve_false_for_low_confidence_intent() -> None:
     state = _state(
         structured_input=_structured(),
         intent=_intent(Intent.DSA_SOLVE, confidence=0.2),
-        plan=_plan(),
     )
     assert should_retrieve(state) is False
 
 
 def test_should_retrieve_false_for_none_intent() -> None:
-    state = _state(structured_input=_structured(), intent=None, plan=_plan())
+    state = _state(structured_input=_structured(), intent=None)
     assert should_retrieve(state) is False
 
 
-def test_should_retrieve_false_for_clarify_plan() -> None:
+def test_should_retrieve_ignores_plan_even_when_clarify() -> None:
+    """`should_retrieve` runs before `plan_teaching` in the graph now, so a
+    plan does not exist yet at this point in a real run -- and even when one
+    is present on the state object anyway (as in this synthetic test), it
+    must not be consulted. This replaces the old
+    `test_should_retrieve_false_for_clarify_plan`: that behaviour (gating on
+    the plan already having chosen "clarify") could never fire before the
+    plan exists, so it is intentionally dropped rather than reproduced -- see
+    the `should_retrieve` docstring."""
     state = _state(
         structured_input=_structured(),
         intent=_intent(Intent.DSA_SOLVE),
         plan=_plan(strategy="clarify"),
     )
-    assert should_retrieve(state) is False
+    assert should_retrieve(state) is True
 
 
 def test_should_retrieve_false_for_empty_input() -> None:
     state = _state(
         structured_input=StructuredInput(source="text"),
         intent=_intent(Intent.DSA_SOLVE),
-        plan=_plan(),
     )
     assert should_retrieve(state) is False
 
@@ -203,30 +206,46 @@ def test_build_retrieval_query_excludes_code_and_error() -> None:
         error="CODE-MARKER: IndexError boom",
         code=[],
     )
-    state = _state(structured_input=structured, plan=_plan(topic="sliding_window"))
+    state = _state(structured_input=structured)
 
     query = build_retrieval_query(state)
 
     assert "CODE-MARKER" not in query
-    assert "sliding window" in query
     assert "how do sliding windows work" in query
     assert "Find the max sum subarray" in query
 
 
-def test_build_retrieval_query_empty_when_nothing_present() -> None:
-    state = _state(structured_input=StructuredInput(source="text"), plan=None)
-    assert build_retrieval_query(state) == ""
-
-
-def test_build_retrieval_query_dedupes_topic_repeated_in_question() -> None:
-    """The topic verbatim inside the question must not be repeated in the
-    query text (order-preserving dedup), so BM25 doesn't over-weight it."""
-    structured = StructuredInput(source="text", question="sliding window")
-    state = _state(structured_input=structured, plan=_plan(topic="sliding_window"))
+def test_build_retrieval_query_ignores_plan() -> None:
+    """`build_retrieval_query` runs before `plan_teaching` now, so a plan
+    doesn't exist yet at this point in a real run -- and even when one is
+    present on the state object anyway (as here), its topic must not be
+    joined into the query (this was always circular: the plan's topic is
+    itself meant to be inferred from what retrieval returns)."""
+    structured = StructuredInput(source="text", question="how do sliding windows work")
+    state = _state(structured_input=structured, plan=_plan(topic="two_pointers"))
 
     query = build_retrieval_query(state)
 
-    assert query == "sliding window"
+    assert "two pointers" not in query
+    assert query == "how do sliding windows work"
+
+
+def test_build_retrieval_query_empty_when_nothing_present() -> None:
+    state = _state(structured_input=StructuredInput(source="text"))
+    assert build_retrieval_query(state) == ""
+
+
+def test_build_retrieval_query_dedupes_question_repeated_in_problem() -> None:
+    """Identical text present in both fields must not be repeated in the
+    query text (order-preserving dedup), so BM25 doesn't over-weight it."""
+    structured = StructuredInput(
+        source="text", question="sliding window problem", problem="sliding window problem"
+    )
+    state = _state(structured_input=structured)
+
+    query = build_retrieval_query(state)
+
+    assert query == "sliding window problem"
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +258,12 @@ async def test_retrieve_knowledge_calls_retriever_when_should_retrieve_true() ->
     state = _state(
         structured_input=_structured(question="two pointers pattern"),
         intent=_intent(Intent.DSA_SOLVE),
-        plan=_plan(topic="two_pointers"),
     )
 
     update = await retrieve_knowledge(state, _runtime(retriever=retriever, knowledge_top_k=3))
 
     assert update == {"retrieved_context": [_HIT_1, _HIT_2]}
-    assert retriever.calls == [("two pointers\ntwo pointers pattern", 3)]
+    assert retriever.calls == [("two pointers pattern", 3)]
 
 
 async def test_retrieve_knowledge_skips_when_should_retrieve_false() -> None:
@@ -253,7 +271,6 @@ async def test_retrieve_knowledge_skips_when_should_retrieve_false() -> None:
     state = _state(
         structured_input=_structured(error="boom"),
         intent=_intent(Intent.CODE_DEBUG),
-        plan=_plan(),
     )
 
     update = await retrieve_knowledge(state, _runtime(retriever=retriever))
@@ -263,7 +280,7 @@ async def test_retrieve_knowledge_skips_when_should_retrieve_false() -> None:
 
 
 async def test_retrieve_knowledge_none_retriever_returns_empty() -> None:
-    state = _state(structured_input=_structured(), intent=_intent(Intent.DSA_SOLVE), plan=_plan())
+    state = _state(structured_input=_structured(), intent=_intent(Intent.DSA_SOLVE))
 
     update = await retrieve_knowledge(state, _runtime(retriever=None))
 
@@ -287,6 +304,32 @@ async def test_run_graph_dsa_solve_calls_retriever_once_with_top_k() -> None:
     assert result.state.retrieved_context == [_HIT_1]
     assert len(retriever.calls) == 1
     assert retriever.calls[0][1] == 2
+
+
+async def test_run_graph_plan_topic_derived_from_retrieval() -> None:
+    """Retrieval now runs before planning, so a fresh learner (empty profile,
+    no `topic_hint`) whose retrieval surfaces a `two_pointers` chunk still
+    gets a plan tagged with that topic instead of `None`."""
+    chunk = KnowledgeChunk(
+        id="two-sum-1",
+        text="Use two pointers on a sorted array to find a pair summing to target.",
+        source="two_pointers.md",
+        title="Two Pointers",
+        heading="Two Sum",
+        topic="arrays",
+        pattern="two_pointers",
+    )
+    hit = RetrievalHit(chunk=chunk, score=-1.2, retrievers=("bm25", "dense"), reranked=True)
+    retriever = FakeRetriever(hits=[hit])
+    fake = FakeLLMClient(
+        chat_content='{"intent": "DSA_SOLVE", "confidence": 0.95, "rationale": "clear"}'
+    )
+    raw = RawInput(text="Can you help me find the two sum pattern for this problem?")
+
+    result = await run_graph(raw, llm=fake, retriever=retriever)
+
+    assert result.state.plan is not None
+    assert result.state.plan.topic == "two_pointers"
 
 
 async def test_run_graph_runtime_error_debug_skips_retriever() -> None:
@@ -348,11 +391,15 @@ async def test_run_graph_llm_calls_identical_with_and_without_retriever() -> Non
 
 
 def test_graph_has_retrieve_knowledge_edges_and_unchanged_route_targets() -> None:
+    """Retrieval now runs before planning (`load_learner_profile ->
+    retrieve_knowledge -> plan_teaching -> route`), so its labels can inform
+    the plan instead of the other way around."""
     drawable = get_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in drawable.edges}
 
-    assert ("plan_teaching", "retrieve_knowledge") in edges
-    assert ("retrieve_knowledge", "route") in edges
+    assert ("load_learner_profile", "retrieve_knowledge") in edges
+    assert ("retrieve_knowledge", "plan_teaching") in edges
+    assert ("plan_teaching", "route") in edges
 
     route_targets = {edge.target for edge in drawable.edges if edge.source == "route"}
     assert route_targets == set(ROUTE_NODES.values())
