@@ -10,19 +10,24 @@ no real LLM/provider calls -- `FakeLLMClient`/`FakeRunner` throughout.
 """
 
 import uuid
+from datetime import timedelta
 from typing import Final, NoReturn
 
 import pytest
 from langgraph.runtime import Runtime
+from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.hint_engine import HintProgress
 from app.agents.reviewer import ReviewRunResult
+from app.db.models import HintProgress as HintProgressRow
 from app.execution.base import CodeRunner
 from app.graph.build import NODE_FUNCTIONS, build_graph, run_graph
 from app.graph.nodes import (
     DEFAULT_HINT_TOPIC,
     FALLBACKS,
+    _problem_fingerprint,  # pyright: ignore[reportPrivateUsage]
     debug_agent,
     dsa_agent,
     explain_agent,
@@ -46,7 +51,17 @@ _DSA_PROBLEM_TEXT: Final = (
     "Given an array of integers nums and an integer target, return indices "
     "of the two numbers such that they add up to target."
 )
+_DSA_PROBLEM_TEXT_B: Final = (
+    "You are given the head of a singly linked list. Reverse the list, and "
+    "return the reversed list's head."
+)
 _DSA_INTENT_JSON: Final = '{"intent": "DSA_HINT", "confidence": 0.9, "rationale": "clear"}'
+
+
+async def _hint_progress_row_count(session: AsyncSession, conversation_id: uuid.UUID) -> int:
+    """How many `hint_progress` rows exist for this conversation (any user/topic)."""
+    stmt = select(HintProgressRow).where(HintProgressRow.conversation_id == conversation_id)
+    return len((await session.execute(stmt)).scalars().all())
 
 
 def _plan(
@@ -516,29 +531,35 @@ async def test_debug_agent_never_changes_dsa_hint_progress(
 
 
 # ---------------------------------------------------------------------------
-# DEFAULT_HINT_TOPIC fallback (no topic inferred by the planner)
+# DEFAULT_HINT_TOPIC last-resort fallback + problem-fingerprint keying
+# (F-bugfix: a new problem in a topic-less turn no longer silently continues
+# a previous, unrelated problem's ladder -- see `_problem_fingerprint` and
+# `_hint_topic_key` in `app.graph.nodes`).
 # ---------------------------------------------------------------------------
 
 
 def test_default_hint_topic_fits_the_hint_progress_topic_column() -> None:
     """`hint_progress.topic` is `String(64)` in the DB (see
     `app.db.models.hint_progress.HintProgress`); `DEFAULT_HINT_TOPIC` must fit
-    or every fallback-keyed write would silently fail (swallowed by
+    or every write keyed under it would silently fail (swallowed by
     `dsa_agent`'s `except Exception: pass`), which is worse than the bug this
     packet fixes."""
     assert len(DEFAULT_HINT_TOPIC) <= 64
 
 
 @pytest.mark.db
-async def test_dsa_agent_hint_level_climbs_with_no_topic_fallback(
+async def test_dsa_agent_hint_level_climbs_via_problem_fingerprint_when_no_topic(
     db_session: AsyncSession, user_id: uuid.UUID
 ) -> None:
     """A learner whose plan never gets a topic (fresh profile, no
-    `topic_hint`) still climbs the hint ladder turn over turn, keyed under
-    `DEFAULT_HINT_TOPIC`, and stops advancing once the ceiling for `"hint"`
-    assistance (`L2_DATA_STRUCTURE`) is reached."""
+    `topic_hint`), restating the *same* problem each turn, still climbs the
+    hint ladder turn over turn -- keyed under that problem's fingerprint, not
+    the shared `DEFAULT_HINT_TOPIC` bucket (which stays untouched) -- and
+    stops advancing once the ceiling for `"hint"` assistance
+    (`L2_DATA_STRUCTURE`) is reached."""
     conversation_id = await start_conversation(db_session, user_id)
     plan = _plan(topic=None)
+    structured = StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
     runtime = _runtime(
         llm=FakeLLMClient(chat_content="{}"),
         session=db_session,
@@ -548,10 +569,7 @@ async def test_dsa_agent_hint_level_climbs_with_no_topic_fallback(
 
     levels: list[int] = []
     for _ in range(3):
-        state = _pipeline_state(
-            plan=plan,
-            structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT),
-        )
+        state = _pipeline_state(plan=plan, structured=structured)
         update = await dsa_agent(state, runtime)
         outcome = update.get("agent_output")
         assert outcome is not None
@@ -559,16 +577,165 @@ async def test_dsa_agent_hint_level_climbs_with_no_topic_fallback(
 
     assert levels == [0, 1, 2]
 
-    progress = await get_hint_progress(db_session, user_id, conversation_id, DEFAULT_HINT_TOPIC)
+    fingerprint = _problem_fingerprint(structured)
+    assert fingerprint is not None
+    progress = await get_hint_progress(db_session, user_id, conversation_id, fingerprint)
     assert progress.last_level == HintLevel.L2_DATA_STRUCTURE
+    default_progress = await get_hint_progress(
+        db_session, user_id, conversation_id, DEFAULT_HINT_TOPIC
+    )
+    assert default_progress == HintProgress()
 
 
 @pytest.mark.db
-async def test_dsa_agent_fallback_ladder_independent_across_conversations(
+async def test_dsa_agent_two_different_problems_no_topic_get_independent_ladders(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """Two *different* problem statements in one topic-less conversation get
+    independent ladders: the second starts fresh at L0 while the first stays
+    where it was -- this is the exact bug this packet fixes (a brand new
+    problem no longer silently inherits a previous problem's rung)."""
+    conversation_id = await start_conversation(db_session, user_id)
+    plan = _plan(topic=None)
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+    def _state(problem: str) -> AgentState:
+        return _pipeline_state(
+            plan=plan, structured=StructuredInput(source="text", problem=problem)
+        )
+
+    # Problem A climbs to L1 over two turns.
+    await dsa_agent(_state(_DSA_PROBLEM_TEXT), runtime)
+    second_a = await dsa_agent(_state(_DSA_PROBLEM_TEXT), runtime)
+    second_a_outcome = second_a.get("agent_output")
+    assert second_a_outcome is not None
+    assert second_a_outcome.hints_used - 1 == 1
+
+    # A brand new, unrelated problem B starts fresh at L0, not L2.
+    first_b = await dsa_agent(_state(_DSA_PROBLEM_TEXT_B), runtime)
+    first_b_outcome = first_b.get("agent_output")
+    assert first_b_outcome is not None
+    assert first_b_outcome.hints_used - 1 == 0
+
+    # Problem A's ladder is untouched by B and resumes at L2.
+    third_a = await dsa_agent(_state(_DSA_PROBLEM_TEXT), runtime)
+    third_a_outcome = third_a.get("agent_output")
+    assert third_a_outcome is not None
+    assert third_a_outcome.hints_used - 1 == 2
+
+
+@pytest.mark.db
+async def test_dsa_agent_whitespace_and_case_differences_do_not_fork_the_ladder(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """The same problem, re-pasted with different case/whitespace, stays on
+    one ladder instead of forking a new one."""
+    conversation_id = await start_conversation(db_session, user_id)
+    plan = _plan(topic=None)
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    reworded = "  " + _DSA_PROBLEM_TEXT.upper().replace(" ", "   \n") + "  "
+
+    first = await dsa_agent(
+        _pipeline_state(
+            plan=plan, structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
+        ),
+        runtime,
+    )
+    second = await dsa_agent(
+        _pipeline_state(plan=plan, structured=StructuredInput(source="text", problem=reworded)),
+        runtime,
+    )
+
+    first_outcome = first.get("agent_output")
+    second_outcome = second.get("agent_output")
+    assert first_outcome is not None
+    assert second_outcome is not None
+    assert first_outcome.hints_used - 1 == 0
+    assert second_outcome.hints_used - 1 == 1
+    assert await _hint_progress_row_count(db_session, conversation_id) == 1
+
+
+@pytest.mark.db
+async def test_dsa_agent_bare_followup_continues_latest_ladder_same_row(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A bare follow-up (no problem statement of its own, e.g. "Give me the
+    next hint.") continues the most recently updated ladder in this
+    conversation and writes back to that *same* row -- it must never fork a
+    new one. `updated_at` is transaction-scoped `now()` (see
+    `HintProgress.updated_at`), so within this test's single wrapped
+    transaction the two problems' rows would otherwise tie on timestamp; the
+    first row's `updated_at` is explicitly backdated to make "problem B is
+    the most recent ladder" unambiguous, the way it naturally would be across
+    two separate real requests."""
+    conversation_id = await start_conversation(db_session, user_id)
+    plan = _plan(topic=None)
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+    await dsa_agent(
+        _pipeline_state(
+            plan=plan, structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
+        ),
+        runtime,
+    )
+    await db_session.execute(
+        sa_update(HintProgressRow)
+        .where(HintProgressRow.conversation_id == conversation_id)
+        .values(updated_at=func.now() - timedelta(minutes=5))
+    )
+
+    await dsa_agent(
+        _pipeline_state(
+            plan=plan, structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT_B)
+        ),
+        runtime,
+    )
+
+    assert await _hint_progress_row_count(db_session, conversation_id) == 2
+
+    followup_state = _pipeline_state(
+        plan=plan, structured=StructuredInput(source="text", question="Give me the next hint.")
+    )
+    followup = await dsa_agent(followup_state, runtime)
+    followup_outcome = followup.get("agent_output")
+    assert followup_outcome is not None
+    assert followup_outcome.hints_used - 1 == 1
+
+    # Still exactly two rows: the follow-up updated problem B's row in place.
+    assert await _hint_progress_row_count(db_session, conversation_id) == 2
+    fingerprint_a = _problem_fingerprint(StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT))
+    fingerprint_b = _problem_fingerprint(
+        StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT_B)
+    )
+    assert fingerprint_a is not None
+    assert fingerprint_b is not None
+    progress_a = await get_hint_progress(db_session, user_id, conversation_id, fingerprint_a)
+    progress_b = await get_hint_progress(db_session, user_id, conversation_id, fingerprint_b)
+    assert progress_a.last_level == HintLevel.L0_NUDGE
+    assert progress_b.last_level == HintLevel.L1_WHAT_TO_TRACK
+
+
+@pytest.mark.db
+async def test_dsa_agent_fingerprint_ladder_independent_across_conversations(
     db_session: AsyncSession, user_id: uuid.UUID
 ) -> None:
     """Two different conversations for the same user keep independent
-    fallback-keyed ladders."""
+    fingerprint-keyed ladders for the same problem text."""
     conversation_a = await start_conversation(db_session, user_id)
     conversation_b = await start_conversation(db_session, user_id)
     plan = _plan(topic=None)
@@ -605,11 +772,11 @@ async def test_dsa_agent_fallback_ladder_independent_across_conversations(
 
 
 @pytest.mark.db
-async def test_dsa_agent_fallback_ladder_ownership_isolated_between_users(
+async def test_dsa_agent_fingerprint_ladder_ownership_isolated_between_users(
     db_session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
 ) -> None:
-    """Two different users cannot see each other's fallback-keyed progress,
-    even under the same nominal `conversation_id`."""
+    """Two different users cannot see each other's fingerprint-keyed
+    progress, even under the same nominal `conversation_id`."""
     conversation_id = await start_conversation(db_session, user_id)
     plan = _plan(topic=None)
 
@@ -647,7 +814,9 @@ async def test_dsa_agent_real_topic_keys_on_slug_tag_not_fallback(
 ) -> None:
     """A turn with a real `plan.topic` still keys/stores on
     `slug_tag(plan.topic)`, unaffected by the `DEFAULT_HINT_TOPIC` fallback
-    -- an explicit regression check on the stored row's `topic` column."""
+    or the problem-fingerprint scheme -- an explicit regression check on the
+    stored row's `topic` column, and that no second, fingerprint-keyed row is
+    ever created for the same turn."""
     conversation_id = await start_conversation(db_session, user_id)
     plan = _plan(topic="arrays")
     runtime = _runtime(
@@ -656,9 +825,8 @@ async def test_dsa_agent_real_topic_keys_on_slug_tag_not_fallback(
         user_id=user_id,
         conversation_id=conversation_id,
     )
-    state = _pipeline_state(
-        plan=plan, structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
-    )
+    structured = StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
+    state = _pipeline_state(plan=plan, structured=structured)
 
     await dsa_agent(state, runtime)
 
@@ -666,20 +834,21 @@ async def test_dsa_agent_real_topic_keys_on_slug_tag_not_fallback(
     assert stored.last_level == HintLevel.L0_NUDGE
     fallback = await get_hint_progress(db_session, user_id, conversation_id, DEFAULT_HINT_TOPIC)
     assert fallback == HintProgress()
+    fingerprint = _problem_fingerprint(structured)
+    assert fingerprint is not None
+    fingerprint_progress = await get_hint_progress(
+        db_session, user_id, conversation_id, fingerprint
+    )
+    assert fingerprint_progress == HintProgress()
+    assert await _hint_progress_row_count(db_session, conversation_id) == 1
 
 
 @pytest.mark.db
-async def test_no_topic_fallback_never_touches_an_unrelated_real_topic_row(
+async def test_no_topic_fingerprint_never_touches_an_unrelated_real_topic_row(
     db_session: AsyncSession, user_id: uuid.UUID
 ) -> None:
-    """A no-topic turn's fallback-keyed write never collides with (or moves)
-    a real, differently-named topic's row on the same conversation -- the
-    fallback key and a real topic can only ever collide if the real topic is
-    named the exact literal `DEFAULT_HINT_TOPIC` string (see that constant's
-    module comment: a practical, not cryptographic, mitigation given
-    `topic_hint` has no charset restriction and `hint_progress.topic` is a
-    `String(64)` DB column, so no sentinel can be both unreachable by user
-    input and guaranteed to fit)."""
+    """A no-topic turn's fingerprint-keyed write never collides with (or
+    moves) a real, differently-named topic's row on the same conversation."""
     conversation_id = await start_conversation(db_session, user_id)
     runtime = _runtime(
         llm=FakeLLMClient(chat_content="{}"),
@@ -695,21 +864,42 @@ async def test_no_topic_fallback_never_touches_an_unrelated_real_topic_row(
     )
     await dsa_agent(arrays_state, runtime)
 
-    # Two no-topic (fallback) turns climb independently of "arrays".
+    # Two no-topic (fingerprint-keyed) turns on the same problem climb
+    # independently of "arrays".
     no_topic_plan = _plan(topic=None)
+    no_topic_structured = StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
     for _ in range(2):
-        no_topic_state = _pipeline_state(
-            plan=no_topic_plan,
-            structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT),
-        )
+        no_topic_state = _pipeline_state(plan=no_topic_plan, structured=no_topic_structured)
         await dsa_agent(no_topic_state, runtime)
 
     arrays_progress = await get_hint_progress(db_session, user_id, conversation_id, "arrays")
-    fallback_progress = await get_hint_progress(
-        db_session, user_id, conversation_id, DEFAULT_HINT_TOPIC
+    fingerprint = _problem_fingerprint(no_topic_structured)
+    assert fingerprint is not None
+    fingerprint_progress = await get_hint_progress(
+        db_session, user_id, conversation_id, fingerprint
     )
     assert arrays_progress.last_level == HintLevel.L0_NUDGE
-    assert fallback_progress.last_level == HintLevel.L1_WHAT_TO_TRACK
+    assert fingerprint_progress.last_level == HintLevel.L1_WHAT_TO_TRACK
+
+
+async def test_problem_fingerprint_never_appears_in_any_response_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The fingerprint is a hash key for internal storage only -- it must
+    never be rendered, logged, or returned to the client."""
+    structured = StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
+    fingerprint = _problem_fingerprint(structured)
+    assert fingerprint is not None
+
+    state = _pipeline_state(plan=_plan(topic=None), structured=structured)
+    with caplog.at_level("DEBUG"):
+        update = await dsa_agent(state, _runtime(llm=FakeLLMClient(chat_content="{}")))
+
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert fingerprint not in outcome.text
+    assert fingerprint not in repr(update)
+    assert all(fingerprint not in record.getMessage() for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

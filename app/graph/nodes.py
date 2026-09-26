@@ -20,6 +20,7 @@ fixed, safe strings for the same reason: never the raw exception text or any
 user-supplied content, either of which might carry secrets or untrusted data.
 """
 
+import hashlib
 import logging
 from collections.abc import Callable
 from types import MappingProxyType
@@ -50,12 +51,13 @@ from app.input.vision import ImageValidationError, extract_from_image
 from app.llm.base import LLMError
 from app.memory.conversation import add_turn, get_recent_context
 from app.memory.events import record_event, requested_help_for
-from app.memory.hint_progress import get_hint_progress, save_hint_progress
+from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress, save_hint_progress
 from app.memory.profile import PRIOR, get_profile
 from app.response.format import SAFE_FALLBACK_RESPONSE
 from app.response.generate import generate_response
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, Verdict
+from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
@@ -359,9 +361,13 @@ def _agent_outcome_fallback(state: AgentState) -> AgentStateUpdate:
     return {"agent_output": AgentOutcome(text=_AGENT_FALLBACK_TEXT, topic=None, solved=None)}
 
 
-# Per-conversation fallback hint-ladder key used when the planner could not
-# infer a topic for this turn (e.g. a new learner with an empty
-# `skill_levels` profile and no `topic_hint`).
+# Last-resort fallback hint-ladder key used when the planner could not infer
+# a topic for this turn (e.g. a new learner with an empty `skill_levels`
+# profile and no `topic_hint`) *and* the turn carries no problem statement of
+# its own to fingerprint *and* there is no earlier ladder on this
+# conversation to continue (see `_hint_topic_key`) -- in practice, a bare
+# follow-up ("give me the next hint") as the very first DSA turn in a brand
+# new conversation.
 #
 # NOTE on the leading-underscore idea this was first written with: it does
 # *not* guarantee no collision. `RawInput.topic_hint` (see `app.graph.state`)
@@ -390,19 +396,86 @@ def _agent_outcome_fallback(state: AgentState) -> AgentStateUpdate:
 DEFAULT_HINT_TOPIC: Final = "__no_topic_inferred__"
 
 
-def _hint_topic_key(plan: TeachingPlan | None) -> str | None:
-    """Return the hint-ladder store key for `plan`, or `None` if there is no plan.
+def _problem_fingerprint(structured_input: StructuredInput | None) -> str | None:
+    """Fingerprint key for the problem statement this turn carries, or `None`.
 
-    `slug_tag(plan.topic)` when `plan` has a topic, `DEFAULT_HINT_TOPIC` when
-    `plan` exists but has no topic (see that constant's comment for why it
-    can never collide with a real topic), and `None` when there is no plan at
-    all. Shared by `resolve_hint_progress` (the read) and `dsa_agent` (the
-    write) so the two can never key differently.
+    "Carries a problem statement" means `structured_input.problem` is set.
+    `app.input.normalize.normalize_text` only ever populates the dedicated
+    `.problem` field when the prose actually *looks like* a problem
+    statement (see its `_looks_like_problem` heuristic); `.question` is not a
+    reliable signal on its own because it is also the sole home of bare
+    follow-ups ("give me the next hint") that carry no problem content of
+    their own -- treating every non-empty `.question` as a new problem would
+    make those follow-ups fork the ladder instead of continuing it.
+
+    `.question` *is* folded into the fingerprint when `.problem` is present,
+    because `normalize_text`'s `_extract_direct_ask` can carve a
+    trailing/leading "direct ask" line *out of* the very same pasted problem
+    into `.question`, leaving the body in `.problem` -- when that happens
+    both fields describe the same problem, and dropping `.question` would
+    let two pastes of the same problem with slightly different direct-ask
+    phrasing fork the ladder. `.code` and `.error` are never included: only
+    the problem statement should decide the ladder, so a learner re-pasting
+    the same problem with evolving (or broken) code stays on one ladder.
+
+    The returned key is a hash of untrusted learner text, never the text
+    itself -- it must never be rendered, logged, or returned to the client.
+    """
+    if structured_input is None or not structured_input.problem:
+        return None
+    parts = [structured_input.problem]
+    if structured_input.question:
+        parts.append(structured_input.question)
+    normalized = " ".join(" ".join(parts).lower().split())
+    digest = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+    return f"_q{digest}"
+
+
+async def _hint_topic_key(
+    structured_input: StructuredInput | None, plan: TeachingPlan | None, ctx: GraphContext
+) -> str | None:
+    """Return the hint-ladder store key for this turn, or `None` if there is no plan.
+
+    Resolution order:
+    1. `plan` is `None` -> `None` (no ladder at all for this turn).
+    2. `plan.topic` is set -> `slug_tag(plan.topic)`, exactly as before.
+    3. No topic, but `structured_input` carries a problem statement (see
+       `_problem_fingerprint`) -> a fingerprint of that problem, so a
+       *different* problem in the same topic-less conversation never shares
+       a ladder with an unrelated one, and the *same* problem restated
+       climbs the one ladder it belongs to.
+    4. No topic and no problem statement (a bare follow-up like "Give me the
+       next hint.") -> the most recently updated hint-ladder row for this
+       `(user_id, conversation_id)`, so the follow-up climbs the ladder it
+       actually belongs to instead of restarting or forking one.
+    5. Nothing stored yet either -> `DEFAULT_HINT_TOPIC`, a fresh ladder.
+
+    Shared by `resolve_hint_progress` (the read) and `dsa_agent` (the write),
+    called with the same `(structured_input, plan)` before either has
+    written anything this turn, so the two resolve identically and can never
+    key differently. Case 4's DB lookup degrades silently (falls through to
+    `DEFAULT_HINT_TOPIC`) on any failure or missing `ctx` dependency -- a
+    history lookup must never cost the learner their turn.
     """
     if plan is None:
         return None
     if plan.topic:
         return slug_tag(plan.topic)
+
+    fingerprint = _problem_fingerprint(structured_input)
+    if fingerprint is not None:
+        return fingerprint
+
+    if ctx.session is not None and ctx.user_id is not None and ctx.conversation_id is not None:
+        try:
+            async with ctx.session.begin_nested():
+                latest = await get_latest_hint_progress(
+                    ctx.session, ctx.user_id, ctx.conversation_id
+                )
+            if latest is not None:
+                return latest.topic
+        except Exception:
+            pass
     return DEFAULT_HINT_TOPIC
 
 
@@ -413,9 +486,8 @@ async def resolve_hint_progress(state: AgentState, ctx: GraphContext) -> HintPro
     reads it from `app.memory.hint_progress` (a small store dedicated to hint
     ladder state, upserted by `dsa_agent` -- see that function's docstring for
     why this is deliberately *not* rebuilt from `LearningEvent`s). Keyed on
-    `_hint_topic_key(plan)`, the same key `dsa_agent` writes under, so reads
-    and writes always agree -- including the `DEFAULT_HINT_TOPIC` fallback
-    used when the plan has no topic at all.
+    `_hint_topic_key(structured_input, plan, ctx)`, the same key `dsa_agent`
+    writes under, so reads and writes always agree.
 
     Degrades to a fresh `HintProgress()` (never raises) whenever `ctx.session`
     or `ctx.user_id` is `None`, there is no plan at all, no stored row is
@@ -426,7 +498,7 @@ async def resolve_hint_progress(state: AgentState, ctx: GraphContext) -> HintPro
     """
     if ctx.session is None or ctx.user_id is None or ctx.conversation_id is None:
         return HintProgress()
-    topic = _hint_topic_key(state.plan)
+    topic = await _hint_topic_key(state.structured_input, state.plan, ctx)
     if topic is None:
         return HintProgress()
 
@@ -442,17 +514,18 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
 
     Persists the rung actually reached this turn to the hint-progress store
     (keyed by `_hint_topic_key`, the same helper `resolve_hint_progress` reads
-    with -- including the `DEFAULT_HINT_TOPIC` fallback when the plan has no
-    topic), so the next turn on this conversation+topic resumes the ladder
-    instead of restarting at L0. Only `dsa_agent` ever writes this store --
-    no other agent's turn can move (or reset) a DSA hint ladder. `solved` is
-    carried forward unchanged from the progress read at the start of this
-    turn: nothing in a hint turn itself observes whether the learner
-    ultimately solved the problem (see `DSAResult.to_outcome`). Skipped
-    (never raises) whenever `ctx.session`, `ctx.user_id`, `ctx.conversation_id`,
-    or the plan itself is missing, the ladder produced no hint this turn
-    (already solved), or the write itself fails -- a failed write must never
-    cost the learner their turn's response.
+    with, called with the same `(structured_input, plan)` so it resolves to
+    the exact same row -- including any of its fallback cases), so the next
+    turn on this conversation+topic resumes the ladder instead of restarting
+    at L0. Only `dsa_agent` ever writes this store -- no other agent's turn
+    can move (or reset) a DSA hint ladder. `solved` is carried forward
+    unchanged from the progress read at the start of this turn: nothing in a
+    hint turn itself observes whether the learner ultimately solved the
+    problem (see `DSAResult.to_outcome`). Skipped (never raises) whenever
+    `ctx.session`, `ctx.user_id`, `ctx.conversation_id`, or the plan itself is
+    missing, the ladder produced no hint this turn (already solved), or the
+    write itself fails -- a failed write must never cost the learner their
+    turn's response.
     """
     ctx = runtime.context
     progress = await resolve_hint_progress(state, ctx)
@@ -464,7 +537,7 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request
 
-    topic = _hint_topic_key(state.plan)
+    topic = await _hint_topic_key(state.structured_input, state.plan, ctx)
     if (
         run.result.hint is not None
         and ctx.session is not None

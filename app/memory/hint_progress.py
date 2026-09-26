@@ -13,7 +13,7 @@ transaction and must `await session.commit()` (or roll back) themselves.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +21,7 @@ from app.agents.hint_engine import HintProgress
 from app.db.models import HintProgress as HintProgressRow
 from app.schemas.agent_results import HintLevel
 
-__all__ = ["get_hint_progress", "save_hint_progress"]
+__all__ = ["get_hint_progress", "get_latest_hint_progress", "save_hint_progress"]
 
 
 async def get_hint_progress(
@@ -42,6 +42,29 @@ async def get_hint_progress(
     return HintProgress(last_level=HintLevel(row.level), solved=row.solved)
 
 
+async def get_latest_hint_progress(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> HintProgressRow | None:
+    """Return this `(user, conversation)`'s most recently updated hint-ladder row.
+
+    Ownership-scoped to `user_id` exactly like `get_hint_progress`, but across
+    *all* topics for this conversation -- used to resolve which ladder a bare
+    follow-up turn (no topic, no problem statement of its own) should
+    continue climbing. Returns `None` (never raises) if no row exists for
+    this pair; the caller decides the fallback.
+    """
+    stmt = (
+        select(HintProgressRow)
+        .where(
+            HintProgressRow.user_id == user_id,
+            HintProgressRow.conversation_id == conversation_id,
+        )
+        .order_by(HintProgressRow.updated_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def save_hint_progress(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -55,6 +78,14 @@ async def save_hint_progress(
     Inserts a new row, or updates `level`/`solved` (and `updated_at`) in
     place if a row already exists for the same `(user_id, conversation_id,
     topic)` -- there is never more than one row per triple.
+
+    `updated_at` is set explicitly to `func.now()` in the `SET` clause below:
+    the column's `onupdate=func.now()` (see `app.db.models.hint_progress`) is
+    a Core/ORM `Update`-statement default and is **not** applied by this
+    Postgres-specific `INSERT ... ON CONFLICT DO UPDATE` construct, so without
+    this, re-upserting an existing row would silently leave `updated_at`
+    stuck at its original insert time -- breaking `get_latest_hint_progress`,
+    which depends on `updated_at` actually advancing on every touch.
     """
     insert_stmt = pg_insert(HintProgressRow).values(
         user_id=user_id,
@@ -72,6 +103,7 @@ async def save_hint_progress(
         set_={
             "level": insert_stmt.excluded.level,
             "solved": insert_stmt.excluded.solved,
+            "updated_at": func.now(),
         },
     )
     await session.execute(upsert_stmt)

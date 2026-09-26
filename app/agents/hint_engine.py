@@ -35,6 +35,7 @@ reached L6 (`DSAResult` enforces that pairing).
 """
 
 from collections.abc import Sequence
+from typing import Final
 
 from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE, HintLevel, HintResult
 from app.schemas.base import APIModel
@@ -75,6 +76,9 @@ def _humanize(label: str) -> str:
     return label.replace("_", " ").replace("-", " ").strip()
 
 
+GENERIC_SHAPE_HINT: Final = "a structure that supports fast lookups or ordered access"
+
+
 def _shape_hint(topic: str | None, context_labels: Sequence[str]) -> str:
     """Pick a data-structure hint that says something the topic has not.
 
@@ -82,12 +86,21 @@ def _shape_hint(topic: str | None, context_labels: Sequence[str]) -> str:
     self-referential "For a sliding_window problem, sliding_window is often
     the right shape". Only a label that differs from the topic adds
     information; otherwise fall back to the generic phrasing.
+
+    When the planner could not infer a topic, retrieval had nothing to anchor
+    on either, so its labels are not evidence about *this* problem -- they are
+    whatever the corpus happened to return. Naming one then states a falsehood
+    with total confidence ("for a two-sum question, trees is often the right
+    shape"), which is worse for a learner than saying something general. So an
+    unknown topic always gets the generic phrasing.
     """
-    topic_key = (topic or "").replace("_", " ").replace("-", " ").strip().casefold()
+    if not topic:
+        return GENERIC_SHAPE_HINT
+    topic_key = topic.replace("_", " ").replace("-", " ").strip().casefold()
     for label in context_labels:
         if _humanize(label).casefold() != topic_key:
             return _humanize(label)
-    return "a structure that supports fast lookups or ordered access"
+    return GENERIC_SHAPE_HINT
 
 
 def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[str]) -> str:
@@ -96,7 +109,12 @@ def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[st
     Built only from `plan`'s structured fields and `context_labels`; never
     from the learner's raw question/problem/code/error text.
     """
-    topic = _humanize(plan.topic) if plan.topic else "this problem"
+    # Two phrasings, because the topic is a *modifier* ("sliding window
+    # problem"), not a stand-in for the whole noun phrase. Substituting a
+    # fallback noun here produced "this this problem problem".
+    topic = _humanize(plan.topic) if plan.topic else None
+    this_problem = f"this {topic} problem" if topic else "this problem"
+    a_problem = f"a {topic} problem" if topic else "this problem"
     watch = ", ".join(plan.watch_errors) if plan.watch_errors else None
 
     if level == HintLevel.L0_NUDGE:
@@ -109,8 +127,8 @@ def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[st
 
     if level == HintLevel.L1_WHAT_TO_TRACK:
         text = (
-            f"Think about what state you need to track while working through this "
-            f"{topic} problem: which values change at each step, and which ones you "
+            f"Think about what state you need to track while working through "
+            f"{this_problem}: which values change at each step, and which ones you "
             "need to remember from earlier steps to make a later decision."
         )
         if watch:
@@ -121,7 +139,7 @@ def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[st
         shape = _shape_hint(plan.topic, context_labels)
         return (
             f"Consider what data structure would let you track that state "
-            f"efficiently. For a {topic} problem, {shape} is often the right shape "
+            f"efficiently. For {a_problem}, {shape} is often the right shape "
             "-- ask yourself what operations you need it to support quickly."
         )
 
