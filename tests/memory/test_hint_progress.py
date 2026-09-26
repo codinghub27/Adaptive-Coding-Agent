@@ -78,9 +78,7 @@ async def test_different_topic_gets_its_own_row(
     assert progress_graphs == HintProgress()
 
 
-async def test_no_row_returns_fresh_progress(
-    db_session: AsyncSession, user_id: uuid.UUID
-) -> None:
+async def test_no_row_returns_fresh_progress(db_session: AsyncSession, user_id: uuid.UUID) -> None:
     conversation_id = await start_conversation(db_session, user_id)
 
     progress = await get_hint_progress(db_session, user_id, conversation_id, "arrays")

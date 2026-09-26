@@ -130,7 +130,10 @@ def _build_ast_node(node: ast.stmt) -> CodeStructureNode:
     ]
     end_lineno = node.end_lineno if node.end_lineno is not None else node.lineno
     return CodeStructureNode(
-        kind=_ast_kind(node), name=_ast_name(node), lineno=node.lineno, end_lineno=end_lineno,
+        kind=_ast_kind(node),
+        name=_ast_name(node),
+        lineno=node.lineno,
+        end_lineno=end_lineno,
         children=children,
     )
 

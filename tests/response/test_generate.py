@@ -161,9 +161,7 @@ def test_explain_result_with_none_rationale_still_renders_line_explanations() ->
     assert "returns one" in response.text
 
 
-def test_review_result_with_skipped_verdict_renders_all_findings_and_no_correctness_claim() -> (
-    None
-):
+def test_review_result_with_skipped_verdict_renders_all_findings_and_no_correctness_claim() -> None:
     findings = [
         ReviewFinding(category="correctness", severity="major", message="off by one bug"),
         ReviewFinding(category="readability", severity="minor", message="rename x"),

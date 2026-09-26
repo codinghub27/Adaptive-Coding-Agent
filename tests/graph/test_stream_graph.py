@@ -34,9 +34,7 @@ async def test_stream_graph_final_state_matches_run_graph_for_the_same_input() -
     fake_stream = FakeLLMClient()
     fake_run = FakeLLMClient()
 
-    events = [
-        event async for event in stream_graph(RawInput(text=_DEBUG_TEXT), llm=fake_stream)
-    ]
+    events = [event async for event in stream_graph(RawInput(text=_DEBUG_TEXT), llm=fake_stream)]
     result_event = next(e for e in events if isinstance(e, GraphResultEvent))
 
     run_result = await run_graph(RawInput(text=_DEBUG_TEXT), llm=fake_run)

@@ -112,8 +112,7 @@ _DSA_ANALYSIS_JSON: Final = json.dumps(
         "brute_force": "Sum every contiguous subarray directly with nested loops.",
         "why_slow": "Checking every subarray directly costs O(n^2) time.",
         "key_insight": (
-            "Track a running prefix sum and count how many earlier prefix sums equal "
-            "prefix - k."
+            "Track a running prefix sum and count how many earlier prefix sums equal prefix - k."
         ),
         "pseudocode": (
             "prefix = 0; seen = {0: 1}; count = 0\n"

@@ -64,9 +64,7 @@ def _top_level_functions(code: str | None) -> list[ast.FunctionDef | ast.AsyncFu
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
-    return [
-        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
+    return [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
 
 
 def _accepts(func: ast.FunctionDef | ast.AsyncFunctionDef, case: TestCase) -> bool:

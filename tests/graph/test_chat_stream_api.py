@@ -174,9 +174,7 @@ async def test_chat_stream_stage_frames_never_contain_submitted_text(
     fake_session = _FakeSession()
     fake = FakeLLMClient(chat_content="unused")
 
-    transport = _build_app(
-        make_settings, fake, session_factory=_FakeSessionFactory(fake_session)
-    )
+    transport = _build_app(make_settings, fake, session_factory=_FakeSessionFactory(fake_session))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/chat/stream", data={"text": text})
 
@@ -225,9 +223,7 @@ async def test_chat_stream_emits_error_frame_with_fixed_message_on_graph_failure
     fake_session = _FakeSession(fail_commit=True)
     fake = FakeLLMClient(chat_content="unused")
 
-    transport = _build_app(
-        make_settings, fake, session_factory=_FakeSessionFactory(fake_session)
-    )
+    transport = _build_app(make_settings, fake, session_factory=_FakeSessionFactory(fake_session))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post("/chat/stream", data={"text": _DEBUG_TEXT})
 

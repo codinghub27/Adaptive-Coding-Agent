@@ -124,7 +124,11 @@ def _passed_result() -> ExecutionResult:
         phase="tests",
         cases=[
             CaseResult(
-                name="c1", passed=True, actual=4, actual_repr="4", actual_sha256=_sha256(4),
+                name="c1",
+                passed=True,
+                actual=4,
+                actual_repr="4",
+                actual_sha256=_sha256(4),
                 duration_ms=1.0,
             )
         ],
@@ -137,7 +141,11 @@ def _failed_result() -> ExecutionResult:
         phase="tests",
         cases=[
             CaseResult(
-                name="c1", passed=False, actual=3, actual_repr="3", actual_sha256=_sha256(3),
+                name="c1",
+                passed=False,
+                actual=3,
+                actual_repr="3",
+                actual_sha256=_sha256(3),
                 duration_ms=1.0,
             )
         ],

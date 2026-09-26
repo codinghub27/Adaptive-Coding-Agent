@@ -139,9 +139,7 @@ def _render_dsa(
 
     hint_level = result.hint.level if result.hint is not None else None
     hint_ceiling = result.hint.ceiling if result.hint is not None else None
-    more_help_available = (
-        result.hint is not None and result.hint.level < result.hint.ceiling
-    )
+    more_help_available = result.hint is not None and result.hint.level < result.hint.ceiling
     citations = list(result.citations)
     return sections, hint_level, hint_ceiling, more_help_available, citations, next_steps
 

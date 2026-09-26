@@ -229,8 +229,7 @@ class _StaticVisitor(ast.NodeVisitor):
                     StaticFinding(
                         tool="ast",
                         message=(
-                            "comparison against len(...) using <=/>= is prone to "
-                            "off-by-one errors"
+                            "comparison against len(...) using <=/>= is prone to off-by-one errors"
                         ),
                         lineno=node.lineno,
                         severity="info",

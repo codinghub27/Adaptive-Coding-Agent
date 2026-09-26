@@ -105,9 +105,7 @@ async def test_dsa_hint_turn_climbs_ladder_across_turns_and_never_leaks_code(
         assert generated is not None
         assert generated["hint_level"] is not None
         assert generated["reveals_code"] is False
-        assert all(
-            section["kind"] not in ("code", "patch") for section in generated["sections"]
-        )
+        assert all(section["kind"] not in ("code", "patch") for section in generated["sections"])
         assert body["response"] != ""
         assert "def " not in body["response"]
         levels.append(generated["hint_level"])
@@ -351,9 +349,7 @@ async def test_chat_stream_parity_with_plain_chat_and_no_leaked_problem_text(
     plain_body = plain_response.json()
 
     assert streamed_body["route"] == plain_body["route"]
-    assert (
-        streamed_body["generated"]["reveals_code"] == plain_body["generated"]["reveals_code"]
-    )
+    assert streamed_body["generated"]["reveals_code"] == plain_body["generated"]["reveals_code"]
     streamed_kinds = sorted(s["kind"] for s in streamed_body["generated"]["sections"])
     plain_kinds = sorted(s["kind"] for s in plain_body["generated"]["sections"])
     assert streamed_kinds == plain_kinds

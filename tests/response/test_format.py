@@ -106,11 +106,7 @@ def test_render_static_findings_empty_and_populated() -> None:
 def test_render_findings_empty_and_populated() -> None:
     assert render_findings([]) == ""
     body = render_findings(
-        [
-            ReviewFinding(
-                category="readability", severity="minor", message="rename this variable"
-            )
-        ]
+        [ReviewFinding(category="readability", severity="minor", message="rename this variable")]
     )
     assert "rename this variable" in body
 
@@ -151,4 +147,3 @@ def test_render_verdict_empty_and_populated() -> None:
         status="fail", category="wrong_answer", summary="case 1 failed", cases_total=2
     )
     assert "failure" in render_verdict(failing)
-

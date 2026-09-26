@@ -356,9 +356,7 @@ class ReviewResult(APIModel):
             solved=solved,
             hints_used=0,
             needed_full_solution=False,
-            errors=[
-                finding.message for finding in self.findings if finding.severity == "major"
-            ],
+            errors=[finding.message for finding in self.findings if finding.severity == "major"],
         )
 
 
