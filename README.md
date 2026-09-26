@@ -114,8 +114,10 @@ docker compose up -d
 # 5. migrations
 alembic upgrade head
 
-# 6. run
-uvicorn app.main:app --reload
+# 6. run  (note: `python -m` via the venv, so the project's deps are on the path --
+#          a bare `uvicorn` may resolve to a global install that lacks them)
+./venv/Scripts/python.exe -m uvicorn app.main:app --reload   # Windows
+# python -m uvicorn app.main:app --reload                    # macOS/Linux (venv activated)
 curl http://127.0.0.1:8000/health   # {"status":"ok","db":"ok","qdrant":"ok"}
 ```
 
@@ -136,17 +138,23 @@ first, then the frontend, in two terminals:
 
 ```bash
 # terminal 1: the API (from "Getting started" above)
-uvicorn app.main:app --reload
+./venv/Scripts/python.exe -m uvicorn app.main:app --reload
 
 # terminal 2: the Streamlit UI
-streamlit run frontend/app.py
+./venv/Scripts/python.exe -m streamlit run frontend/app.py
 ```
+
+Both go through the venv's interpreter on purpose. A bare `uvicorn` or
+`streamlit` takes whichever copy is first on `PATH`; if that is a global
+install, the app fails immediately with `ModuleNotFoundError: No module named
+'qdrant_client'`. With the venv activated, plain `python -m uvicorn ...` works
+too.
 
 By default the frontend calls `http://127.0.0.1:8000`. Point it at a
 different backend with `API_BASE_URL`:
 
 ```bash
-API_BASE_URL=http://127.0.0.1:8000 streamlit run frontend/app.py
+API_BASE_URL=http://127.0.0.1:8000 ./venv/Scripts/python.exe -m streamlit run frontend/app.py
 ```
 
 On first run, use the **Register** tab to create an account, then log in — every
