@@ -94,7 +94,10 @@ def make_settings() -> Callable[..., Settings]:
         params: dict[str, object] = {
             "database_url": "postgresql://u:p@127.0.0.1:1/x",
             "qdrant_url": "http://127.0.0.1:1",
+            # Both providers are keyed so tests are unaffected by which
+            # provider `Settings.llm_provider` defaults to.
             "groq_api_key": "test-key",
+            "openrouter_api_key": "test-key",
             "langsmith_tracing": False,
             "jwt_secret_key": TEST_JWT_SECRET_KEY,
             # Loading the embedder/reranker models costs real seconds per app

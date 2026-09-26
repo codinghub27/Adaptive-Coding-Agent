@@ -16,9 +16,16 @@ from sqlalchemy.engine import make_url
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K
 
 GROQ_DEFAULT_MODEL = "openai/gpt-oss-120b"
-OPENROUTER_DEFAULT_MODEL = "qwen/qwen3.8-27b:free"
+#: Free-tier OpenRouter defaults, chosen by probing the live model list on
+#: 2026-09-26: both answered a real request, while `qwen/qwen3.8-27b:free` and
+#: `google/gemma-4-31b-it:free` returned 429 (free-tier rate limit) and
+#: `deepseek/deepseek-chat-v3-0324:free` returned 404. Free model availability
+#: rotates, so treat these as a working default, not a guarantee -- override
+#: with `LLM_MODEL` / `LLM_VISION_MODEL` if one starts refusing.
+OPENROUTER_DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"
 GROQ_DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b"
-OPENROUTER_DEFAULT_VISION_MODEL = "qwen/qwen3.8-27b:free"
+#: Must accept image input: this one reports `text,image` modalities.
+OPENROUTER_DEFAULT_VISION_MODEL = "dots-studio/dots-3-note-preview:free"
 
 _ASYNCPG_SCHEME = "postgresql+asyncpg"
 _NORMALIZABLE_SCHEMES = (
@@ -112,7 +119,7 @@ class Settings(BaseSettings):
     #: hatch tests use to skip the (multi-second) embedder/reranker model load.
     knowledge_enabled: bool = True
 
-    llm_provider: Literal["groq", "openrouter"] = "groq"
+    llm_provider: Literal["groq", "openrouter"] = "openrouter"
     llm_model: str | None = None
     llm_vision_model: str | None = None
     groq_api_key: SecretStr | None = None

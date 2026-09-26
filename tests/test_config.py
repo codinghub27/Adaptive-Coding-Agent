@@ -74,10 +74,16 @@ def test_cors_origins_comma_split(make_settings: MakeSettings) -> None:
 )
 def test_empty_string_keys_become_none(make_settings: MakeSettings, field: str) -> None:
     overrides: dict[str, object] = {field: ""}
+    # Blanking the *active* provider's key would trip the "key required"
+    # validator, so point the provider at the other one for that case. Both
+    # directions are handled so this test does not depend on which provider
+    # `Settings.llm_provider` currently defaults to.
     if field == "groq_api_key":
-        # keep the active provider satisfied via openrouter instead
         overrides["llm_provider"] = "openrouter"
         overrides["openrouter_api_key"] = "test-key"
+    elif field == "openrouter_api_key":
+        overrides["llm_provider"] = "groq"
+        overrides["groq_api_key"] = "test-key"
     settings = make_settings(**overrides)
     assert getattr(settings, field) is None
 
