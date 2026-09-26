@@ -465,3 +465,10 @@ Not created yet.
 - v2 backlog: React/Next.js frontend, Redis short-term cache, Celery for heavy
   eval/execution, multi-language sandbox, preference-optimization from evaluated
   data.
+
+## Post-phase note (superseded)
+The Streamlit frontend shipped in this phase (`frontend/app.py`,
+`frontend/api_client.py`, `frontend/components/`) has since been removed and
+replaced by the Figma-designed web UI wired to this same backend. See
+`docs/features/UI-integration.md` for the integration work and the reasoning.
+This phase's history above is left unchanged.

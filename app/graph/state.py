@@ -28,7 +28,7 @@ from app.schemas.execution import ExecutionRequest, ExecutionResult, Verdict
 from app.schemas.input import StructuredInput
 from app.schemas.intent import IntentResult
 from app.schemas.knowledge import RetrievalHit
-from app.schemas.plan import TeachingPlan
+from app.schemas.plan import AssistanceLevel, TeachingPlan
 from app.schemas.profile import LearnerProfileView
 from app.schemas.response import GeneratedResponse
 
@@ -58,6 +58,11 @@ class RawInput(APIModel):
     image: bytes | None = None
     image_mime: str | None = None
     topic_hint: str | None = Field(default=None, max_length=64)
+    #: A *ceiling* on `TeachingPlan.assistance_level` requested by the client
+    #: (see `app.agents.planner.clamp_assistance`). It can only ever reduce
+    #: how much help is given, never raise it -- so a hostile client cannot
+    #: use it to extract a full solution the planner wouldn't otherwise give.
+    assistance_cap: AssistanceLevel | None = None
 
 
 class AgentOutcome(APIModel):

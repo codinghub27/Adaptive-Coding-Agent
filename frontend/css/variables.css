@@ -1,0 +1,45 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap");
+
+:root {
+  --font-ui: "Manrope", system-ui, sans-serif;
+  --font-code: "DM Mono", monospace;
+  --bg: #0b0e12;
+  --bg-subtle: #10141a;
+  --surface: #13181f;
+  --surface-2: #181e26;
+  --surface-3: #202832;
+  --text: #f4f6f3;
+  --text-2: #a2abb6;
+  --text-3: #6f7986;
+  --line: #252d37;
+  --line-strong: #34404d;
+  --accent: #b8f24b;
+  --accent-soft: rgba(184, 242, 75, 0.1);
+  --accent-ink: #172008;
+  --blue: #7db8ff;
+  --purple: #aa99ff;
+  --success: #62d6a5;
+  --warning: #f0bd64;
+  --danger: #ff7e86;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 18px;
+}
+
+[data-theme="light"] {
+  --bg: #f4f5f1;
+  --bg-subtle: #eaede7;
+  --surface: #ffffff;
+  --surface-2: #f2f4f0;
+  --surface-3: #e6eae3;
+  --text: #182019;
+  --text-2: #5f685f;
+  --text-3: #8a938a;
+  --line: #dce1da;
+  --line-strong: #c5cec2;
+  --accent: #79ac16;
+  --accent-soft: rgba(99, 149, 16, 0.1);
+  --accent-ink: #f7ffe8;
+  --shadow: 0 24px 60px rgba(27, 40, 28, 0.12);
+}

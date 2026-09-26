@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Workspace · Adaptive</title>
+    <link rel="stylesheet" href="/css/variables.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/chat.css" />
+    <link rel="stylesheet" href="/css/chat-scale.css" />
+  </head>
+  <body class="chat-page">
+    <a class="skip-link" href="#conversation">Skip to conversation</a>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar" aria-label="Conversation history">
+        <div class="sidebar-head">
+          <a class="brand" href="/chat.html"><span class="brand-mark"><i></i><i></i><i></i></span><strong>adaptive<span class="brand-dot">.</span></strong></a>
+          <button class="icon-btn close-drawer" data-close-drawers aria-label="Close sidebar"></button>
+        </div>
+        <button class="new-chat" id="new-chat"><span>＋</span> New learning session <kbd>⌘K</kbd></button>
+        <div class="history-label"><span>Conversations</span><button aria-label="Search conversations" id="search-toggle"></button></div>
+        <div class="session-search" hidden><input aria-label="Search conversations" placeholder="Search conversations..." /></div>
+        <nav id="conversation-list" class="conversation-list" aria-label="Conversations">
+          <div class="session-skeleton"></div><div class="session-skeleton short"></div>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="usage"><div><span>Learning streak</span><b>12 days</b></div><div class="mini-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+          <button class="user-menu" id="logout">
+            <span class="avatar">AM</span><span><strong>Alex Morgan</strong><small>alex@example.com</small></span><b>···</b>
+          </button>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="icon-btn mobile-menu" id="open-sidebar" aria-label="Open conversations"></button>
+            <div class="conversation-title"><strong id="chat-title">Two Sum optimization</strong><span><i></i> Teaching mode</span></div>
+          </div>
+          <div class="top-actions">
+            <div class="mode-pill"><span>Guidance</span><button class="active">Balanced</button><button>Challenge</button></div>
+            <button class="icon-btn theme-btn" data-theme-toggle aria-label="Toggle color theme"></button>
+            <button class="profile-button" id="open-profile" aria-label="Open learning profile"><span class="profile-ring">78</span><span class="avatar small">AM</span></button>
+          </div>
+        </header>
+
+        <main class="chat-main" id="conversation" tabindex="-1">
+          <div class="chat-scroll" id="chat-scroll">
+            <div id="message-list" class="message-list" aria-live="polite"></div>
+          </div>
+          <section class="composer-zone" aria-label="Message composer">
+            <div class="attachment-strip" id="attachment-strip" hidden></div>
+            <div class="composer" id="composer">
+              <textarea id="message-input" rows="1" maxlength="8000" placeholder="Ask about your code, paste an error, or describe what you’re learning..." aria-label="Message Adaptive"></textarea>
+              <div class="composer-tools">
+                <div>
+                  <button class="tool-btn" id="attach-button" aria-label="Attach image" title="Attach image"></button>
+                  <input type="file" id="file-input" accept="image/*" hidden />
+                  <button class="tool-btn code-tool" id="code-button" aria-label="Insert code block" title="Insert code block">&lt;/&gt;</button>
+                  <button class="hint-mode" id="hint-mode"><i></i> Hint mode</button>
+                </div>
+                <div class="send-side"><span><kbd>↵</kbd> send</span><button class="send-button" id="send-button" aria-label="Send message"></button></div>
+              </div>
+            </div>
+            <p class="composer-note">Adaptive can make mistakes. Verify important code and edge cases.</p>
+          </section>
+        </main>
+      </section>
+
+      <aside class="profile-panel" id="profile-panel" aria-label="Learning profile">
+        <div class="panel-head"><div><span class="panel-kicker">Personalized to you</span><h2>Learning profile</h2></div><button class="icon-btn close-profile" data-close-drawers aria-label="Close profile"></button></div>
+        <div id="profile-content">
+          <div class="profile-hero"><div class="profile-score"><svg viewBox="0 0 90 90"><circle cx="45" cy="45" r="38"></circle><circle class="score-ring" cx="45" cy="45" r="38"></circle></svg><strong>78<small>%</small></strong></div><div><span>OVERALL FLUENCY</span><h3>Building momentum</h3><p>+6% this month</p></div></div>
+          <section class="profile-section"><div class="section-label"><span>Skill map</span><small>Updated today</small></div><div id="skills"></div></section>
+          <section class="focus-card"><span>CURRENT FOCUS</span><div><i></i><strong>Sliding Window</strong><b>Level 3</b></div><div class="focus-progress"><i></i></div><p>2 concepts until mastery</p></section>
+          <section class="profile-section"><div class="section-label"><span>How you learn best</span></div><div class="preference-grid"><div><i class="steps-icon"></i><span>STYLE</span><strong>Step-by-step</strong></div><div><i class="guide-icon"></i><span>HINTS</span><strong>Guided</strong></div></div></section>
+          <section class="profile-section"><div class="section-label"><span>Recent growth</span></div><ul class="growth-list"><li><i></i><span><strong>Loop boundaries</strong><small>Strength · practiced 4×</small></span></li><li class="weak"><i></i><span><strong>Space complexity</strong><small>Needs review</small></span></li><li><i></i><span><strong>Hash map patterns</strong><small>Improving · +12%</small></span></li></ul></section>
+        </div>
+        <button class="profile-settings">Manage learning preferences <span>→</span></button>
+      </aside>
+    </div>
+    <div class="drawer-scrim" id="drawer-scrim" data-close-drawers></div>
+    <div id="modal-root"></div>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script type="module" src="/js/chat.js"></script>
+  </body>
+</html>

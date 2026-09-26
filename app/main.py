@@ -17,6 +17,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -110,12 +111,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    # A wildcard origin combined with `allow_credentials=True` is both a CORS
+    # spec violation (browsers reject it) and a real vulnerability (it would
+    # let any site ride the user's cookies/Authorization header) -- so
+    # credentials are only enabled when every configured origin is explicit.
+    allow_credentials = "*" not in settings.cors_origins
+    if not allow_credentials:
+        logger.warning("cors_origins contains a wildcard entry: disabling allow_credentials")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
-        allow_credentials=False,
+        allow_credentials=allow_credentials,
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES, path="/chat")
@@ -159,6 +167,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         status_code = 200 if (db_ok and qdrant_ok) else 503
         return JSONResponse(content=body.model_dump(), status_code=status_code)
+
+    # Mounted last, after every API router and `/health`: a mount at `/` is a
+    # catch-all, so registering it any earlier could let it shadow an API
+    # route. Only mounted when the built frontend actually exists -- the
+    # normal state in tests and before a `pnpm build` is no mount at all.
+    if settings.frontend_dist_dir.is_dir():
+        app.mount(
+            "/", StaticFiles(directory=settings.frontend_dist_dir, html=True), name="frontend"
+        )
+    else:
+        logger.info("frontend bundle not built: no static mount registered")
 
     return app
 

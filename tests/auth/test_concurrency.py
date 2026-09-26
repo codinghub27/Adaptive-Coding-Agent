@@ -29,6 +29,7 @@ refresh-token mutations by taking a row lock on the user (`lock_user`)
 """
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 from typing import Any
@@ -38,6 +39,7 @@ import pytest
 from fastapi import HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import Request
 
 import app.auth.routes as routes_module
 from app.auth.routes import logout as logout_route
@@ -47,10 +49,29 @@ from app.config import Settings, get_settings
 from app.db.auth import create_refresh_token, create_user
 from app.db.models import RefreshToken, User
 from app.db.session import create_engine, create_session_factory
-from app.schemas.auth import LogoutRequest, RefreshRequest
 from tests.auth.helpers import PASSWORD, make_handle
 
 MakeSettings = Callable[..., Settings]
+
+
+def _refresh_token_request(token: str) -> Request:
+    """A minimal real `Request` carrying `{"refresh_token": token}` as its
+    JSON body -- `refresh`/`logout` now read the token via `Request` (body or
+    cookie fallback) rather than a plain `RefreshRequest`/`LogoutRequest`
+    parameter, so calling them directly (as this module's unit tests do)
+    needs a real `Request` to hand them.
+    """
+    body = json.dumps({"refresh_token": token}).encode()
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [(b"content-type", b"application/json")],
+    }
+    return Request(scope, receive)
 
 
 def _spy(monkeypatch: pytest.MonkeyPatch, name: str, calls: list[str]) -> None:
@@ -95,8 +116,8 @@ async def test_refresh_locks_user_before_reading_and_rotating(
     _spy(monkeypatch, "revoke_refresh_token_by_id", calls)
 
     await refresh_route(
+        request=_refresh_token_request(issued.token),
         response=Response(),
-        body=RefreshRequest(refresh_token=issued.token),
         session=db_session,
         settings=settings,
     )
@@ -125,8 +146,8 @@ async def test_refresh_reuse_locks_user_before_revoke_all(
 
     # Rotate once so the presented token becomes `revoked_reason="rotated"`.
     await refresh_route(
+        request=_refresh_token_request(issued.token),
         response=Response(),
-        body=RefreshRequest(refresh_token=issued.token),
         session=db_session,
         settings=settings,
     )
@@ -138,8 +159,8 @@ async def test_refresh_reuse_locks_user_before_revoke_all(
 
     with pytest.raises(HTTPException):
         await refresh_route(
+            request=_refresh_token_request(issued.token),
             response=Response(),
-            body=RefreshRequest(refresh_token=issued.token),
             session=db_session,
             settings=settings,
         )
@@ -171,7 +192,7 @@ async def test_logout_locks_user_before_revoking_session(
     _spy(monkeypatch, "lock_user", calls)
     _spy(monkeypatch, "revoke_session", calls)
 
-    await logout_route(body=LogoutRequest(refresh_token=issued.token), session=db_session)
+    await logout_route(request=_refresh_token_request(issued.token), session=db_session)
 
     assert calls == ["get_refresh_token", "lock_user", "revoke_session"]
 
@@ -253,8 +274,8 @@ async def test_concurrent_rotate_and_logout_serialize_via_the_user_lock(
             async with factory() as session_a:
                 try:
                     return await refresh_route(
+                        request=_refresh_token_request(issued.token),
                         response=Response(),
-                        body=RefreshRequest(refresh_token=issued.token),
                         session=session_a,
                         settings=settings,
                     )
@@ -264,7 +285,7 @@ async def test_concurrent_rotate_and_logout_serialize_via_the_user_lock(
         async def _logout() -> object:
             async with factory() as session_b:
                 return await logout_route(
-                    body=LogoutRequest(refresh_token=issued.token), session=session_b
+                    request=_refresh_token_request(issued.token), session=session_b
                 )
 
         rotate_task = asyncio.create_task(_rotate(), name="rotate")

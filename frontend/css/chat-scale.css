@@ -1,0 +1,151 @@
+/**
+ * Density scale — loaded after chat.css.
+ *
+ * The workspace was designed at a very tight density (7-13px type, 10-14px
+ * padding). The type scale in chat.css has been raised; this file gives the
+ * containers, columns and controls matching room so nothing reads cramped.
+ * Only spacing and box sizes change here: no colours, no borders, no radii,
+ * no layout structure, so the design itself is untouched.
+ */
+
+/* --- shell columns: wider rails so the larger type is not squeezed ------- */
+.app-shell { grid-template-columns: 290px minmax(480px, 1fr) 330px; }
+.workspace { grid-template-rows: 66px 1fr; }
+
+/* --- sidebar ------------------------------------------------------------- */
+.sidebar { padding: 22px 16px 16px; }
+.new-chat { height: 46px; margin: 18px 0 24px; padding: 0 13px; gap: 11px; }
+.history-label { padding: 0 10px 12px; }
+.session-item { height: 44px; margin: 3px 0; }
+.sidebar-foot { padding-top: 14px; }
+.user-menu { padding: 10px; gap: 11px; }
+.avatar { width: 36px; height: 36px; }
+.avatar.small { width: 29px; height: 29px; }
+
+/* --- top bar ------------------------------------------------------------- */
+.topbar { padding: 0 26px; }
+.topbar-left, .top-actions { gap: 14px; }
+
+/* --- conversation column ------------------------------------------------- */
+.message-list { width: min(100% - 48px, 860px); padding: 44px 0 34px; }
+.message { grid-template-columns: 34px 1fr; gap: 16px; margin-bottom: 34px; }
+.message.user { margin: 10px 0 38px; }
+.message-avatar { width: 34px; height: 34px; }
+.message-meta { gap: 9px; margin: 2px 0 12px; }
+.user-bubble { padding: 15px 18px; max-width: min(85%, 680px); }
+
+/* --- answer blocks ------------------------------------------------------- */
+.concept-card { padding: 15px; gap: 14px; margin: 17px 0; }
+.working-card { margin: 15px 0 21px; }
+.hint-ladder { padding: 18px; margin: 19px 0; }
+.hint-copy { margin: 16px 0 !important; }
+.next-hint { padding: 10px 14px; }
+.question-card { padding: 16px; }
+.code-block pre { padding: 15px; }
+.message-actions { gap: 5px; margin-top: 12px; }
+
+/* --- empty state --------------------------------------------------------- */
+.suggestions { gap: 12px; }
+.suggestion { padding: 17px; }
+
+/* --- composer ------------------------------------------------------------ */
+.composer-zone { padding: 12px max(24px, calc((100% - 860px) / 2)) 15px; }
+.composer textarea { padding: 17px 17px 10px; }
+.composer-tools { height: 46px; padding: 0 9px 9px 11px; }
+.tool-btn { width: 34px; height: 32px; }
+.hint-mode { height: 32px; padding: 0 11px; }
+.send-button { width: 36px; height: 36px; }
+.send-button::before { left: 13px; top: 13px; }
+.send-button::after { left: 17px; top: 12px; }
+.send-button.loading::before { left: 10px; top: 10px; }
+.composer-note { margin-top: 8px; }
+
+/* --- learning profile panel ---------------------------------------------- */
+.profile-panel { padding: 24px 21px 19px; }
+.profile-hero { padding: 16px; gap: 13px; }
+.profile-score { width: 66px; height: 66px; }
+.profile-section { margin-top: 25px; }
+.skill-row { margin-bottom: 13px; }
+.focus-card { margin-top: 23px; padding: 15px; }
+.preference-grid { gap: 9px; }
+.preference-grid > div { padding: 13px; }
+.growth-list li { margin: 13px 0; }
+.profile-settings { height: 40px; margin-top: 18px; padding: 0 13px; }
+
+/* --- responsive: keep the wider rails usable ----------------------------- */
+@media (max-width: 1100px) {
+  .app-shell { grid-template-columns: 270px 1fr; }
+  .profile-panel { width: 330px; }
+}
+
+@media (max-width: 760px) {
+  .workspace { grid-template-rows: 58px 1fr; }
+  .message-list { width: calc(100% - 32px); padding-top: 28px; }
+  .message { grid-template-columns: 30px 1fr; gap: 11px; }
+  .message-avatar { width: 30px; height: 30px; }
+  .composer-zone { padding: 10px 12px 11px; }
+}
+
+/* =========================================================================
+ * Polish pass: top-bar guidance pill and the learning-profile rail.
+ * Type, padding and control sizes only — no colours, no structure, and
+ * nothing in the conversation column changes.
+ * ========================================================================= */
+
+/* --- Fix 1: Guidance / Balanced / Challenge pill ------------------------- */
+.mode-pill { padding: 4px; gap: 3px; border-radius: 9px; }
+.mode-pill > span { font-size: 12px; padding: 0 10px; }
+.mode-pill button { font-size: 12px; font-weight: 500; padding: 7px 13px; border-radius: 6px; }
+
+/* --- Fix 2: panel head, fluency ring and hero --------------------------- */
+.panel-head { margin-bottom: 22px; }
+.panel-kicker { font-size: 11px; }
+.panel-head h2 { font-size: 19px; margin-top: 6px; }
+
+.profile-hero { padding: 18px; gap: 16px; border-radius: 12px; }
+.profile-score { width: 78px; height: 78px; }
+.profile-score circle { stroke-width: 6; }
+/* The value and its "%" were stacked: `place-items:center` on a grid puts
+   them in two rows. One column track, baseline aligned, centred. */
+.profile-score strong {
+  grid-auto-flow: column;
+  gap: 1px;
+  align-items: baseline;
+  align-content: center;
+  justify-content: center;
+  font: 500 20px var(--font-code);
+}
+.profile-score small { font-size: 11px; }
+.profile-hero > div:last-child { gap: 5px; }
+.profile-hero span, .focus-card > span { font-size: 10px; letter-spacing: .1em; }
+.profile-hero h3 { font-size: 15px; }
+.profile-hero p { font-size: 12px; }
+
+/* --- Fix 3: skill map, how you learn best, recent growth ---------------- */
+.section-label { margin-bottom: 12px; }
+.section-label span { font-size: 13px; }
+.section-label small { font-size: 11px; }
+
+.skill-meta { font-size: 11px; margin-bottom: 7px; }
+.skill-meta b { font-size: 11px; }
+.skill-bar { height: 5px; }
+.skill-empty { font-size: 12px; line-height: 1.6; }
+
+.focus-card { padding: 17px; border-radius: 11px; }
+.focus-card strong { font-size: 13px; }
+.focus-card b { font-size: 11px; }
+.focus-card p { font-size: 11px; margin-top: 10px; }
+.focus-card div > i { width: 8px; height: 8px; }
+.focus-progress { height: 5px; margin-top: 14px !important; }
+
+.preference-grid > div { padding: 15px; border-radius: 10px; }
+.preference-grid i { width: 20px; height: 20px; margin-bottom: 6px; }
+.preference-grid span { font-size: 10px; }
+.preference-grid strong { font-size: 13px; }
+
+.growth-list li { margin: 14px 0; gap: 11px; }
+.growth-list li > i { width: 7px; height: 7px; }
+.growth-list strong { font-size: 12px; }
+.growth-list small { font-size: 11px; }
+
+.profile-settings { font-size: 11px; }

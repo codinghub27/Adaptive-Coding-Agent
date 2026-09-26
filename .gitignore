@@ -26,3 +26,6 @@ Thumbs.db
 
 # Playwright MCP session artifacts (UI verification runs)
 .playwright-mcp/
+
+# npm lockfile from a machine without pnpm; the project ships pnpm-lock.yaml
+frontend/package-lock.json

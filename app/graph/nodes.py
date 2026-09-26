@@ -29,7 +29,7 @@ from uuid import UUID
 from langgraph.runtime import Runtime
 
 from app.agents.hint_engine import HintProgress
-from app.agents.planner import INTENT_DEFAULTS, analyze_problem, build_plan
+from app.agents.planner import INTENT_DEFAULTS, analyze_problem, build_plan, clamp_assistance
 from app.agents.reviewer import review_code
 from app.execution.testgen import extract_test_suite
 from app.execution.verification import verify as verify_result
@@ -240,10 +240,14 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     profile = state.profile if state.profile is not None else LearnerProfileView.empty()
     analysis = analyze_problem(state.structured_input, profile, state.input.topic_hint)
     plan = build_plan(state.intent, profile, analysis)
+    plan = clamp_assistance(plan, state.input.assistance_cap)
     return {"plan": plan}
 
 
 def _plan_teaching_fallback(state: AgentState) -> AgentStateUpdate:
+    # No `clamp_assistance` call needed here: this fallback plan's
+    # `assistance_level` is already "hint", the floor of `ASSISTANCE_ORDER`,
+    # so a cap could never lower it further.
     intent = state.intent
     strategy = (
         "clarify" if intent is None or intent.low_confidence else INTENT_DEFAULTS[intent.intent][1]
@@ -355,6 +359,53 @@ def _agent_outcome_fallback(state: AgentState) -> AgentStateUpdate:
     return {"agent_output": AgentOutcome(text=_AGENT_FALLBACK_TEXT, topic=None, solved=None)}
 
 
+# Per-conversation fallback hint-ladder key used when the planner could not
+# infer a topic for this turn (e.g. a new learner with an empty
+# `skill_levels` profile and no `topic_hint`).
+#
+# NOTE on the leading-underscore idea this was first written with: it does
+# *not* guarantee no collision. `RawInput.topic_hint` (see `app.graph.state`)
+# is arbitrary client-supplied text with no charset restriction beyond
+# `Field(max_length=64)`, and `slug_tag` only lowercases and turns literal
+# spaces into underscores -- it does not reject or strip a leading
+# underscore. A learner (or a curious/adversarial client) could submit
+# `topic="_general"` verbatim and it would slug to exactly that. A sentinel
+# longer than 64 characters *would* be provably collision-free against any
+# `topic_hint`-derived topic (`RawInput.topic_hint` and
+# `LearningEventCreate.topic` both cap at 64 chars, and `slug_tag` never
+# changes a string's length) -- but `hint_progress.topic` is itself
+# `String(64)` in the DB (see `app.db.models.hint_progress.HintProgress`), so
+# a >64-char sentinel silently fails to persist instead (the write's
+# `except Exception: pass` swallows the resulting `DataError`), which is
+# strictly worse than the bug this packet fixes.
+#
+# So this stays a short, `_`-prefixed, deliberately unusual literal: a
+# *practical*, not cryptographic, mitigation. A learner would have to type
+# this exact string as their topic to collide with the fallback ladder, in
+# which case they simply share the same fallback ladder namespace as a
+# topic-less turn -- not a security break, just a shared bucket. A provably
+# collision-free scheme would need a schema change (e.g. a separate
+# `is_fallback` column) that's out of scope for this fix; flagged for the
+# planner to consider separately.
+DEFAULT_HINT_TOPIC: Final = "__no_topic_inferred__"
+
+
+def _hint_topic_key(plan: TeachingPlan | None) -> str | None:
+    """Return the hint-ladder store key for `plan`, or `None` if there is no plan.
+
+    `slug_tag(plan.topic)` when `plan` has a topic, `DEFAULT_HINT_TOPIC` when
+    `plan` exists but has no topic (see that constant's comment for why it
+    can never collide with a real topic), and `None` when there is no plan at
+    all. Shared by `resolve_hint_progress` (the read) and `dsa_agent` (the
+    write) so the two can never key differently.
+    """
+    if plan is None:
+        return None
+    if plan.topic:
+        return slug_tag(plan.topic)
+    return DEFAULT_HINT_TOPIC
+
+
 async def resolve_hint_progress(state: AgentState, ctx: GraphContext) -> HintProgress:
     """Read this conversation+topic's hint-ladder progress from the dedicated store.
 
@@ -362,23 +413,22 @@ async def resolve_hint_progress(state: AgentState, ctx: GraphContext) -> HintPro
     reads it from `app.memory.hint_progress` (a small store dedicated to hint
     ladder state, upserted by `dsa_agent` -- see that function's docstring for
     why this is deliberately *not* rebuilt from `LearningEvent`s). Keyed on
-    `slug_tag(plan.topic)`, the same key `dsa_agent` writes under, so reads
-    and writes always agree.
+    `_hint_topic_key(plan)`, the same key `dsa_agent` writes under, so reads
+    and writes always agree -- including the `DEFAULT_HINT_TOPIC` fallback
+    used when the plan has no topic at all.
 
     Degrades to a fresh `HintProgress()` (never raises) whenever `ctx.session`
-    or `ctx.user_id` is `None`, there is no plan/topic to match against, no
-    stored row is found, or the DB lookup itself fails -- a history lookup
-    must never cost the learner their turn. The read runs in its own
-    savepoint, mirroring `load_learner_profile`, so a failure here can never
-    leave the shared session's outer transaction aborted for later reads/
-    writes in this turn.
+    or `ctx.user_id` is `None`, there is no plan at all, no stored row is
+    found, or the DB lookup itself fails -- a history lookup must never cost
+    the learner their turn. The read runs in its own savepoint, mirroring
+    `load_learner_profile`, so a failure here can never leave the shared
+    session's outer transaction aborted for later reads/writes in this turn.
     """
     if ctx.session is None or ctx.user_id is None or ctx.conversation_id is None:
         return HintProgress()
-    plan = state.plan
-    if plan is None or not plan.topic:
+    topic = _hint_topic_key(state.plan)
+    if topic is None:
         return HintProgress()
-    topic = slug_tag(plan.topic)
 
     try:
         async with ctx.session.begin_nested():
@@ -391,16 +441,18 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     """Run the DSA solver subgraph (hint ladder) for this turn.
 
     Persists the rung actually reached this turn to the hint-progress store
-    (keyed the same way `resolve_hint_progress` reads it), so the next turn
-    on this conversation+topic resumes the ladder instead of restarting at
-    L0. Only `dsa_agent` ever writes this store -- no other agent's turn can
-    move (or reset) a DSA hint ladder. `solved` is carried forward unchanged
-    from the progress read at the start of this turn: nothing in a hint turn
-    itself observes whether the learner ultimately solved the problem (see
-    `DSAResult.to_outcome`). Skipped (never raises) whenever `ctx.session`,
-    `ctx.user_id`, `ctx.conversation_id`, or the plan topic is missing, the
-    ladder produced no hint this turn (already solved), or the write itself
-    fails -- a failed write must never cost the learner their turn's response.
+    (keyed by `_hint_topic_key`, the same helper `resolve_hint_progress` reads
+    with -- including the `DEFAULT_HINT_TOPIC` fallback when the plan has no
+    topic), so the next turn on this conversation+topic resumes the ladder
+    instead of restarting at L0. Only `dsa_agent` ever writes this store --
+    no other agent's turn can move (or reset) a DSA hint ladder. `solved` is
+    carried forward unchanged from the progress read at the start of this
+    turn: nothing in a hint turn itself observes whether the learner
+    ultimately solved the problem (see `DSAResult.to_outcome`). Skipped
+    (never raises) whenever `ctx.session`, `ctx.user_id`, `ctx.conversation_id`,
+    or the plan itself is missing, the ladder produced no hint this turn
+    (already solved), or the write itself fails -- a failed write must never
+    cost the learner their turn's response.
     """
     ctx = runtime.context
     progress = await resolve_hint_progress(state, ctx)
@@ -412,16 +464,14 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request
 
-    plan = state.plan
+    topic = _hint_topic_key(state.plan)
     if (
         run.result.hint is not None
         and ctx.session is not None
         and ctx.user_id is not None
         and ctx.conversation_id is not None
-        and plan is not None
-        and plan.topic
+        and topic is not None
     ):
-        topic = slug_tag(plan.topic)
         try:
             async with ctx.session.begin_nested():
                 await save_hint_progress(

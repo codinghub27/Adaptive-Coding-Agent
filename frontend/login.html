@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Sign in · Adaptive</title>
+    <link rel="stylesheet" href="/css/variables.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/auth.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-layout">
+      <section class="auth-story" aria-label="Product introduction">
+        <a class="brand brand--large" href="/" aria-label="Adaptive home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>adaptive<span class="brand-dot">.</span></span>
+        </a>
+        <div class="story-copy">
+          <div class="eyebrow"><span></span> An agent that learns how you learn</div>
+          <h1>Get unstuck.<br /><em>Learn the pattern.</em></h1>
+          <p>Your personal coding mentor that adapts every hint, explanation, and challenge to the way you think.</p>
+        </div>
+        <div class="agent-preview" aria-hidden="true">
+          <div class="preview-head">
+            <span class="agent-orb small">A</span>
+            <div><strong>Adaptive</strong><small>Teaching mode · Guided</small></div>
+            <span class="live-dot">LIVE</span>
+          </div>
+          <div class="preview-working"><span class="pulse-ring"></span> Analyzing your approach...</div>
+          <p>I can see where the loop breaks. Before we fix it, what should happen when <code>right</code> reaches the last item?</p>
+          <div class="choice-row"><span>Stop before it</span><span>Include it</span></div>
+        </div>
+        <p class="story-foot">Built for curious developers, not just quick answers.</p>
+      </section>
+
+      <section class="auth-form-panel">
+        <button class="theme-fab" data-theme-toggle aria-label="Toggle color theme"></button>
+        <div class="auth-card">
+          <div class="mobile-brand">
+            <span class="brand-mark"><i></i><i></i><i></i></span><strong>adaptive<span class="brand-dot">.</span></strong>
+          </div>
+          <div class="auth-heading">
+            <span class="kicker">Welcome back</span>
+            <h2>Continue learning</h2>
+            <p>Your workspace and progress are waiting.</p>
+          </div>
+          <form id="login-form" novalidate>
+            <div class="field">
+              <label for="username">Username</label>
+              <input id="username" name="username" type="text" autocomplete="username" placeholder="yourusername" required />
+              <span class="field-error" id="username-error"></span>
+            </div>
+            <div class="field">
+              <div class="label-row"><label for="password">Password</label><a href="#" data-toast="Password reset is ready for backend integration.">Forgot password?</a></div>
+              <div class="password-wrap">
+                <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+                <button type="button" class="password-toggle" aria-label="Show password"></button>
+              </div>
+              <span class="field-error" id="password-error"></span>
+            </div>
+            <label class="check-row"><input type="checkbox" name="remember" checked /><span class="checkmark"></span>Keep me signed in</label>
+            <div class="form-alert" id="form-alert" role="alert" hidden></div>
+            <button class="primary-btn" type="submit">
+              <span class="btn-label">Sign in to workspace</span><span class="spinner"></span><span aria-hidden="true">→</span>
+            </button>
+          </form>
+          <p class="auth-switch">New to Adaptive? <a href="/register.html">Create an account</a></p>
+          <p class="legal">By continuing, you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.</p>
+        </div>
+      </section>
+    </main>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script type="module" src="/js/auth.js"></script>
+  </body>
+</html>

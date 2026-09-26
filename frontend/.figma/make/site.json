@@ -1,0 +1,10 @@
+{
+  "description": "Interactive AI coding tutor UI offering adaptive learning, progressive hints, and code debugging support with a modern, developer-focused chat interface.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

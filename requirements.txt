@@ -30,4 +30,3 @@ docker
 types-docker
 tree-sitter
 tree-sitter-python
-streamlit

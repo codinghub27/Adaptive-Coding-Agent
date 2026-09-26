@@ -7,6 +7,7 @@ directly. The remaining schemas are the request/response bodies for the
 shape is settled before those routes are written.
 """
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -18,6 +19,7 @@ __all__ = [
     "AuthUser",
     "LoginRequest",
     "LogoutRequest",
+    "MeResponse",
     "RefreshRequest",
     "RegisterRequest",
     "RegisterResponse",
@@ -52,6 +54,14 @@ class RegisterResponse(APIModel):
 
     id: UUID
     username: str
+
+
+class MeResponse(APIModel):
+    """Response body for `GET /auth/me`. Carries no token."""
+
+    id: UUID
+    username: str
+    created_at: datetime
 
 
 class LoginRequest(APIModel):

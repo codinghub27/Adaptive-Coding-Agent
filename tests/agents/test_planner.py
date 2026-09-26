@@ -15,11 +15,13 @@ from app.agents.planner import (
     ProblemAnalysis,
     analyze_problem,
     build_plan,
+    clamp_assistance,
     difficulty_for,
 )
 from app.memory.profile import PRIOR
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
+from app.schemas.plan import ASSISTANCE_ORDER, AssistanceLevel, TeachingPlan
 from app.schemas.profile import LearnerProfileView
 
 
@@ -324,3 +326,60 @@ def test_build_plan_watch_errors_truncated_to_five() -> None:
     plan = build_plan(intent, profile, analysis)
 
     assert plan.watch_errors == ["e1", "e2", "e3", "e4", "e5"]
+
+
+# ---------------------------------------------------------------------------
+# clamp_assistance
+# ---------------------------------------------------------------------------
+
+
+def _plan(assistance_level: AssistanceLevel) -> TeachingPlan:
+    return TeachingPlan(
+        difficulty="medium",
+        assistance_level=assistance_level,
+        solution_strategy="socratic_hints",
+        topic=None,
+        skill_level=0.5,
+        rationale=["some_rule"],
+    )
+
+
+def test_clamp_assistance_none_cap_is_a_no_op() -> None:
+    plan = _plan("full")
+    assert clamp_assistance(plan, None) is plan
+
+
+def test_clamp_assistance_equal_cap_is_a_no_op() -> None:
+    plan = _plan("partial")
+    result = clamp_assistance(plan, "partial")
+    assert result is plan
+
+
+def test_clamp_assistance_higher_cap_is_a_no_op() -> None:
+    plan = _plan("hint")
+    result = clamp_assistance(plan, "full")
+    assert result is plan
+
+
+def test_clamp_assistance_lower_cap_lowers_level_and_adds_rationale() -> None:
+    plan = _plan("full")
+    result = clamp_assistance(plan, "concept")
+    assert result.assistance_level == "concept"
+    assert result.rationale == ["some_rule", "assistance_capped"]
+    # The original plan is untouched (pydantic models here aren't frozen,
+    # but `clamp_assistance` must still return a copy, not mutate in place).
+    assert plan.assistance_level == "full"
+    assert plan.rationale == ["some_rule"]
+
+
+@pytest.mark.parametrize(("level", "cap"), list(product(ASSISTANCE_ORDER, ASSISTANCE_ORDER)))
+def test_clamp_assistance_is_monotonic_for_every_pair(
+    level: AssistanceLevel, cap: AssistanceLevel
+) -> None:
+    plan = _plan(level)
+    result = clamp_assistance(plan, cap)
+    assert ASSISTANCE_ORDER.index(result.assistance_level) <= ASSISTANCE_ORDER.index(level)
+    if ASSISTANCE_ORDER.index(cap) >= ASSISTANCE_ORDER.index(level):
+        assert result.assistance_level == level
+    else:
+        assert result.assistance_level == cap

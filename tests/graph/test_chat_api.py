@@ -235,6 +235,55 @@ async def test_oversize_image_returns_413(make_settings: MakeSettings) -> None:
 
 
 # --------------------------------------------------------------------------
+# assistance_cap (D6): lowers the plan's assistance_level, never raises it
+# --------------------------------------------------------------------------
+
+
+_DSA_SOLVE_TEXT = "Can you help me find the two sum pattern for this problem?"
+_DSA_SOLVE_LLM_CONTENT = '{"intent": "DSA_SOLVE", "confidence": 0.95, "rationale": "clear"}'
+
+
+async def test_valid_assistance_cap_lowers_the_plan_assistance_level(
+    make_settings: MakeSettings,
+) -> None:
+    """An empty profile + `DSA_SOLVE` defaults to `assistance_level="concept"`
+    (`INTENT_DEFAULTS`); a "hint" cap (below it in `ASSISTANCE_ORDER`) must
+    lower the plan actually returned, and record it in `rationale`."""
+    fake = FakeLLMClient(chat_content=_DSA_SOLVE_LLM_CONTENT)
+    async with _client_for(make_settings, fake) as client:
+        uncapped = await client.post("/chat", data={"text": _DSA_SOLVE_TEXT})
+        capped = await client.post(
+            "/chat", data={"text": _DSA_SOLVE_TEXT, "assistance_cap": "hint"}
+        )
+
+    assert uncapped.status_code == capped.status_code == 200
+    assert uncapped.json()["plan"]["assistance_level"] == "concept"
+    assert capped.json()["plan"]["assistance_level"] == "hint"
+    assert "assistance_capped" in capped.json()["plan"]["rationale"]
+
+
+async def test_invalid_assistance_cap_returns_422(make_settings: MakeSettings) -> None:
+    fake = FakeLLMClient()
+    async with _client_for(make_settings, fake) as client:
+        response = await client.post(
+            "/chat", data={"text": _DEBUG_TEXT, "assistance_cap": "nonsense"}
+        )
+
+    assert response.status_code == 422
+    assert "nonsense" not in response.text
+
+
+async def test_absent_assistance_cap_leaves_plan_unchanged(make_settings: MakeSettings) -> None:
+    fake = FakeLLMClient(chat_content=_DSA_SOLVE_LLM_CONTENT)
+    async with _client_for(make_settings, fake) as client:
+        response = await client.post("/chat", data={"text": _DSA_SOLVE_TEXT})
+
+    assert response.status_code == 200
+    assert response.json()["plan"]["assistance_level"] == "concept"
+    assert "assistance_capped" not in response.json()["plan"]["rationale"]
+
+
+# --------------------------------------------------------------------------
 # db: full turn with a real profile + conversation
 # --------------------------------------------------------------------------
 

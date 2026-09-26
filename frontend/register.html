@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Create account · Adaptive</title>
+    <link rel="stylesheet" href="/css/variables.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/auth.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-layout">
+      <section class="auth-story auth-story--register" aria-label="Product introduction">
+        <a class="brand brand--large" href="/" aria-label="Adaptive home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>adaptive<span class="brand-dot">.</span></span>
+        </a>
+        <div class="story-copy">
+          <div class="eyebrow"><span></span> Your growth, mapped over time</div>
+          <h1>Code smarter.<br /><em>Think deeper.</em></h1>
+          <p>Build problem-solving instincts with guidance that gets lighter as you get stronger.</p>
+        </div>
+        <div class="learning-map" aria-hidden="true">
+          <div class="map-head"><span>LEARNING TRAJECTORY</span><small>This month</small></div>
+          <div class="map-row"><span>Problem decomposition</span><b>+18%</b></div>
+          <div class="sparkline"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="map-skills"><span><i></i>Pattern recognition</span><span><i></i>Debugging</span><span><i></i>Algorithms</span></div>
+        </div>
+        <p class="story-foot">Private by design. Your code stays yours.</p>
+      </section>
+      <section class="auth-form-panel register-panel">
+        <button class="theme-fab" data-theme-toggle aria-label="Toggle color theme"></button>
+        <div class="auth-card">
+          <div class="mobile-brand"><span class="brand-mark"><i></i><i></i><i></i></span><strong>adaptive<span class="brand-dot">.</span></strong></div>
+          <div class="auth-heading"><span class="kicker">Start your journey</span><h2>Create your workspace</h2><p>Set up your adaptive learning profile in seconds.</p></div>
+          <form id="register-form" novalidate>
+            <div class="field"><label for="username">Username</label><input id="username" name="username" type="text" autocomplete="username" placeholder="yourusername" required /><span class="field-error" id="username-error"></span></div>
+            <div class="field">
+              <label for="password">Create password</label>
+              <div class="password-wrap"><input id="password" name="password" type="password" autocomplete="new-password" placeholder="At least 8 characters" required /><button type="button" class="password-toggle" aria-label="Show password"></button></div>
+              <div class="strength"><i></i><i></i><i></i><i></i><span>Enter a password</span></div>
+              <span class="field-error" id="password-error"></span>
+            </div>
+            <div class="field"><label for="confirm">Confirm password</label><div class="password-wrap"><input id="confirm" name="confirm" type="password" autocomplete="new-password" placeholder="Repeat your password" required /><button type="button" class="password-toggle" aria-label="Show password"></button></div><span class="field-error" id="confirm-error"></span></div>
+            <div class="form-alert success" id="form-alert" role="status" hidden></div>
+            <button class="primary-btn" type="submit"><span class="btn-label">Create my workspace</span><span class="spinner"></span><span>→</span></button>
+          </form>
+          <p class="auth-switch">Already have an account? <a href="/login.html">Sign in</a></p>
+          <p class="legal">By creating an account, you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.</p>
+        </div>
+      </section>
+    </main>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script type="module" src="/js/auth.js"></script>
+  </body>
+</html>

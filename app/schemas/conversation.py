@@ -17,6 +17,8 @@ from app.schemas.intent import Intent
 __all__ = [
     "ConversationCreateRequest",
     "ConversationCreateResponse",
+    "ConversationRenameRequest",
+    "ConversationSummary",
     "MessageView",
     "Role",
 ]
@@ -36,6 +38,28 @@ class ConversationCreateResponse(APIModel):
 
     conversation_id: UUID
     title: str | None
+
+
+class ConversationSummary(APIModel):
+    """A conversation as it appears in a listing (sidebar), not its full history.
+
+    `updated_at` is the conversation's most recent message `created_at`; if
+    the conversation has no messages yet, it falls back to the conversation's
+    own `created_at`. `message_count` counts every message in the
+    conversation, regardless of role.
+    """
+
+    id: UUID
+    title: str | None
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+
+
+class ConversationRenameRequest(APIModel):
+    """Body of `PATCH /conversations/{conversation_id}`."""
+
+    title: str = Field(min_length=1, max_length=200)
 
 
 class MessageView(APIModel):

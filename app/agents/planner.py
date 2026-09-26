@@ -32,6 +32,7 @@ __all__ = [
     "ProblemAnalysis",
     "analyze_problem",
     "build_plan",
+    "clamp_assistance",
     "difficulty_for",
 ]
 
@@ -211,4 +212,29 @@ def build_plan(
         concise=concise,
         watch_errors=profile.common_errors[:5],
         rationale=rationale,
+    )
+
+
+def clamp_assistance(plan: TeachingPlan, cap: AssistanceLevel | None) -> TeachingPlan:
+    """Apply a client-requested assistance ceiling to `plan`, never raising it.
+
+    Monotonic-safety property: this function can only ever lower (or leave
+    unchanged) `plan.assistance_level`. It never raises it, regardless of
+    `cap`'s value -- so a hostile client cannot pass a high `cap` to extract
+    more help than the planner itself decided on. `plan` is returned
+    unchanged when `cap is None` (no ceiling requested) or when `cap` is at
+    or above `plan.assistance_level` in `ASSISTANCE_ORDER` (the ceiling
+    doesn't bind). Otherwise, a copy of `plan` is returned with
+    `assistance_level` lowered to `cap` and `"assistance_capped"` appended to
+    `rationale`.
+    """
+    if cap is None:
+        return plan
+    if ASSISTANCE_ORDER.index(cap) >= ASSISTANCE_ORDER.index(plan.assistance_level):
+        return plan
+    return plan.model_copy(
+        update={
+            "assistance_level": cap,
+            "rationale": [*plan.rationale, "assistance_capped"],
+        }
     )

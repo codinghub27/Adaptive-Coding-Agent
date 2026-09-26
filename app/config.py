@@ -7,6 +7,7 @@ malformed, and error messages must never leak secret values.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -130,8 +131,19 @@ class Settings(BaseSettings):
     langsmith_project: str = "adaptive-coding-agent"
 
     cors_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["http://localhost:8501"]
+        default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]
     )
+
+    #: Directory containing the built web UI (`pnpm build` output inside
+    #: `frontend/`), resolved relative to the process's current working
+    #: directory. `app.main.create_app` mounts it as `StaticFiles` at `/`
+    #: only when it exists and is a directory -- absent (the normal state in
+    #: tests and before a build) means no static mount at all.
+    frontend_dist_dir: Path = Path("frontend/dist")
+    #: Whether the httpOnly refresh cookie (`app.auth.routes`) carries the
+    #: `Secure` attribute. MUST be true in any deployment served over HTTPS;
+    #: false is only appropriate for local `http://localhost` development.
+    refresh_cookie_secure: bool = False
 
     #: Whether the app builds a `SandboxRunner` at startup. Startup must
     #: never fail because Docker isn't reachable -- this is also the escape

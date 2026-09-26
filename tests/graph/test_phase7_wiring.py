@@ -21,6 +21,7 @@ from app.agents.reviewer import ReviewRunResult
 from app.execution.base import CodeRunner
 from app.graph.build import NODE_FUNCTIONS, build_graph, run_graph
 from app.graph.nodes import (
+    DEFAULT_HINT_TOPIC,
     FALLBACKS,
     debug_agent,
     dsa_agent,
@@ -512,6 +513,203 @@ async def test_debug_agent_never_changes_dsa_hint_progress(
     second_outcome = second.get("agent_output")
     assert second_outcome is not None
     assert second_outcome.hints_used - 1 == 1
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_HINT_TOPIC fallback (no topic inferred by the planner)
+# ---------------------------------------------------------------------------
+
+
+def test_default_hint_topic_fits_the_hint_progress_topic_column() -> None:
+    """`hint_progress.topic` is `String(64)` in the DB (see
+    `app.db.models.hint_progress.HintProgress`); `DEFAULT_HINT_TOPIC` must fit
+    or every fallback-keyed write would silently fail (swallowed by
+    `dsa_agent`'s `except Exception: pass`), which is worse than the bug this
+    packet fixes."""
+    assert len(DEFAULT_HINT_TOPIC) <= 64
+
+
+@pytest.mark.db
+async def test_dsa_agent_hint_level_climbs_with_no_topic_fallback(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A learner whose plan never gets a topic (fresh profile, no
+    `topic_hint`) still climbs the hint ladder turn over turn, keyed under
+    `DEFAULT_HINT_TOPIC`, and stops advancing once the ceiling for `"hint"`
+    assistance (`L2_DATA_STRUCTURE`) is reached."""
+    conversation_id = await start_conversation(db_session, user_id)
+    plan = _plan(topic=None)
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+    levels: list[int] = []
+    for _ in range(3):
+        state = _pipeline_state(
+            plan=plan,
+            structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT),
+        )
+        update = await dsa_agent(state, runtime)
+        outcome = update.get("agent_output")
+        assert outcome is not None
+        levels.append(outcome.hints_used - 1)
+
+    assert levels == [0, 1, 2]
+
+    progress = await get_hint_progress(db_session, user_id, conversation_id, DEFAULT_HINT_TOPIC)
+    assert progress.last_level == HintLevel.L2_DATA_STRUCTURE
+
+
+@pytest.mark.db
+async def test_dsa_agent_fallback_ladder_independent_across_conversations(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """Two different conversations for the same user keep independent
+    fallback-keyed ladders."""
+    conversation_a = await start_conversation(db_session, user_id)
+    conversation_b = await start_conversation(db_session, user_id)
+    plan = _plan(topic=None)
+
+    runtime_a = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_a,
+    )
+    runtime_b = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_b,
+    )
+
+    def _dsa_state() -> AgentState:
+        return _pipeline_state(
+            plan=plan, structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
+        )
+
+    # Advance conversation A twice; conversation B never touched.
+    await dsa_agent(_dsa_state(), runtime_a)
+    second_a = await dsa_agent(_dsa_state(), runtime_a)
+    second_a_outcome = second_a.get("agent_output")
+    assert second_a_outcome is not None
+    assert second_a_outcome.hints_used - 1 == 1
+
+    first_b = await dsa_agent(_dsa_state(), runtime_b)
+    first_b_outcome = first_b.get("agent_output")
+    assert first_b_outcome is not None
+    assert first_b_outcome.hints_used - 1 == 0
+
+
+@pytest.mark.db
+async def test_dsa_agent_fallback_ladder_ownership_isolated_between_users(
+    db_session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
+) -> None:
+    """Two different users cannot see each other's fallback-keyed progress,
+    even under the same nominal `conversation_id`."""
+    conversation_id = await start_conversation(db_session, user_id)
+    plan = _plan(topic=None)
+
+    runtime_user = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    runtime_other = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=other_user_id,
+        conversation_id=conversation_id,
+    )
+
+    def _dsa_state() -> AgentState:
+        return _pipeline_state(
+            plan=plan, structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
+        )
+
+    await dsa_agent(_dsa_state(), runtime_user)
+    await dsa_agent(_dsa_state(), runtime_user)
+
+    # The other user, same nominal conversation id, still starts fresh at L0.
+    other_first = await dsa_agent(_dsa_state(), runtime_other)
+    other_first_outcome = other_first.get("agent_output")
+    assert other_first_outcome is not None
+    assert other_first_outcome.hints_used - 1 == 0
+
+
+@pytest.mark.db
+async def test_dsa_agent_real_topic_keys_on_slug_tag_not_fallback(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A turn with a real `plan.topic` still keys/stores on
+    `slug_tag(plan.topic)`, unaffected by the `DEFAULT_HINT_TOPIC` fallback
+    -- an explicit regression check on the stored row's `topic` column."""
+    conversation_id = await start_conversation(db_session, user_id)
+    plan = _plan(topic="arrays")
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    state = _pipeline_state(
+        plan=plan, structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT)
+    )
+
+    await dsa_agent(state, runtime)
+
+    stored = await get_hint_progress(db_session, user_id, conversation_id, "arrays")
+    assert stored.last_level == HintLevel.L0_NUDGE
+    fallback = await get_hint_progress(db_session, user_id, conversation_id, DEFAULT_HINT_TOPIC)
+    assert fallback == HintProgress()
+
+
+@pytest.mark.db
+async def test_no_topic_fallback_never_touches_an_unrelated_real_topic_row(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A no-topic turn's fallback-keyed write never collides with (or moves)
+    a real, differently-named topic's row on the same conversation -- the
+    fallback key and a real topic can only ever collide if the real topic is
+    named the exact literal `DEFAULT_HINT_TOPIC` string (see that constant's
+    module comment: a practical, not cryptographic, mitigation given
+    `topic_hint` has no charset restriction and `hint_progress.topic` is a
+    `String(64)` DB column, so no sentinel can be both unreachable by user
+    input and guaranteed to fit)."""
+    conversation_id = await start_conversation(db_session, user_id)
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+    # A real "arrays" topic climbs once.
+    arrays_state = _pipeline_state(
+        plan=_plan(topic="arrays"),
+        structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT),
+    )
+    await dsa_agent(arrays_state, runtime)
+
+    # Two no-topic (fallback) turns climb independently of "arrays".
+    no_topic_plan = _plan(topic=None)
+    for _ in range(2):
+        no_topic_state = _pipeline_state(
+            plan=no_topic_plan,
+            structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT),
+        )
+        await dsa_agent(no_topic_state, runtime)
+
+    arrays_progress = await get_hint_progress(db_session, user_id, conversation_id, "arrays")
+    fallback_progress = await get_hint_progress(
+        db_session, user_id, conversation_id, DEFAULT_HINT_TOPIC
+    )
+    assert arrays_progress.last_level == HintLevel.L0_NUDGE
+    assert fallback_progress.last_level == HintLevel.L1_WHAT_TO_TRACK
 
 
 # ---------------------------------------------------------------------------

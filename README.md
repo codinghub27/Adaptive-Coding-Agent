@@ -66,7 +66,7 @@ subgraph.
 **Code intelligence:** Python `ast` · Tree-sitter · static analysis
 **Execution:** Docker sandbox (isolated, resource-limited)
 **Observability:** LangSmith
-**Frontend:** Streamlit (→ React/Next.js later)
+**Frontend:** vanilla HTML/CSS/JS, Vite-built (→ React/Next.js later)
 
 ---
 
@@ -133,32 +133,38 @@ ruff check . && ruff format --check .
 
 ## Running the frontend
 
-The Streamlit UI talks to the FastAPI backend over HTTP only. Start the API
-first, then the frontend, in two terminals:
+The web UI (vanilla HTML/CSS/JS, built with Vite) talks to the FastAPI backend
+over HTTP only. Start the API first.
+
+**Development** — the Vite dev server proxies API requests, so run both in two
+terminals:
 
 ```bash
 # terminal 1: the API (from "Getting started" above)
 ./venv/Scripts/python.exe -m uvicorn app.main:app --reload
 
-# terminal 2: the Streamlit UI
-./venv/Scripts/python.exe -m streamlit run frontend/app.py
+# terminal 2: the web UI dev server
+cd frontend && pnpm install && pnpm dev
 ```
 
-Both go through the venv's interpreter on purpose. A bare `uvicorn` or
-`streamlit` takes whichever copy is first on `PATH`; if that is a global
-install, the app fails immediately with `ModuleNotFoundError: No module named
-'qdrant_client'`. With the venv activated, plain `python -m uvicorn ...` works
-too.
+Both go through the venv's interpreter on purpose. A bare `uvicorn` takes
+whichever copy is first on `PATH`; if that is a global install, the app fails
+immediately with `ModuleNotFoundError: No module named 'qdrant_client'`. With
+the venv activated, plain `python -m uvicorn ...` works too.
 
-By default the frontend calls `http://127.0.0.1:8000`. Point it at a
-different backend with `API_BASE_URL`:
+**Production** — build the static assets once and let the API serve them:
 
 ```bash
-API_BASE_URL=http://127.0.0.1:8000 ./venv/Scripts/python.exe -m streamlit run frontend/app.py
+cd frontend && pnpm build
+./venv/Scripts/python.exe -m uvicorn app.main:app
 ```
 
-On first run, use the **Register** tab to create an account, then log in — every
-endpoint the UI calls requires a bearer token. Two things are worth knowing:
+FastAPI serves the built `frontend/dist` directory directly, so there is only
+one server to run.
+
+On first run, use the **Register** page to create an account, then log in —
+every endpoint the UI calls requires a bearer token. Two things are worth
+knowing:
 
 - **Keep the conversation and topic stable to climb the hint ladder.** Progress
   is keyed on `(user, conversation, topic)` server-side, so "Show me the next
@@ -168,8 +174,9 @@ endpoint the UI calls requires a bearer token. Two things are worth knowing:
   sandbox; without a reachable Docker daemon the agent still explains the bug but
   will say it could not verify a fix, rather than claiming one.
 
-Streamlit caches imported modules, so restart it after editing anything under
-`frontend/`.
+Vite's dev server hot-reloads most edits under `frontend/` automatically; a
+full restart is only needed after config changes (`vite.config.ts`,
+`package.json`).
 
 ---
 
@@ -188,7 +195,7 @@ app/          # FastAPI + LangGraph application
   db/         # models, sessions, migrations
 tests/
 docs/         # architecture.md + phases/
-frontend/     # Streamlit app
+frontend/     # web UI (Vite, vanilla HTML/CSS/JS)
 ```
 
 ---

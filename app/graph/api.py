@@ -49,7 +49,7 @@ from app.schemas.base import APIModel
 from app.schemas.event import LearningEventCreate
 from app.schemas.execution import Verdict
 from app.schemas.intent import IntentResult
-from app.schemas.plan import TeachingPlan
+from app.schemas.plan import ASSISTANCE_ORDER, TeachingPlan
 from app.schemas.response import GeneratedResponse
 
 __all__ = ["STREAM_ERROR_DETAIL", "ChatResponse", "router"]
@@ -139,6 +139,7 @@ async def _build_raw_input(
     language: str | None,
     image: UploadFile | None,
     topic: str | None,
+    assistance_cap: str | None = None,
 ) -> RawInput:
     """Shared request parsing/validation for `/chat` and `/chat/stream`: same
     size/type checks, same "text and/or image" requirement, so the two
@@ -148,6 +149,10 @@ async def _build_raw_input(
     if text is not None and len(text) > MAX_TEXT_CHARS:
         raise HTTPException(status_code=413, detail="text exceeds maximum length")
 
+    if assistance_cap is not None and assistance_cap not in ASSISTANCE_ORDER:
+        # Never echo the submitted value back in the detail.
+        raise HTTPException(status_code=422, detail="invalid assistance_cap")
+
     image_bytes = await _read_image(image) if image is not None else None
 
     return RawInput(
@@ -156,6 +161,7 @@ async def _build_raw_input(
         image=image_bytes,
         image_mime=image.content_type if image is not None else None,
         topic_hint=topic,
+        assistance_cap=assistance_cap,
     )
 
 
@@ -189,14 +195,18 @@ async def chat(
     image: Annotated[UploadFile | None, File()] = None,
     conversation_id: Annotated[UUID | None, Form()] = None,
     topic: Annotated[str | None, Form(max_length=64)] = None,
+    assistance_cap: Annotated[str | None, Form(max_length=16)] = None,
 ) -> ChatResponse:
     """Run one turn of the teaching graph over `text`/`image` and return its outcome.
 
     The acting user is always `current_user.id`, resolved from the bearer
     access token by `get_current_user` -- there is no caller-supplied
-    `user_id` field.
+    `user_id` field. `assistance_cap`, if given, is a client-requested
+    ceiling on `TeachingPlan.assistance_level` (see
+    `app.agents.planner.clamp_assistance`) -- it can only lower the help
+    given, never raise it.
     """
-    raw = await _build_raw_input(text, language, image, topic)
+    raw = await _build_raw_input(text, language, image, topic, assistance_cap)
 
     result = await run_graph(
         raw,
@@ -306,13 +316,14 @@ async def chat_stream(
     image: Annotated[UploadFile | None, File()] = None,
     conversation_id: Annotated[UUID | None, Form()] = None,
     topic: Annotated[str | None, Form(max_length=64)] = None,
+    assistance_cap: Annotated[str | None, Form(max_length=16)] = None,
 ) -> StreamingResponse:
     """Streaming counterpart of `POST /chat`: same request shape, validation,
     and auth; emits SSE `stage` events as the graph progresses, then a single
     terminal `done` frame carrying the exact same body `POST /chat` returns
     (or an `error` frame with a fixed, safe message on failure).
     """
-    raw = await _build_raw_input(text, language, image, topic)
+    raw = await _build_raw_input(text, language, image, topic, assistance_cap)
 
     return StreamingResponse(
         _chat_stream_events(request, llm, current_user, raw, conversation_id),
