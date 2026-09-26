@@ -45,7 +45,13 @@ def _sentinel_problem() -> StructuredInput:
 
 
 def test_no_level_skipping() -> None:
-    """From every last_level, for every assistance level, level advances by at most one."""
+    """From every last_level, for every assistance level, level advances by at
+    most one -- except `full`, Packet P3's escalation signal, which jumps
+    straight to its ceiling (`L6_FULL`) on the turn it is granted regardless
+    of prior progress (see `next_hint`'s docstring: `full` is unreachable
+    except through an already fully-gated escalation, so pacing its reveal
+    the same way as every other assistance level would silently renege on
+    it for one to several more turns)."""
     for assistance in ALL_ASSISTANCE:
         plan = _plan(assistance)
         for last in [None, *ALL_LEVELS]:
@@ -53,7 +59,9 @@ def test_no_level_skipping() -> None:
             result = next_hint(None, plan, progress)
             if result is None:
                 continue
-            if last is None:
+            if assistance == "full":
+                assert result.level == HintLevel.L6_FULL
+            elif last is None:
                 assert result.level == HintLevel.L0_NUDGE
             else:
                 assert result.level <= last + 1
@@ -129,7 +137,7 @@ def test_solved_stops_hinting() -> None:
 
 
 def test_reveals_code_only_from_l5() -> None:
-    plan = _plan("full")
+    plan = _plan("partial")
     last: HintLevel | None = None
     for _ in range(8):
         progress = HintProgress(last_level=last)
@@ -142,19 +150,42 @@ def test_reveals_code_only_from_l5() -> None:
         last = result.level
 
 
-def test_full_climb_seven_distinct_levels_in_order() -> None:
-    plan = _plan("full")
+def test_partial_climb_six_distinct_levels_in_order() -> None:
+    """One rung per call, L0 through L5 (`partial`'s ceiling), for every
+    assistance level except `full` -- see `test_full_jumps_directly_to_ceiling`."""
+    plan = _plan("partial")
     last: HintLevel | None = None
     levels: list[HintLevel] = []
-    for _ in range(7):
+    for _ in range(6):
         progress = HintProgress(last_level=last)
         result = next_hint(None, plan, progress)
         assert result is not None
         levels.append(result.level)
         last = result.level
 
-    assert levels == list(HintLevel)
-    assert len(set(levels)) == 7
+    assert levels == list(HintLevel)[:6]
+    assert len(set(levels)) == 6
+
+
+def test_full_jumps_directly_to_ceiling() -> None:
+    """`full` is Packet P3's escalation signal, not an ordinary ceiling --
+    unreachable except through `app.agents.planner.build_plan`'s escalation
+    rule, which has already gated all three of its own conditions by the
+    time a turn's plan carries it. Pacing the reveal one rung per call, as
+    every other assistance level still does, would silently renege on an
+    already-granted escalation for one to several more turns (measured
+    live: an escalated turn surfaced an `L4` pseudocode rung and
+    `reveals_code=False`, not the promised solution). So `full` jumps
+    straight to `L6_FULL` on the very call it is granted, from any prior
+    level -- including a learner's very first ask on this problem."""
+    plan = _plan("full")
+    for last in (None, HintLevel.L0_NUDGE, HintLevel.L3_CONCRETE_IDEA, HintLevel.L5_PARTIAL):
+        progress = HintProgress(last_level=last)
+        result = next_hint(None, plan, progress)
+        assert result is not None
+        assert result.level == HintLevel.L6_FULL
+        assert result.reveals_code is True
+        assert result.is_terminal is True
 
 
 def test_no_untrusted_echo_across_all_levels_and_assistance_levels() -> None:

@@ -189,24 +189,22 @@ async def test_manual_1_dsa_hint_ladder_climbs_one_rung_at_a_time_never_leaking_
     assert last_run.execution_request is None  # no L6 solution => nothing to sandbox-verify
     assert llm.chat_calls  # `_understand` makes a real LLM call every turn (material vs. Phase 04)
 
-    # "Full solution only at the top level" -- demonstrated by raising
-    # assistance to "full" (ceiling L6) and climbing the entire ladder.
+    # "Full solution only when escalated" -- `full` is Packet P3's
+    # escalation signal, not an ordinary ceiling to climb toward: it is
+    # unreachable except through `build_plan`'s already fully-gated
+    # escalation rule, so the very turn it appears on jumps straight to
+    # `L6_FULL`, regardless of how far this ladder had climbed before (see
+    # `next_hint`'s docstring). Demonstrated here from a mid-ladder
+    # `HintProgress`, not a fresh one, precisely to show it is a jump, not
+    # one more rung.
     full_plan = plan.model_copy(update={"assistance_level": "full"})
     full_state = state.model_copy(update={"plan": full_plan})
-    full_progress = HintProgress()
-    full_levels: list[HintLevel] = []
-    full_run = None
-    for _ in range(7):
-        full_run = await run_dsa(full_state, runtime, progress=full_progress)
-        hint = full_run.result.hint
-        assert hint is not None
-        full_levels.append(hint.level)
-        if hint.level < HintLevel.L6_FULL:
-            assert full_run.result.code is None
-        full_progress = HintProgress(last_level=hint.level, solved=False)
-
-    assert full_levels == list(HintLevel)  # L0 through L6, one rung climbed per ask
-    assert full_run is not None
+    full_progress = HintProgress(last_level=HintLevel.L2_DATA_STRUCTURE, solved=False)
+    full_run = await run_dsa(full_state, runtime, progress=full_progress)
+    hint = full_run.result.hint
+    assert hint is not None
+    assert hint.level == HintLevel.L6_FULL
+    assert hint.reveals_code is True
     assert full_run.result.code is not None
     assert "def subarray_sum" in full_run.result.code
     assert full_run.execution_request is not None

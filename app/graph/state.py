@@ -17,6 +17,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.planner import TopicSource
 from app.execution.base import CodeRunner
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
@@ -126,6 +127,7 @@ class AgentState(BaseModel):
     profile: LearnerProfileView | None = None
     recent_context: list[MessageView] = Field(default_factory=list[MessageView])
     plan: TeachingPlan | None = None
+    topic_source: TopicSource | None = None
     retrieved_context: list[RetrievalHit] = Field(default_factory=list[RetrievalHit])
     execution_request: ExecutionRequest | None = None
     execution_result: ExecutionResult | None = None
@@ -152,6 +154,7 @@ class AgentStateUpdate(TypedDict, total=False):
     profile: LearnerProfileView | None
     recent_context: list[MessageView]
     plan: TeachingPlan | None
+    topic_source: TopicSource | None
     retrieved_context: list[RetrievalHit]
     execution_request: ExecutionRequest | None
     execution_result: ExecutionResult | None

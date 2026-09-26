@@ -44,11 +44,20 @@ __all__ = [
     "STRONG_SKILL",
     "WEAK_SKILL",
     "ProblemAnalysis",
+    "TopicSource",
     "analyze_problem",
     "build_plan",
     "clamp_assistance",
     "difficulty_for",
 ]
+
+#: How this turn's `ProblemAnalysis.topic` was resolved -- see
+#: `analyze_problem`'s docstring for what each value means. Threaded onto
+#: `AgentState.topic_source` by `plan_teaching` so later nodes (the hint
+#: ladder's `_hint_topic_key`) can tell a deliberate topic signal ("hint",
+#: "profile_match") from a turn-local guess ("retrieval") without needing
+#: the raw `ProblemAnalysis` in scope.
+TopicSource = Literal["hint", "profile_match", "retrieval", "unknown"]
 
 WEAK_SKILL: Final = 0.4
 STRONG_SKILL: Final = 0.75
@@ -126,7 +135,7 @@ class ProblemAnalysis(APIModel):
 
     topic: str | None
     skill_level: float
-    topic_source: Literal["hint", "profile_match", "retrieval", "unknown"]
+    topic_source: TopicSource
 
 
 def _prose(inp: StructuredInput | None) -> str:
@@ -360,12 +369,20 @@ def build_plan(
         if ceiling_reached and explicit_ask and verified_attempt:
             assistance = "full"
             rationale.append("escalated")
-        elif not ceiling_reached:
-            rationale.append("escalation_denied_ceiling_not_reached")
-        elif not explicit_ask:
-            rationale.append("escalation_denied_no_explicit_ask")
         else:
-            rationale.append("escalation_denied_no_verified_attempt")
+            # All three are evaluated and reported independently -- never a
+            # short-circuiting elif chain. A single reported reason hid the
+            # other two failing conditions behind whichever was checked
+            # first (measured live: `escalation_denied_ceiling_not_reached`
+            # alone, on turns where the ceiling had in fact been reached but
+            # neither of the other two conditions had), which cost real
+            # debugging time chasing the wrong cause.
+            if not ceiling_reached:
+                rationale.append("escalation_denied_ceiling_not_reached")
+            if not explicit_ask:
+                rationale.append("escalation_denied_no_explicit_ask")
+            if not verified_attempt:
+                rationale.append("escalation_denied_no_verified_attempt")
 
     if profile.learning_preferences.get("likes_step_by_step", False):
         step_by_step = True

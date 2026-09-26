@@ -142,37 +142,64 @@ async def test_full_assistance_can_reach_l6_and_only_then_carries_code() -> None
     assert len(llm.chat_calls) == 1
 
 
-async def test_full_assistance_below_l6_still_withholds_code() -> None:
-    """Even with a `full` ceiling, code is withheld until the turn actually reaches L6."""
-    plan = _plan("full")
-    progress = HintProgress(last_level=HintLevel.L4_PSEUDOCODE)
+async def test_partial_assistance_below_l5_still_withholds_code() -> None:
+    """Even with a `partial` ceiling, code is withheld until the turn actually reaches L5."""
+    plan = _plan("partial")
+    progress = HintProgress(last_level=HintLevel.L3_CONCRETE_IDEA)
     llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
 
     run = await run_dsa(_state(plan=plan, problem=_problem()), _runtime(llm), progress=progress)
 
     assert run.result.hint is not None
-    assert run.result.hint.level == HintLevel.L5_PARTIAL
+    assert run.result.hint.level == HintLevel.L4_PSEUDOCODE
     assert run.result.code is None
     assert run.execution_request is None
-    # Fields already earned by L4 remain visible at L5.
-    assert run.result.pseudocode is not None
+    # Fields already earned by L3 remain visible at L4.
+    assert run.result.key_insight is not None
+
+
+async def test_full_assistance_jumps_directly_to_l6() -> None:
+    """`full` is Packet P3's escalation signal, not an ordinary ceiling: it is
+    unreachable except through `app.agents.planner.build_plan`'s escalation
+    rule, which has already gated all three of its own conditions by the
+    time a turn's plan carries it. Pacing the reveal one rung per call here
+    too -- as every other assistance level still does -- would silently
+    renege on an already-granted escalation for one to several more turns
+    (measured live: an escalated turn surfaced an `L4` pseudocode rung and
+    `reveals_code=False`, not the promised solution). So, unlike every other
+    assistance level, `full` jumps straight to its ceiling (`L6_FULL`) on the
+    very turn it is granted, regardless of how far the ladder had climbed
+    before."""
+    plan = _plan("full")
+    llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
+
+    for prior in (None, HintLevel.L0_NUDGE, HintLevel.L3_CONCRETE_IDEA):
+        progress = HintProgress(last_level=prior)
+        run = await run_dsa(_state(plan=plan, problem=_problem()), _runtime(llm), progress=progress)
+        assert run.result.hint is not None
+        assert run.result.hint.level == HintLevel.L6_FULL
+        assert run.result.hint.reveals_code
+        assert run.result.code == _FULL_SOLUTION_CODE
+        assert run.execution_request is not None
 
 
 async def test_repeated_turns_climb_exactly_one_rung() -> None:
-    """Feeding each turn's `HintProgress` back climbs the ladder one rung at a time."""
-    plan = _plan("full")
+    """Feeding each turn's `HintProgress` back climbs the ladder one rung at a
+    time, for every assistance level except `full` (see
+    `test_full_assistance_jumps_directly_to_l6`)."""
+    plan = _plan("partial")
     problem = _problem()
     levels: list[HintLevel] = []
     progress = HintProgress()
 
-    for _ in range(7):
+    for _ in range(6):
         llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
         run = await run_dsa(_state(plan=plan, problem=problem), _runtime(llm), progress=progress)
         assert run.result.hint is not None
         levels.append(run.result.hint.level)
         progress = HintProgress(last_level=run.result.hint.level)
 
-    assert levels == list(HintLevel)
+    assert levels == list(HintLevel)[:6]
 
 
 async def test_llm_failure_degrades_gracefully() -> None:

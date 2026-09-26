@@ -201,10 +201,23 @@ def next_hint(
 
     Rules (see module docstring for the security rationale):
     - `progress.solved` -> `None` (stop hinting).
-    - First ask (`last_level is None`) -> L0, unless the ceiling is lower
-      (defensive; never happens with the current ceiling mapping).
-    - Otherwise -> `min(last_level + 1, ceiling)`: at most one rung per call,
-      never above the ceiling, idempotent once the ceiling is reached.
+    - `plan.assistance_level == "full"` -> the ceiling directly (`L6_FULL`),
+      on this same call. `"full"` is unreachable any other way --
+      `app.agents.planner.build_plan` only ever sets it via Packet P3's
+      escalation rule, gated on all three of its own conditions already
+      having held for THIS turn -- so by the time this function ever sees
+      it, the decision to reveal the solution now has already been made
+      upstream, deliberately and narrowly. The one-rung-per-call limit below
+      exists to pace *ordinary* hint requests; applying it here as well
+      would turn a granted escalation into "one more rung today, ask again
+      tomorrow" -- silently reneging on it for one to several more turns
+      (measured live: an escalated turn surfaced an `L4` pseudocode rung and
+      `reveals_code=False`, not the promised solution).
+    - Otherwise -- first ask (`last_level is None`) -> L0, unless the
+      ceiling is lower (defensive; never happens with the current ceiling
+      mapping); after that -> `min(last_level + 1, ceiling)`: at most one
+      rung per call, never above the ceiling, idempotent once the ceiling
+      is reached.
     """
     del problem  # untrusted; deliberately not read -- see module docstring
 
@@ -213,7 +226,9 @@ def next_hint(
 
     ceiling = MAX_HINT_LEVEL_FOR_ASSISTANCE[plan.assistance_level]
 
-    if progress.last_level is None:
+    if plan.assistance_level == "full":
+        level = ceiling
+    elif progress.last_level is None:
         level = HintLevel(min(int(HintLevel.L0_NUDGE), int(ceiling)))
     else:
         level = HintLevel(min(int(progress.last_level) + 1, int(ceiling)))

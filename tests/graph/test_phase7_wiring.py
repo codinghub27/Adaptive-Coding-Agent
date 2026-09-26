@@ -42,7 +42,7 @@ from app.graph.subgraphs.explain import ExplainRunResult
 from app.llm.base import LLMClient
 from app.memory.conversation import start_conversation
 from app.memory.hint_progress import get_hint_progress, save_hint_progress
-from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel, ReviewResult
+from app.schemas.agent_results import DebugResult, DSAResult, ExplainResult, HintLevel, ReviewResult
 from app.schemas.execution import (
     CaseResult,
     ExecutionRequest,
@@ -68,6 +68,7 @@ _DSA_PROBLEM_TEXT_B: Final = (
     "return the reversed list's head."
 )
 _DSA_INTENT_JSON: Final = '{"intent": "DSA_HINT", "confidence": 0.9, "rationale": "clear"}'
+_DSA_WORKED_EXAMPLE: Final = "\nExample 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\n"
 
 
 async def _hint_progress_row_count(session: AsyncSession, conversation_id: uuid.UUID) -> int:
@@ -787,9 +788,13 @@ async def test_dsa_agent_hint_level_climbs_across_turns_via_hint_progress_store(
     ladder 0 -> 1 -> 2, with progress flowing *only* through the dedicated
     `app.memory.hint_progress` store (no mocking of `resolve_hint_progress`
     or `save_hint_progress`) -- this is the test that would have caught the
-    original bug, where every turn returned L0 again."""
+    original bug, where every turn returned L0 again. `assistance_level`
+    is `"partial"`, not `"full"`: `full` is Packet P3's escalation signal
+    and jumps straight to its ceiling on the granting turn (see
+    `next_hint`'s docstring), which would collapse this test's three
+    distinct climbing steps into one."""
     conversation_id = await start_conversation(db_session, user_id)
-    plan = _plan(topic="arrays", assistance_level="full")
+    plan = _plan(topic="arrays", assistance_level="partial")
     runtime = _runtime(
         llm=FakeLLMClient(chat_content="{}"),
         session=db_session,
@@ -817,9 +822,11 @@ async def test_debug_agent_never_changes_dsa_hint_progress(
 ) -> None:
     """A debugger turn on the same conversation+topic must not move (or
     reset) the DSA hint ladder -- only `dsa_agent` ever writes the
-    hint-progress store (F8 regression guard)."""
+    hint-progress store (F8 regression guard). `assistance_level` is
+    `"partial"`, not `"full"` -- see the sibling climbing test's docstring
+    for why `full` would not exercise this scenario the same way."""
     conversation_id = await start_conversation(db_session, user_id)
-    plan = _plan(topic="arrays", assistance_level="full")
+    plan = _plan(topic="arrays", assistance_level="partial")
     runtime = _runtime(
         llm=FakeLLMClient(chat_content="{}"),
         session=db_session,
@@ -855,6 +862,183 @@ async def test_debug_agent_never_changes_dsa_hint_progress(
     second_outcome = second.get("agent_output")
     assert second_outcome is not None
     assert second_outcome.hints_used - 1 == 1
+
+
+# ---------------------------------------------------------------------------
+# Packet P3b regression: Cause A -- a verified attempt on a non-DSA-routed
+# turn (`CODE_DEBUG`/`CODE_REVIEW`) must still count as "demonstrated
+# effort" for the DSA escalation rule.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.db
+async def test_debug_agent_records_verified_attempt_for_dsa_ladder(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A learner whose sandbox-verified code got classified `CODE_DEBUG`, not
+    a DSA intent, must still have that effort recorded against this
+    problem's ladder -- only `dsa_agent` used to ever write
+    `has_verified_attempt` (measured live: a `pass` verdict on a debug turn,
+    then several `escalation_denied_...` turns that could never have been
+    anything but denied)."""
+    conversation_id = await start_conversation(db_session, user_id)
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+    dsa_state = _pipeline_state(
+        plan=_plan(topic="arrays", assistance_level="partial"),
+        structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT),
+    )
+    await dsa_agent(dsa_state, runtime)
+    before = await get_hint_progress(db_session, user_id, conversation_id, "arrays")
+    assert before.has_verified_attempt is False
+
+    statement = _DSA_PROBLEM_TEXT + _DSA_WORKED_EXAMPLE
+    debug_state = _pipeline_state(
+        route_key="debug",
+        intent=Intent.CODE_DEBUG,
+        plan=_plan(topic="arrays"),
+        structured=StructuredInput(
+            source="text",
+            problem=statement,
+            code=[CodeBlock(content="def two_sum(nums, target):\n    return None\n")],
+        ),
+    )
+    debug_runtime = _runtime(
+        llm=FakeLLMClient(chat_content="ok"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        runner=FakeRunner(_dsa_failed_result("c1", None)),
+    )
+    debug_update = await debug_agent(debug_state, debug_runtime)
+    result = debug_update.get("agent_result")
+    assert isinstance(result, DebugResult)
+    assert result.initial_verdict is not None
+    assert result.initial_verdict.status == "fail"
+
+    after = await get_hint_progress(db_session, user_id, conversation_id, "arrays")
+    assert after.has_verified_attempt is True
+    # Only `has_verified_attempt` moved -- the ladder's own level is untouched.
+    assert after.last_level == before.last_level
+
+
+@pytest.mark.db
+async def test_review_agent_records_verified_attempt_for_dsa_ladder(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """The same effort-recording as the debug turn above, but for
+    `explain_agent`'s `CODE_REVIEW`/`OPTIMIZATION` dispatch to the reviewer,
+    whose `ReviewResult.correctness_verdict` is likewise sandbox ground
+    truth on the learner's own (never patched) submitted code."""
+    conversation_id = await start_conversation(db_session, user_id)
+    runtime = _runtime(
+        llm=FakeLLMClient(chat_content="{}"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+
+    dsa_state = _pipeline_state(
+        plan=_plan(topic="arrays", assistance_level="partial"),
+        structured=StructuredInput(source="text", problem=_DSA_PROBLEM_TEXT),
+    )
+    await dsa_agent(dsa_state, runtime)
+    before = await get_hint_progress(db_session, user_id, conversation_id, "arrays")
+    assert before.has_verified_attempt is False
+
+    statement = _DSA_PROBLEM_TEXT + _DSA_WORKED_EXAMPLE
+    review_state = _pipeline_state(
+        route_key="explain",
+        intent=Intent.CODE_REVIEW,
+        plan=_plan(topic="arrays"),
+        structured=StructuredInput(
+            source="text",
+            problem=statement,
+            code=[CodeBlock(content="def two_sum(nums, target):\n    return None\n")],
+        ),
+    )
+    review_runtime = _runtime(
+        llm=FakeLLMClient(chat_content="ok"),
+        session=db_session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        runner=FakeRunner(_dsa_failed_result("c1", None)),
+    )
+    review_update = await explain_agent(review_state, review_runtime)
+    result = review_update.get("agent_result")
+    assert isinstance(result, ReviewResult)
+    assert result.correctness_verdict is not None
+    assert result.correctness_verdict.status == "fail"
+
+    after = await get_hint_progress(db_session, user_id, conversation_id, "arrays")
+    assert after.has_verified_attempt is True
+    assert after.last_level == before.last_level
+
+
+# ---------------------------------------------------------------------------
+# Packet P3b regression: Cause B -- a bare follow-up's own turn-local,
+# retrieval-inferred topic must never fork away from this conversation's
+# already-established ladder.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.db
+async def test_unstable_topic_follow_up_continues_existing_ladder(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """A bare follow-up (no problem statement of its own) whose OWN turn's
+    topic came back different from history via `analyze_problem`'s
+    "retrieval" fallback (`topic_source="retrieval"`) must still continue
+    the conversation's existing ladder, not fork a fresh, empty one --
+    `topic_source="retrieval"` is a turn-local, thin-prose guess, not a
+    deliberate signal (see `_topic_is_stable`). Measured live: 6+
+    consecutive "walk me through" turns all denied via
+    `escalation_denied_ceiling_not_reached`, because every one of them
+    forked its own empty ladder instead of continuing the real one."""
+    conversation_id = await start_conversation(db_session, user_id)
+    await save_hint_progress(db_session, user_id, conversation_id, "hashing", level=2, solved=False)
+
+    state = _pipeline_state(
+        plan=_plan(topic="two_pointers"),
+        structured=StructuredInput(source="text", question="walk me through the approach"),
+    ).model_copy(update={"topic_source": "retrieval"})
+    ctx = GraphContext(
+        llm=FakeLLMClient(), session=db_session, user_id=user_id, conversation_id=conversation_id
+    )
+
+    progress = await resolve_hint_progress(state, ctx)
+
+    assert progress.last_level == HintLevel.L2_DATA_STRUCTURE
+    assert await _hint_progress_row_count(db_session, conversation_id) == 1
+
+
+@pytest.mark.db
+async def test_stable_topic_follow_up_still_forks_its_own_ladder(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    """Control for the test above: when this turn's topic is a *deliberate*
+    signal (`topic_source="profile_match"`, or untracked/`None` -- the
+    historical default), a bare follow-up naming a genuinely different topic
+    still gets its own fresh ladder, exactly as before Packet P3b."""
+    conversation_id = await start_conversation(db_session, user_id)
+    await save_hint_progress(db_session, user_id, conversation_id, "hashing", level=2, solved=False)
+
+    state = _pipeline_state(
+        plan=_plan(topic="two_pointers"),
+        structured=StructuredInput(source="text", question="walk me through the approach"),
+    ).model_copy(update={"topic_source": "profile_match"})
+    ctx = GraphContext(
+        llm=FakeLLMClient(), session=db_session, user_id=user_id, conversation_id=conversation_id
+    )
+
+    progress = await resolve_hint_progress(state, ctx)
+
+    assert progress == HintProgress()
 
 
 # ---------------------------------------------------------------------------
