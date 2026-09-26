@@ -20,27 +20,51 @@ of the hint ladder (a low assistance level must never leak a full solution).
 
 Hint text is composed only from trusted-shape fields: `TeachingPlan.topic`,
 `TeachingPlan.watch_errors`, `TeachingPlan.difficulty`, and, where available,
-the `chunk.topic` / `chunk.pattern` labels of retrieved `RetrievalHit`s (the
-knowledge corpus, not user input). The learner's own free text --
-`StructuredInput.question` / `.problem` / `.code` / `.error` -- is untrusted
-content and is **never** echoed into the returned text, matching the
-convention documented in `app.graph.nodes`'s module docstring. `problem` is
-accepted here only for API symmetry with future callers; this module does
-not read any of its fields.
+the retrieved `KnowledgeChunk`s of `RetrievalHit`s (the knowledge corpus, not
+user input) -- both their `topic` / `pattern` labels (used since before this
+packet) and now, for Packet P5, a bounded amount of the chunk's own curated
+prose. The learner's own free text -- `StructuredInput.question` / `.problem`
+/ `.code` / `.error` -- is untrusted content and is **never** echoed into the
+returned text, matching the convention documented in `app.graph.nodes`'s
+module docstring. `problem` is accepted here only for API symmetry with
+future callers; this module does not read any of its fields.
+
+**Grounding (Packet P5).** A rung may quote a *bounded, single-sentence*
+clause of trusted corpus text to make its guidance specific to the actual
+topic/pattern, instead of a generic template. Trust is established two ways,
+both required:
+
+- Relevance: `hit.score >= MIN_GROUNDING_SCORE` (a retrieved-but-irrelevant
+  chunk is noise, not evidence -- same calibration as
+  `app.agents.planner.MIN_RETRIEVAL_TOPIC_SCORE`, duplicated here rather than
+  imported to avoid a circular import: that module imports `HintProgress`
+  from this one).
+- Section: the chunk's corpus section (`KnowledgeChunk.metadata["section"]`)
+  is not in `_UNGROUNDABLE_SECTIONS` -- never `general_template` (literal
+  solution code) or `representative_problems` (just external links).
+
+When no hit clears both bars this turn, every rung silently reverts to
+today's generic, topic-agnostic phrasing -- a vague-but-honest hint beats a
+confident wrong one built from noise. `_prose` additionally strips any
+fenced code block defensively (in case a future corpus edit embeds one
+outside `general_template`) and flattens markdown to plain prose, since
+`app.response.format` applies no escaping/markdown layer of its own to hint
+text -- this module must not hand it anything but plain sentences.
 
 Even at L4/L5/L6 the text only *describes* the shape of a solution -- this
-module never fabricates actual code. Generating real code is the DSA agent's
-job (Phase 07 P3), and it is only permitted to do so once the ladder has
-reached L6 (`DSAResult` enforces that pairing).
+module never fabricates actual code, grounded or not. Generating real code
+is the DSA agent's job (Phase 07 P3), and it is only permitted to do so once
+the ladder has reached L6 (`DSAResult` enforces that pairing).
 """
 
+import re
 from collections.abc import Sequence
 from typing import Final
 
 from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE, HintLevel, HintResult
 from app.schemas.base import APIModel
 from app.schemas.input import StructuredInput
-from app.schemas.knowledge import RetrievalHit
+from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import TeachingPlan
 
 __all__ = ["HintProgress", "next_hint"]
@@ -64,18 +88,131 @@ class HintProgress(APIModel):
     has_verified_attempt: bool = False
 
 
-def _context_labels(context: Sequence[RetrievalHit]) -> list[str]:
-    """Distinct, trusted-shape topic/pattern labels drawn from retrieved chunks.
+#: Below this score a retrieved chunk is noise, not evidence -- same
+#: calibration and rationale as `app.agents.planner.MIN_RETRIEVAL_TOPIC_SCORE`
+#: (duplicated, not imported: that module imports `HintProgress` from this
+#: one, so importing it back here would cycle). Re-measure alongside that
+#: constant if the reranker model, the corpus, or retrieval query
+#: construction changes.
+MIN_GROUNDING_SCORE: Final = -5.0
+
+#: Corpus sections this module will never quote from when grounding a rung:
+#: `general_template` is literal solution code -- the one thing no rung
+#: below L6 may ever reveal -- and `representative_problems` is just a list
+#: of external problem links, not teaching prose.
+_UNGROUNDABLE_SECTIONS: Final = frozenset({"general_template", "representative_problems"})
+
+_CODE_FENCE_RE: Final = re.compile(r"```.*?```", re.DOTALL)
+_SENTENCE_SPLIT_RE: Final = re.compile(r"(?<=[.!?])\s+")
+
+
+def _trusted_hits(context: Sequence[RetrievalHit]) -> list[RetrievalHit]:
+    """Retrieved hits this module is willing to ground rung text on.
+
+    Filters by both relevance (`MIN_GROUNDING_SCORE`) and section
+    (`_UNGROUNDABLE_SECTIONS`); failing either bar is the same fail-soft
+    case -- no trusted evidence, so every rung reverts to its generic,
+    topic-agnostic phrasing (see module docstring).
+    """
+    return [
+        hit
+        for hit in context
+        if hit.score >= MIN_GROUNDING_SCORE
+        and hit.chunk.metadata.get("section") not in _UNGROUNDABLE_SECTIONS
+    ]
+
+
+def _context_labels(trusted: Sequence[RetrievalHit]) -> list[str]:
+    """Distinct, trusted-shape topic/pattern labels drawn from `trusted` hits.
 
     These come from the knowledge corpus (`app.schemas.knowledge.KnowledgeChunk`),
     not from the learner's own input, so they are safe to compose into hint text.
+    Callers must pre-filter to `_trusted_hits` -- this function does not
+    re-apply the relevance/section bars itself.
     """
     seen: list[str] = []
-    for hit in context:
+    for hit in trusted:
         for label in (hit.chunk.pattern, hit.chunk.topic):
             if label and label not in seen:
                 seen.append(label)
     return seen
+
+
+def _prose(chunk: KnowledgeChunk) -> str:
+    """Flatten one chunk's corpus text into plain, single-line prose.
+
+    Strips the `"{title} — {heading}\\n\\n"` prefix `chunk_document` always
+    prepends (`app.knowledge.ingest`), drops any fenced code block (defence
+    in depth: `_trusted_hits` already excludes the `general_template`
+    section, but a future corpus edit could still embed a snippet inside
+    another section), and collapses markdown line breaks/bullet markers so
+    the result reads as a plain sentence stream -- `app.response.format`
+    applies no markdown-escaping layer downstream, so this module must not
+    hand it any markdown to begin with.
+    """
+    prefix = f"{chunk.title} — {chunk.heading}\n\n"
+    text = chunk.text[len(prefix) :] if chunk.text.startswith(prefix) else chunk.text
+    text = _CODE_FENCE_RE.sub(" ", text)
+    text = text.replace("`", "").replace("*", "").replace("#", "")
+    lines = (line.strip().lstrip("-").strip() for line in text.splitlines())
+    return " ".join(line for line in lines if line)
+
+
+def _first_clause(text: str, max_chars: int) -> str:
+    """The first sentence of `text`, truncated at a word boundary if that
+    sentence alone still exceeds `max_chars`.
+
+    Bounding to one sentence (never a whole section) is deliberate: it caps
+    how much corpus detail can land in any single rung, which is what keeps
+    a grounded low rung from creeping into "hands over the algorithm"
+    territory (see module docstring).
+    """
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    clause = _SENTENCE_SPLIT_RE.split(stripped, maxsplit=1)[0].strip()
+    if len(clause) <= max_chars:
+        return clause
+    truncated = clause[:max_chars].rsplit(" ", 1)[0].rstrip(",;: ")
+    return f"{truncated}..." if truncated else clause[:max_chars]
+
+
+def _chunk_for_section(trusted: Sequence[RetrievalHit], section: str) -> KnowledgeChunk | None:
+    """The best-ranked `trusted` hit whose corpus section is `section`, or `None`."""
+    for hit in trusted:
+        if hit.chunk.metadata.get("section") == section:
+            return hit.chunk
+    return None
+
+
+def _grounded_clause(
+    trusted: Sequence[RetrievalHit], section: str, *, max_chars: int = 200
+) -> str | None:
+    """One sentence of grounded, trusted prose from `section`, or `None` if
+    no `trusted` hit carries that section this turn (fail-soft, per rung)."""
+    chunk = _chunk_for_section(trusted, section)
+    if chunk is None:
+        return None
+    clause = _first_clause(_prose(chunk), max_chars)
+    return clause or None
+
+
+def _identification_signal(trusted: Sequence[RetrievalHit]) -> str | None:
+    """The first curated recognition cue for this topic, or `None`.
+
+    `identification_signals` is document-level metadata (`CorpusDocument`,
+    stamped onto every chunk of that document regardless of which section it
+    came from -- `app.knowledge.ingest.chunk_document`): short, curated
+    recognition phrases like "at most k distinct" or "monotonic deque window
+    maximum". These name what the problem *looks like*, never what to *do*
+    about it, so they are safe at the ladder's lowest rungs.
+    """
+    for hit in trusted:
+        raw = hit.chunk.metadata.get("identification_signals", "")
+        first = raw.split(",", 1)[0].strip()
+        if first:
+            return first
+    return None
 
 
 def _humanize(label: str) -> str:
@@ -114,11 +251,20 @@ def _shape_hint(topic: str | None, context_labels: Sequence[str]) -> str:
     return GENERIC_SHAPE_HINT
 
 
-def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[str]) -> str:
+def _rung_text(
+    level: HintLevel,
+    plan: TeachingPlan,
+    context_labels: Sequence[str],
+    trusted: Sequence[RetrievalHit],
+) -> str:
     """Compose the guidance-level text for one ladder rung.
 
-    Built only from `plan`'s structured fields and `context_labels`; never
-    from the learner's raw question/problem/code/error text.
+    Built only from `plan`'s structured fields, `context_labels`, and a
+    bounded, single-sentence grounded clause pulled from `trusted` (already
+    relevance/section-filtered by `_trusted_hits`) -- never from the
+    learner's raw question/problem/code/error text. When `trusted` is empty,
+    every `_grounded_clause`/`_identification_signal` call below returns
+    `None` and each rung is byte-identical to its pre-Packet-P5 generic text.
     """
     # Two phrasings, because the topic is a *modifier* ("sliding window
     # problem"), not a stand-in for the whole noun phrase. Substituting a
@@ -142,40 +288,59 @@ def _rung_text(level: HintLevel, plan: TeachingPlan, context_labels: Sequence[st
             f"{this_problem}: which values change at each step, and which ones you "
             "need to remember from earlier steps to make a later decision."
         )
+        signal = _identification_signal(trusted)
+        if signal:
+            text += f" A cue worth noticing here: {signal}."
         if watch:
             text += f" Also watch for mistakes that have tripped you up before: {watch}."
         return text
 
     if level == HintLevel.L2_DATA_STRUCTURE:
         shape = _shape_hint(plan.topic, context_labels)
-        return (
+        text = (
             f"Consider what data structure would let you track that state "
             f"efficiently. For {a_problem}, {shape} is often the right shape "
             "-- ask yourself what operations you need it to support quickly."
         )
+        overview = _grounded_clause(trusted, "overview")
+        if overview:
+            text += f" {overview}"
+        return text
 
     if level == HintLevel.L3_CONCRETE_IDEA:
-        return (
+        text = (
             "Sketch a concrete approach: decide on the single pass or traversal "
             "you'd make over the input, and exactly what you'd read from and "
             "write to the data structure at each step."
         )
+        intuition = _grounded_clause(trusted, "core_intuition")
+        if intuition:
+            text += f" Here's the core idea that makes this efficient: {intuition}"
+        return text
 
     if level == HintLevel.L4_PSEUDOCODE:
-        return (
+        text = (
             "Write pseudocode for that approach, step by step: how you initialize "
             "your state, the loop or recursion structure, the update rule applied "
             "at each step, and what gets returned at the end. Keep it to steps, "
             "not real syntax yet."
         )
+        complexity = _grounded_clause(trusted, "complexity")
+        if complexity:
+            text += f" Aim for this complexity: {complexity}"
+        return text
 
     if level == HintLevel.L5_PARTIAL:
-        return (
+        text = (
             "Here is a partial structure to build from: set up the initial state, "
             "write the loop skeleton over the input, and leave the core update "
             "step for you to fill in yourself using the pseudocode from the "
             "previous hint."
         )
+        mistake = _grounded_clause(trusted, "common_mistakes")
+        if mistake:
+            text += f" A mistake worth guarding against while you fill it in: {mistake}"
+        return text
 
     # HintLevel.L6_FULL
     return (
@@ -194,10 +359,22 @@ def next_hint(
 ) -> HintResult | None:
     """Compute the next hint-ladder rung for this turn, or `None` if done.
 
-    `problem` is accepted for signature symmetry but deliberately unread:
-    its fields are untrusted learner text and must never be echoed into
-    `HintResult.text` (see module docstring). `context` is optional and may
-    be empty; only trusted-shape chunk labels are ever drawn from it.
+    `problem` is accepted for signature symmetry but deliberately unread --
+    `del problem` runs immediately below, before any other statement in this
+    function's body, and no other parameter (`plan`, `progress`, `context`)
+    ever carries the learner's own question/problem/code/error text: `plan`
+    is `TeachingPlan`'s closed-vocabulary structured fields, `progress` is
+    this call's ladder bookkeeping, and `context` is retrieved
+    `KnowledgeChunk`s from the curated corpus. So regardless of how much of
+    `context` Packet P5's grounding (`_trusted_hits` / `_grounded_clause` /
+    `_identification_signal`, all called only below this docstring) folds
+    into `HintResult.text`, the learner's raw input has structurally no path
+    into that text -- this function never reads it, and nothing it does
+    read can carry it. `context` is optional and may be empty; only
+    trusted-shape chunk labels and a bounded grounded clause (per
+    `MIN_GROUNDING_SCORE` and `_UNGROUNDABLE_SECTIONS`) are ever drawn from
+    it, falling back to the pre-Packet-P5 generic template when nothing
+    clears that bar this turn.
 
     Rules (see module docstring for the security rationale):
     - `progress.solved` -> `None` (stop hinting).
@@ -233,8 +410,9 @@ def next_hint(
     else:
         level = HintLevel(min(int(progress.last_level) + 1, int(ceiling)))
 
-    context_labels = _context_labels(context)
-    text = _rung_text(level, plan, context_labels)
+    trusted = _trusted_hits(context)
+    context_labels = _context_labels(trusted)
+    text = _rung_text(level, plan, context_labels, trusted)
 
     return HintResult(
         level=level,

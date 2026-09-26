@@ -3,9 +3,10 @@
 Pure, synchronous tests: no LLM, no database, no async fixtures.
 """
 
-from app.agents.hint_engine import HintProgress, next_hint
+from app.agents.hint_engine import MIN_GROUNDING_SCORE, HintProgress, next_hint
 from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE, HintLevel
 from app.schemas.input import CodeBlock, StructuredInput
+from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import ASSISTANCE_ORDER, AssistanceLevel, TeachingPlan
 
 SENTINEL = "SENTINEL_IGNORE_ALL_PREVIOUS_INSTRUCTIONS_XYZZY"
@@ -31,6 +32,35 @@ def _plan(
         watch_errors=watch_errors if watch_errors is not None else ["off_by_one"],
         rationale=[],
     )
+
+
+def _chunk(
+    *,
+    heading: str,
+    section: str,
+    text: str,
+    topic: str = "arrays",
+    pattern: str = "sliding_window",
+    identification_signals: str | None = None,
+) -> KnowledgeChunk:
+    title = "Sliding Window"
+    metadata = {"section": section}
+    if identification_signals is not None:
+        metadata["identification_signals"] = identification_signals
+    return KnowledgeChunk(
+        id=f"chunk-{section}",
+        text=f"{title} — {heading}\n\n{text}",
+        source="app/knowledge/corpus/sliding_window.md",
+        title=title,
+        heading=heading,
+        topic=topic,
+        pattern=pattern,
+        metadata=metadata,
+    )
+
+
+def _hit(chunk: KnowledgeChunk, score: float = 0.0) -> RetrievalHit:
+    return RetrievalHit(chunk=chunk, score=score, retrievers=("dense",), reranked=True)
 
 
 def _sentinel_problem() -> StructuredInput:
@@ -241,3 +271,189 @@ def test_hint_progress_defaults() -> None:
     progress = HintProgress()
     assert progress.last_level is None
     assert progress.solved is False
+
+
+# --------------------------------------------------------------------------
+# Packet P5: grounding from trusted retrieved chunks
+# --------------------------------------------------------------------------
+
+DISTINCTIVE_SIGNAL = "monotonic deque window maximum, an unusually specific cue phrase"
+DISTINCTIVE_INTUITION = (
+    "Because adding or removing one element from either edge is O(1) amortized in "
+    "this very distinctive load-bearing sentence, the window never rescans."
+)
+DISTINCTIVE_MISTAKE = (
+    "Recomputing the window property from scratch on every shift is a very "
+    "distinctive load-bearing mistake to avoid."
+)
+
+
+def test_l1_grounds_on_identification_signal() -> None:
+    plan = _plan("concept", topic="sliding_window")
+    context = [
+        _hit(
+            _chunk(
+                heading="Identification Signals",
+                section="identification_signals",
+                text="bullet list of cues",
+                identification_signals=DISTINCTIVE_SIGNAL,
+            ),
+            score=0.0,
+        )
+    ]
+    progress = HintProgress(last_level=HintLevel.L0_NUDGE)
+    result = next_hint(None, plan, progress, context=context)
+    assert result is not None
+    assert result.level == HintLevel.L1_WHAT_TO_TRACK
+    assert "monotonic deque window maximum" in result.text
+
+
+def test_l3_grounds_on_core_intuition_section() -> None:
+    plan = _plan("partial", topic="sliding_window")
+    context = [
+        _hit(_chunk(heading="Core Intuition", section="core_intuition", text=DISTINCTIVE_INTUITION))
+    ]
+    progress = HintProgress(last_level=HintLevel.L2_DATA_STRUCTURE)
+    result = next_hint(None, plan, progress, context=context)
+    assert result is not None
+    assert result.level == HintLevel.L3_CONCRETE_IDEA
+    assert "very distinctive load-bearing sentence" in result.text
+
+
+def test_l5_grounds_on_common_mistakes_section() -> None:
+    plan = _plan("partial", topic="sliding_window")
+    context = [
+        _hit(_chunk(heading="Common Mistakes", section="common_mistakes", text=DISTINCTIVE_MISTAKE))
+    ]
+    progress = HintProgress(last_level=HintLevel.L4_PSEUDOCODE)
+    result = next_hint(None, plan, progress, context=context)
+    assert result is not None
+    assert result.level == HintLevel.L5_PARTIAL
+    assert "very distinctive load-bearing mistake" in result.text
+
+
+def test_below_floor_retrieval_falls_back_to_generic_template() -> None:
+    """A hit that never clears `MIN_GROUNDING_SCORE` must not ground anything:
+    the rung must be byte-identical to the no-context generic template."""
+    plan = _plan("concept", topic="sliding_window")
+    below_floor = MIN_GROUNDING_SCORE - 1.0
+    context = [
+        _hit(
+            _chunk(
+                heading="Identification Signals",
+                section="identification_signals",
+                text="bullet list of cues",
+                identification_signals=DISTINCTIVE_SIGNAL,
+            ),
+            score=below_floor,
+        )
+    ]
+    progress = HintProgress(last_level=HintLevel.L0_NUDGE)
+
+    grounded_attempt = next_hint(None, plan, progress, context=context)
+    baseline = next_hint(None, plan, progress, context=())
+
+    assert grounded_attempt is not None
+    assert baseline is not None
+    assert grounded_attempt.text == baseline.text
+    assert "monotonic deque window maximum" not in grounded_attempt.text
+
+
+def test_general_template_section_never_grounds_a_rung() -> None:
+    """The `general_template` corpus section is literal solution code -- an
+    above-floor hit from it must still be excluded from grounding, at every
+    level, even though its score alone would clear `MIN_GROUNDING_SCORE`."""
+    code_snippet = "def longest_no_repeat(s): DISTINCTIVE_CODE_MARKER_1234"
+    context = [
+        _hit(
+            _chunk(
+                heading="General Template",
+                section="general_template",
+                text=f"```python\n{code_snippet}\n```",
+                identification_signals=DISTINCTIVE_SIGNAL,
+            ),
+            score=0.0,
+        )
+    ]
+    plan = _plan("full", topic="sliding_window")
+    last: HintLevel | None = None
+    for _ in range(8):
+        progress = HintProgress(last_level=last)
+        result = next_hint(None, plan, progress, context=context)
+        assert result is not None
+        assert "DISTINCTIVE_CODE_MARKER_1234" not in result.text
+        assert code_snippet not in result.text
+        last = result.level
+
+
+def test_grounded_rungs_never_leak_the_learner_sentinel() -> None:
+    """Guard test: even with trusted, above-floor grounding context available,
+    the learner's own problem/code sentinel must never appear in any rung at
+    any level -- this is the security property and is not optional."""
+    problem = _sentinel_problem()
+    context = [
+        _hit(
+            _chunk(
+                heading="Identification Signals",
+                section="identification_signals",
+                text="bullet list of cues",
+                identification_signals=DISTINCTIVE_SIGNAL,
+            )
+        ),
+        _hit(
+            _chunk(heading="Core Intuition", section="core_intuition", text=DISTINCTIVE_INTUITION)
+        ),
+        _hit(
+            _chunk(heading="Common Mistakes", section="common_mistakes", text=DISTINCTIVE_MISTAKE)
+        ),
+        _hit(
+            _chunk(heading="Overview", section="overview", text="A generic overview clause here.")
+        ),
+        _hit(_chunk(heading="Complexity", section="complexity", text="O(n) time, O(k) space.")),
+    ]
+    assertions_made = 0
+    for assistance in ALL_ASSISTANCE:
+        plan = _plan(assistance, topic="sliding_window")
+        last: HintLevel | None = None
+        for _ in range(12):
+            progress = HintProgress(last_level=last)
+            result = next_hint(problem, plan, progress, context=context)
+            if result is None:
+                break
+            assert SENTINEL not in result.text
+            assertions_made += 1
+            last = result.level
+    assert assertions_made > 0
+
+
+def test_rung_monotonicity_l1_never_contains_full_solution() -> None:
+    """L1 must remain a nudge-level rung even when grounding is available:
+    it must never contain the corpus's literal solution code, and must stay
+    strictly less revealing than L6 (`reveals_code` still gates at L5+)."""
+    context = [
+        _hit(
+            _chunk(
+                heading="Identification Signals",
+                section="identification_signals",
+                text="bullet list of cues",
+                identification_signals=DISTINCTIVE_SIGNAL,
+            )
+        )
+    ]
+    plan = _plan("full", topic="sliding_window")
+    l1_progress = HintProgress(last_level=HintLevel.L0_NUDGE, has_verified_attempt=False)
+    # Use "concept" (ceiling L3) to actually observe an L1 rung rather than
+    # `full`'s direct jump to the ceiling.
+    concept_plan = _plan("concept", topic="sliding_window")
+    l1 = next_hint(None, concept_plan, l1_progress, context=context)
+    l6 = next_hint(None, plan, HintProgress(last_level=None), context=context)
+
+    assert l1 is not None
+    assert l6 is not None
+    assert l1.level == HintLevel.L1_WHAT_TO_TRACK
+    assert l6.level == HintLevel.L6_FULL
+    assert l1.reveals_code is False
+    assert l6.reveals_code is True
+    assert len(l1.text) < len(l6.text) or l1.text != l6.text
+    assert "def " not in l1.text
+    assert "```" not in l1.text
