@@ -38,7 +38,7 @@ reason about (see `app.agents.dsa_solver`'s module docstring), never echoed
 into `DSAResult`'s free-text fields.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from typing import Final, TypedDict
@@ -54,6 +54,7 @@ from app.agents.dsa_solver import DSAAnalysis, analyze_dsa_problem, build_execut
 from app.agents.hint_engine import HintProgress, next_hint
 from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
+from app.knowledge.ingest import chunk_corpus, load_corpus
 from app.schemas.agent_results import DSAResult, HintLevel, HintResult
 from app.schemas.execution import (
     ExecutionRequest,
@@ -63,7 +64,7 @@ from app.schemas.execution import (
     Verdict,
 )
 from app.schemas.input import StructuredInput
-from app.schemas.knowledge import RetrievalHit
+from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import TeachingPlan
 
 __all__ = [
@@ -78,18 +79,28 @@ __all__ = [
 class DSAState(TypedDict, total=False):
     """Private scratch state threaded through the DSA solver subgraph only.
 
-    `problem`/`plan`/`context`/`progress` are this run's inputs (set once by
-    `run_dsa` and never rewritten by any node); every other field is a stage
-    output, populated incrementally as the pipeline runs. `analysis` holds
-    the one parsed, level-masked `DSAAnalysis` from `understand`'s single LLM
-    call -- every later content node reads its own field(s) from it rather
-    than calling the LLM again.
+    `problem`/`plan`/`context`/`progress`/`ladder_topic` are this run's inputs
+    (set once by `run_dsa` and never rewritten by any node); every other field
+    is a stage output, populated incrementally as the pipeline runs.
+    `analysis` holds the one parsed, level-masked `DSAAnalysis` from
+    `understand`'s single LLM call -- every later content node reads its own
+    field(s) from it rather than calling the LLM again.
+
+    `ladder_topic` (Packet P5b) is the hint ladder's anchored topic slug for
+    this conversation -- resolved by `app.graph.nodes._hint_topic_key`, the
+    same key that ladder's `HintProgress` is stored under -- used only as
+    `next_hint`'s fallback when `plan.topic` is `None` (a bare follow-up turn
+    that resolved no topic of its own; see `hint_engine.next_hint`'s
+    docstring) and to look up that pattern's own corpus chunks directly for
+    rung grounding (see `_grounding_context`), independent of whatever this
+    turn's own retrieval happened to surface.
     """
 
     problem: StructuredInput | None
     plan: TeachingPlan | None
     context: list[RetrievalHit]
     progress: HintProgress
+    ladder_topic: str | None
 
     hint_level: HintLevel | None
     analysis: DSAAnalysis | None
@@ -113,6 +124,67 @@ _CompiledDSAGraph = CompiledStateGraph[DSAState, GraphContext, DSAState, DSAStat
 
 _DEFAULT_PROGRESS: Final = HintProgress()
 
+#: Score assigned to a corpus chunk fetched directly for the anchored ladder
+#: topic (see `_grounding_context`), comfortably above
+#: `app.agents.hint_engine.MIN_GROUNDING_SCORE`. These chunks are not scored
+#: by any retriever or reranker -- they are looked up by an exact pattern-slug
+#: match, which is strictly more certain than any retrieval score, so a fixed
+#: constant (rather than a borrowed retrieval score) is the honest choice.
+_ANCHOR_HIT_SCORE: Final = 0.0
+
+
+@cache
+def _corpus_chunks_by_pattern() -> Mapping[str, tuple[KnowledgeChunk, ...]]:
+    """Every curated corpus chunk, grouped by its `pattern` slug.
+
+    `pattern` (e.g. `sliding_window`), not `topic` (e.g. `arrays`), is the
+    vocabulary `TeachingPlan.topic` and the hint ladder's anchored topic share
+    -- see `app.agents.planner.analyze_problem`: `topic = chunk.pattern or
+    chunk.topic`. Loaded once per process from the bundled, curated corpus
+    files (`app.knowledge.ingest.load_corpus`/`chunk_corpus` -- pure, no
+    network, no learner input) and cached, mirroring `get_dsa_graph` below.
+    """
+    grouped: dict[str, list[KnowledgeChunk]] = {}
+    for chunk in chunk_corpus(load_corpus()):
+        grouped.setdefault(chunk.pattern, []).append(chunk)
+    return {pattern: tuple(chunks) for pattern, chunks in grouped.items()}
+
+
+def _grounding_context(
+    context: Sequence[RetrievalHit], ladder_topic: str | None
+) -> list[RetrievalHit]:
+    """This turn's retrieved hits, extended with the anchored topic's own
+    corpus chunks -- used only to ground hint-rung text (Packet P5b), never
+    as `analyze_dsa_problem`'s LLM context, which stays exactly this turn's
+    real retrieval, unmodified by this function.
+
+    Packet P5's grounding asks for one specific corpus section per rung tier
+    and takes nothing if that section isn't among the (top-k, this-turn-only)
+    retrieved hits -- a coin flip at best over a ~300-chunk corpus with top-k
+    4, and worse still on a bare follow-up turn whose own retrieval query is
+    thin, topic-agnostic prose ("give me the next hint"). Once the ladder is
+    anchored to a topic at all (see `app.graph.nodes._hint_topic_key`), that
+    topic's own corpus document unambiguously has every section a rung might
+    want, so this appends it as a fallback tier rather than relying on
+    retrieval luck.
+
+    `context`'s real, scored hits are always listed first, so a hit this turn
+    actually retrieved for the wanted section still wins --
+    `hint_engine._chunk_for_section`/`_identification_signal` both return the
+    first match in iteration order. The appended chunks only fill in a
+    section no retrieved hit this turn happened to carry. `_UNGROUNDABLE_SECTIONS`
+    still applies downstream in `hint_engine._trusted_hits` exactly as it does
+    for retrieved hits, so `general_template`/`representative_problems` stay
+    ineligible here too.
+    """
+    extended = list(context)
+    if ladder_topic:
+        for chunk in _corpus_chunks_by_pattern().get(ladder_topic, ()):
+            extended.append(
+                RetrievalHit(chunk=chunk, score=_ANCHOR_HIT_SCORE, retrievers=(), reranked=False)
+            )
+    return extended
+
 
 # --------------------------------------------------------------------------
 # Nodes
@@ -132,7 +204,14 @@ async def _understand(state: DSAState, runtime: Runtime[GraphContext]) -> DSASta
 
     progress = state.get("progress", _DEFAULT_PROGRESS)
     context = state.get("context", [])
-    preview = next_hint(None, plan, progress, context=context)
+    ladder_topic = state.get("ladder_topic")
+    preview = next_hint(
+        None,
+        plan,
+        progress,
+        context=_grounding_context(context, ladder_topic),
+        ladder_topic=ladder_topic,
+    )
     if preview is None:
         return {"hint_level": None, "analysis": None}
 
@@ -216,7 +295,16 @@ async def _hint(state: DSAState, runtime: Runtime[GraphContext]) -> DSAState:
         return {"hint": None}
     progress = state.get("progress", _DEFAULT_PROGRESS)
     context = state.get("context", [])
-    return {"hint": next_hint(None, plan, progress, context=context)}
+    ladder_topic = state.get("ladder_topic")
+    return {
+        "hint": next_hint(
+            None,
+            plan,
+            progress,
+            context=_grounding_context(context, ladder_topic),
+            ladder_topic=ladder_topic,
+        )
+    }
 
 
 # --------------------------------------------------------------------------
@@ -334,6 +422,7 @@ async def run_dsa(
     *,
     progress: HintProgress = _DEFAULT_PROGRESS,
     tests: TestSuite | None = None,
+    ladder_topic: str | None = None,
 ) -> DSARunResult:
     """Run the DSA solver subgraph for this turn and map the result back.
 
@@ -350,12 +439,19 @@ async def run_dsa(
     code is run once against it here to produce `result.initial_verdict`;
     otherwise `initial_verdict` stays `None`, so `DSAResult.to_outcome`
     reports `solved=None` rather than fabricating evidence.
+
+    `ladder_topic` (Packet P5b) is the conversation's anchored hint-ladder
+    topic slug, resolved by `dsa_agent` via `app.graph.nodes._hint_topic_key`
+    -- see `DSAState`'s docstring for what it's used for downstream. Defaults
+    to `None` (a caller that doesn't pass one just gets the pre-Packet-P5b
+    behaviour: `plan.topic` alone, no corpus-direct grounding fallback).
     """
     initial: DSAState = {
         "problem": state.structured_input,
         "plan": state.plan,
         "context": list(state.retrieved_context),
         "progress": progress,
+        "ladder_topic": ladder_topic,
     }
     final_state = await get_dsa_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         initial, context=runtime.context

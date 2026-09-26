@@ -774,6 +774,36 @@ async def resolve_hint_progress(
         return HintProgress()
 
 
+async def _anchored_ladder_topic(state: AgentState, ctx: GraphContext) -> str | None:
+    """This turn's hint-ladder topic, anchored to the conversation's existing
+    ladder when this turn's own `plan.topic` is `None` (Packet P5b).
+
+    Calls `_hint_topic_key` with the exact same arguments `resolve_hint_progress`
+    and `dsa_agent`'s own write already use (`state.plan.topic`,
+    `_topic_is_stable(state.topic_source)`), so this always resolves to the
+    same row -- it just also hands the key back, rather than discarding it
+    after the DB lookup, so `run_dsa` can use it as `next_hint`'s topic
+    fallback (see `app.agents.hint_engine.next_hint`'s docstring).
+
+    Returns `None` when the resolved key is not an actual topic slug --
+    `DEFAULT_HINT_TOPIC` (no topic ever inferred on this conversation, nothing
+    to anchor to) or a problem-statement fingerprint (`_problem_fingerprint`'s
+    `_q...` keys, which key a topic-less problem's ladder by hashed text, not
+    by pattern name) -- since neither is safe to show a learner as "the
+    pattern for this problem".
+    """
+    topic_plan = state.plan.topic if state.plan is not None else None
+    key = await _hint_topic_key(
+        state.structured_input,
+        topic_plan,
+        ctx,
+        topic_is_stable=_topic_is_stable(state.topic_source),
+    )
+    if key == DEFAULT_HINT_TOPIC or key.startswith("_q"):
+        return None
+    return key
+
+
 async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
     """Run the DSA solver subgraph (hint ladder) for this turn.
 
@@ -821,7 +851,8 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
         tests, suite_source = await _resolve_test_suite(state, runtime)
     else:
         tests, suite_source = None, "none"
-    run = await run_dsa(state, runtime, progress=progress, tests=tests)
+    ladder_topic = await _anchored_ladder_topic(state, ctx)
+    run = await run_dsa(state, runtime, progress=progress, tests=tests, ladder_topic=ladder_topic)
     update: AgentStateUpdate = {
         "agent_output": run.result.to_outcome(),
         "agent_result": run.result,

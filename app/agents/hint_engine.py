@@ -256,6 +256,7 @@ def _rung_text(
     plan: TeachingPlan,
     context_labels: Sequence[str],
     trusted: Sequence[RetrievalHit],
+    ladder_topic: str | None = None,
 ) -> str:
     """Compose the guidance-level text for one ladder rung.
 
@@ -265,11 +266,19 @@ def _rung_text(
     learner's raw question/problem/code/error text. When `trusted` is empty,
     every `_grounded_clause`/`_identification_signal` call below returns
     `None` and each rung is byte-identical to its pre-Packet-P5 generic text.
+
+    `ladder_topic` (Packet P5b) is `plan.topic`'s fallback: `plan.topic` is
+    this TURN's topic, which a bare follow-up ("next hint") often resolves to
+    `None` even though the hint ladder itself stayed anchored to the
+    problem's topic (see `app.graph.nodes._hint_topic_key`). Trusted the same
+    way `plan.topic` is -- both are corpus-derived slugs, never learner
+    prose -- and only consulted when `plan.topic` itself is `None`.
     """
     # Two phrasings, because the topic is a *modifier* ("sliding window
     # problem"), not a stand-in for the whole noun phrase. Substituting a
     # fallback noun here produced "this this problem problem".
-    topic = _humanize(plan.topic) if plan.topic else None
+    raw_topic = plan.topic or ladder_topic
+    topic = _humanize(raw_topic) if raw_topic else None
     this_problem = f"this {topic} problem" if topic else "this problem"
     a_problem = f"a {topic} problem" if topic else "this problem"
     watch = ", ".join(plan.watch_errors) if plan.watch_errors else None
@@ -296,7 +305,7 @@ def _rung_text(
         return text
 
     if level == HintLevel.L2_DATA_STRUCTURE:
-        shape = _shape_hint(plan.topic, context_labels)
+        shape = _shape_hint(raw_topic, context_labels)
         text = (
             f"Consider what data structure would let you track that state "
             f"efficiently. For {a_problem}, {shape} is often the right shape "
@@ -356,16 +365,19 @@ def next_hint(
     progress: HintProgress,
     *,
     context: Sequence[RetrievalHit] = (),
+    ladder_topic: str | None = None,
 ) -> HintResult | None:
     """Compute the next hint-ladder rung for this turn, or `None` if done.
 
     `problem` is accepted for signature symmetry but deliberately unread --
     `del problem` runs immediately below, before any other statement in this
-    function's body, and no other parameter (`plan`, `progress`, `context`)
-    ever carries the learner's own question/problem/code/error text: `plan`
-    is `TeachingPlan`'s closed-vocabulary structured fields, `progress` is
-    this call's ladder bookkeeping, and `context` is retrieved
-    `KnowledgeChunk`s from the curated corpus. So regardless of how much of
+    function's body, and no other parameter (`plan`, `progress`, `context`,
+    `ladder_topic`) ever carries the learner's own question/problem/code/error
+    text: `plan` is `TeachingPlan`'s closed-vocabulary structured fields,
+    `progress` is this call's ladder bookkeeping, `context` is retrieved
+    `KnowledgeChunk`s from the curated corpus, and `ladder_topic` (Packet P5b)
+    is a corpus-derived pattern slug (or `None`) -- the same trusted vocabulary
+    as `plan.topic`, never learner prose. So regardless of how much of
     `context` Packet P5's grounding (`_trusted_hits` / `_grounded_clause` /
     `_identification_signal`, all called only below this docstring) folds
     into `HintResult.text`, the learner's raw input has structurally no path
@@ -374,7 +386,11 @@ def next_hint(
     trusted-shape chunk labels and a bounded grounded clause (per
     `MIN_GROUNDING_SCORE` and `_UNGROUNDABLE_SECTIONS`) are ever drawn from
     it, falling back to the pre-Packet-P5 generic template when nothing
-    clears that bar this turn.
+    clears that bar this turn. `ladder_topic` is used only as `_rung_text`'s
+    fallback when `plan.topic` is `None` (see its docstring) -- a bare
+    follow-up turn ("next hint") that would otherwise lose the topic modifier
+    ("this sliding window problem" -> "this problem") and the L2 shape hint's
+    ability to name a specific structure instead of the generic fallback.
 
     Rules (see module docstring for the security rationale):
     - `progress.solved` -> `None` (stop hinting).
@@ -412,7 +428,7 @@ def next_hint(
 
     trusted = _trusted_hits(context)
     context_labels = _context_labels(trusted)
-    text = _rung_text(level, plan, context_labels, trusted)
+    text = _rung_text(level, plan, context_labels, trusted, ladder_topic)
 
     return HintResult(
         level=level,

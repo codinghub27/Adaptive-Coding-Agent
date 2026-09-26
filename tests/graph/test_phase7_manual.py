@@ -25,7 +25,7 @@ from docker.errors import DockerException, ImageNotFound
 from langgraph.runtime import Runtime  # pyright: ignore[reportMissingTypeStubs]
 from pydantic import JsonValue
 
-from app.agents.hint_engine import HintProgress
+from app.agents.hint_engine import HintProgress, next_hint
 from app.config import Settings
 from app.execution.base import canonical
 from app.execution.runner import SandboxRunner, build_sandbox_runner
@@ -209,6 +209,71 @@ async def test_manual_1_dsa_hint_ladder_climbs_one_rung_at_a_time_never_leaking_
     assert "def subarray_sum" in full_run.result.code
     assert full_run.execution_request is not None
     assert full_run.execution_request.code == full_run.result.code
+
+
+async def test_manual_1b_bare_followup_grounds_on_anchored_ladder_topic() -> None:
+    """Packet P5b: a bare follow-up turn ("next hint", no problem statement
+    of its own) resolves `plan.topic=None` and carries no retrieval hits of
+    its own (`state.retrieved_context` stays empty) -- exactly the shape that
+    measured 0/4 grounded rungs before this packet. `run_dsa`'s `ladder_topic`
+    (the conversation's hint-ladder anchor `dsa_agent` resolves via
+    `app.graph.nodes._anchored_ladder_topic`) must still ground every rung
+    from L1 on, fetched directly from the real "Sliding Window" corpus
+    document (`app.graph.subgraphs.dsa._grounding_context`), and must still
+    name the actual pattern rather than degrading to the generic shape hint.
+    """
+    plan = TeachingPlan(
+        difficulty="medium",
+        assistance_level="partial",
+        solution_strategy="socratic_hints",
+        topic=None,
+        skill_level=0.5,
+    )
+    state = AgentState(input=RawInput(text=MARKER), structured_input=None, plan=plan)
+    runtime = Runtime(context=GraphContext(llm=_RoutedLLM(default="{}")))
+
+    texts: dict[HintLevel, str] = {}
+    baselines: dict[HintLevel, str] = {}
+    progress = HintProgress()
+    for _ in range(6):
+        run = await run_dsa(state, runtime, progress=progress, ladder_topic="sliding_window")
+        hint = run.result.hint
+        assert hint is not None
+        texts[hint.level] = hint.text
+        # Same turn, but with neither retrieval nor an anchored topic to draw
+        # on -- the pre-Packet-P5b, ungrounded text this rung would have had.
+        baseline = next_hint(None, plan, progress)
+        assert baseline is not None
+        baselines[hint.level] = baseline.text
+        progress = HintProgress(last_level=hint.level, solved=False)
+
+    assert set(texts) == {
+        HintLevel.L0_NUDGE,
+        HintLevel.L1_WHAT_TO_TRACK,
+        HintLevel.L2_DATA_STRUCTURE,
+        HintLevel.L3_CONCRETE_IDEA,
+        HintLevel.L4_PSEUDOCODE,
+        HintLevel.L5_PARTIAL,
+    }
+    # L0 never grounds (no corpus text at that rung) -- same either way.
+    assert texts[HintLevel.L0_NUDGE] == baselines[HintLevel.L0_NUDGE]
+    # L1: the topic modifier names the anchored pattern, not "this problem".
+    assert "sliding window" in texts[HintLevel.L1_WHAT_TO_TRACK]
+    assert "sliding window" not in baselines[HintLevel.L1_WHAT_TO_TRACK]
+    # L2-L5: each grounded on the anchored topic's own corpus prose
+    # (overview / core_intuition / complexity / common_mistakes) fetched
+    # directly, not the bare template the same turn would get without it.
+    for level in (
+        HintLevel.L2_DATA_STRUCTURE,
+        HintLevel.L3_CONCRETE_IDEA,
+        HintLevel.L4_PSEUDOCODE,
+        HintLevel.L5_PARTIAL,
+    ):
+        assert texts[level] != baselines[level]
+    assert (
+        "a structure that supports fast lookups or ordered access"
+        not in texts[HintLevel.L2_DATA_STRUCTURE]
+    )
 
 
 # --------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 Pure, synchronous tests: no LLM, no database, no async fixtures.
 """
 
-from app.agents.hint_engine import MIN_GROUNDING_SCORE, HintProgress, next_hint
+from app.agents.hint_engine import GENERIC_SHAPE_HINT, MIN_GROUNDING_SCORE, HintProgress, next_hint
 from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE, HintLevel
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
@@ -457,3 +457,50 @@ def test_rung_monotonicity_l1_never_contains_full_solution() -> None:
     assert len(l1.text) < len(l6.text) or l1.text != l6.text
     assert "def " not in l1.text
     assert "```" not in l1.text
+
+
+# --------------------------------------------------------------------------
+# Packet P5b: `ladder_topic` fallback when `plan.topic` is `None`
+# --------------------------------------------------------------------------
+
+
+def test_l1_uses_ladder_topic_when_plan_topic_is_none() -> None:
+    """A bare follow-up turn ("next hint") resolves `plan.topic=None`, but the
+    hint ladder itself stays anchored to the problem's topic (see
+    `app.graph.nodes._hint_topic_key`) -- `next_hint`'s `ladder_topic` param
+    is that anchor. Without it, the rung degrades to "this problem" instead
+    of naming the actual pattern."""
+    plan = _plan("hint", topic=None)
+    progress = HintProgress(last_level=HintLevel.L0_NUDGE)
+
+    generic = next_hint(None, plan, progress)
+    anchored = next_hint(None, plan, progress, ladder_topic="sliding_window")
+
+    assert generic is not None
+    assert anchored is not None
+    assert generic.level == HintLevel.L1_WHAT_TO_TRACK
+    assert anchored.level == HintLevel.L1_WHAT_TO_TRACK
+    assert "this problem" in generic.text
+    assert "sliding window" not in generic.text
+    assert "this sliding window problem" in anchored.text
+
+
+def test_l2_shape_hint_uses_ladder_topic_when_plan_topic_is_none() -> None:
+    """Same fallback, exercised at L2 -- `_shape_hint` also reads the
+    (`plan.topic` or `ladder_topic`) fallback, not `plan.topic` alone, so a
+    topic-less follow-up still gets a real shape label instead of
+    `GENERIC_SHAPE_HINT`."""
+    plan = _plan("partial", topic=None)
+    context = [_hit(_chunk(heading="Overview", section="overview", text="Overview prose."))]
+    progress = HintProgress(last_level=HintLevel.L1_WHAT_TO_TRACK)
+
+    generic = next_hint(None, plan, progress, context=context)
+    anchored = next_hint(None, plan, progress, context=context, ladder_topic="two_pointers")
+
+    assert generic is not None
+    assert anchored is not None
+    assert generic.level == HintLevel.L2_DATA_STRUCTURE
+    assert anchored.level == HintLevel.L2_DATA_STRUCTURE
+    assert GENERIC_SHAPE_HINT in generic.text
+    assert GENERIC_SHAPE_HINT not in anchored.text
+    assert "two pointers" in anchored.text
