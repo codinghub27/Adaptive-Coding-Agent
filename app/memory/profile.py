@@ -13,7 +13,17 @@ moving average (EWMA) of a per-event outcome score in `[0, 1]`:
     new = (1 - ALPHA) * old + ALPHA * outcome_score(event)
 
 with an unseen key starting from `PRIOR` instead of 0, so a single event
-doesn't swing a fresh skill to an extreme. This EWMA update only applies when
+doesn't swing a fresh skill to an extreme.
+
+`ALPHA` was 0.2 until it was calibrated against the evaluation harness. At 0.2
+a learner needed two verified failures or three verified successes on ONE topic
+before `difficulty_for` returned anything new, so the numbers moved while the
+teaching did not -- adaptive in the data, invisible to the learner. At 0.3,
+paired with the thresholds in `app.agents.planner`, one verified failure drops
+the topic to `easy` (0.5 -> 0.38) and two verified successes raise it to `hard`
+(0.5 -> 0.65 -> 0.755). Recovery is symmetric and quick: one success from 0.38
+returns 0.566. Raising it further (0.35) made a single turn swing two buckets,
+which is jumpy on evidence this sparse. This EWMA update only applies when
 an event carries an observed outcome (`event.solved is not None`); see
 `apply_event` for the "topic encountered, outcome unknown" case.
 
@@ -53,7 +63,7 @@ __all__ = [
     "to_view",
 ]
 
-ALPHA: Final = 0.2
+ALPHA: Final = 0.3
 PRIOR: Final = 0.5
 MIN_SOLVED_SCORE: Final = 0.4
 HINT_PENALTY: Final = 0.15

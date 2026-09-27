@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.memory.events import INTENT_TO_HELP
 from app.memory.profile import (
     PRIOR,
+    UNSOLVED_SCORE,
     apply_event,
     common_errors_list,
     outcome_score,
@@ -32,7 +33,7 @@ def _event(**overrides: object) -> LearningEventCreate:
 
 
 def test_smooth_basic_ewma_step() -> None:
-    assert smooth(0.5, 1.0) == 0.6
+    assert smooth(0.5, 1.0) == 0.65  # ALPHA 0.3, recalibrated
 
 
 def test_smooth_clamps_above_one() -> None:
@@ -141,13 +142,13 @@ def test_apply_event_solved_true_regression() -> None:
     # change to `outcome_score`/`smooth` is a deliberate, visible decision.
     event = _event(topic="arrays", solved=True, hints_used=0)
     skills, _errors = apply_event({"arrays": 0.5}, {}, event)
-    assert skills == {"arrays": 0.6}
+    assert skills == {"arrays": 0.65}
 
 
 def test_apply_event_solved_false_regression() -> None:
     event = _event(topic="arrays", solved=False)
     skills, _errors = apply_event({"arrays": 0.5}, {}, event)
-    assert skills == {"arrays": pytest.approx(0.42)}
+    assert skills == {"arrays": pytest.approx(0.38)}
 
 
 # ---------------------------------------------------------------------------
@@ -306,3 +307,30 @@ def test_pattern_blank_after_slug_becomes_none() -> None:
 def test_concepts_stripped_and_empty_dropped() -> None:
     event = LearningEventCreate.model_validate({**EVENT_PAYLOAD, "concepts": [" a ", "  "]})
     assert event.concepts == ["a"]
+
+
+def test_calibrated_trajectory_changes_the_teaching_not_just_the_number() -> None:
+    """The calibration contract: evidence must reach the learner quickly.
+
+    At ALPHA 0.2 a topic needed two verified failures or three verified
+    successes before `difficulty_for` returned anything new, so a learner saw
+    no change on the turn their evidence arrived. This pins the trajectory that
+    fixed it -- one failure reaches "easy", two successes reach "hard" -- so a
+    future tweak to ALPHA or the thresholds cannot silently undo it.
+    """
+    from app.agents.planner import difficulty_for
+
+    assert difficulty_for(PRIOR) == "medium"
+
+    failed_once = smooth(PRIOR, UNSOLVED_SCORE)
+    assert failed_once == 0.38
+    assert difficulty_for(failed_once) == "easy"
+
+    # Recovery is symmetric and quick: one success climbs back out of "easy".
+    assert difficulty_for(smooth(failed_once, 1.0)) == "medium"
+
+    first = smooth(PRIOR, 1.0)
+    second = smooth(first, 1.0)
+    assert (first, second) == (0.65, 0.755)
+    assert difficulty_for(first) == "medium"
+    assert difficulty_for(second) == "hard"

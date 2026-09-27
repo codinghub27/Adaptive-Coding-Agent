@@ -43,7 +43,8 @@ async def test_manual_1_solved_sliding_window_increases_skill_and_is_idempotent(
 
     profile = await get_profile(db_session, user_id)
     print(f"[Manual 1] skill_levels after first record: {profile.skill_levels}")
-    assert profile.skill_levels == {"arrays": 0.6, "sliding_window": 0.6}
+    # ALPHA 0.3: one solved event takes an unseen key 0.5 -> 0.65.
+    assert profile.skill_levels == {"arrays": 0.65, "sliding_window": 0.65}
 
     # Resubmit the exact same event object.
     result2 = await record_event(db_session, user_id, event)
@@ -54,7 +55,7 @@ async def test_manual_1_solved_sliding_window_increases_skill_and_is_idempotent(
 
     profile_after_second = await get_profile(db_session, user_id)
     print(f"[Manual 1] skill_levels after resubmit: {profile_after_second.skill_levels}")
-    assert profile_after_second.skill_levels == {"arrays": 0.6, "sliding_window": 0.6}
+    assert profile_after_second.skill_levels == {"arrays": 0.65, "sliding_window": 0.65}
 
     events_after_second = await list_events(db_session, user_id)
     assert len(events_after_second) == 1
@@ -138,7 +139,7 @@ async def test_rebuild_profile_mixed_outcomes_matches_incremental(
 
     incremental = await get_profile(db_session, user_id)
     assert incremental.skill_levels["arrays"] > 0.5
-    assert incremental.skill_levels["dp"] == pytest.approx(0.42)
+    assert incremental.skill_levels["dp"] == pytest.approx(0.38)  # ALPHA 0.3
 
     # Corrupt the projection so a real rebuild is exercised.
     profile_row = await ensure_profile(db_session, user_id, for_update=True)

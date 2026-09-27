@@ -59,9 +59,9 @@ __all__ = [
 #: the raw `ProblemAnalysis` in scope.
 TopicSource = Literal["hint", "profile_match", "retrieval", "unknown"]
 
-WEAK_SKILL: Final = 0.4
+WEAK_SKILL: Final = 0.42
 STRONG_SKILL: Final = 0.75
-HARD_SKILL: Final = 0.7
+HARD_SKILL: Final = 0.68
 MAX_INITIAL_ASSISTANCE: Final[AssistanceLevel] = "partial"
 
 INTENT_DEFAULTS: Final[Mapping[Intent, tuple[AssistanceLevel, SolutionStrategy]]] = (
