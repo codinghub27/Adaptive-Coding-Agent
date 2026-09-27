@@ -179,7 +179,19 @@ def _render_debug(
             sections.append(section)
 
     if result.bug_explanation:
-        section = _section("bug_explanation", result.bug_explanation)
+        # An explanation produced without a sandbox-proven failure is a careful
+        # reading of the code, not a verified diagnosis, and must say so --
+        # overclaiming here is exactly what the "never trust an LLM's claim of
+        # correctness" rule exists to prevent.
+        body = result.bug_explanation
+        if result.initial_verdict is None or result.initial_verdict.status != "fail":
+            body = (
+                body
+                + "\n\n_Not verified by running your code -- no test cases could be"
+                + " derived for this problem, so treat this as a careful reading"
+                + " rather than proof._"
+            )
+        section = _section("bug_explanation", body)
         if section is not None:
             sections.append(section)
 
@@ -188,10 +200,26 @@ def _render_debug(
         if patch_section is not None:
             sections.append(patch_section)
 
-    verdict_for_render = result.final_verdict if result.final_verdict is not None else verification
+    # The learner asked about THEIR code, so this section reports the verdict on
+    # what they submitted (`initial_verdict`), not `final_verdict` -- which is
+    # the verdict after the debugger patched it and therefore reads "passes"
+    # exactly when their code was broken and got fixed. Rendering that as "the
+    # sandbox found" told learners their failing code passed. The fix's own
+    # verdict is reported separately, and only when a fix was actually proven.
+    verdict_for_render = (
+        result.initial_verdict if result.initial_verdict is not None else verification
+    )
     verdict_section = _section("verification", render_verdict(verdict_for_render))
     if verdict_section is not None:
         sections.append(verdict_section)
+
+    if result.fixed and result.final_verdict is not None:
+        fix_section = _section(
+            "verification",
+            f"A fix was found and verified in the sandbox: {result.final_verdict.summary}.",
+        )
+        if fix_section is not None:
+            sections.append(fix_section)
 
     return sections, _debug_next_steps(result)
 

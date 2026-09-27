@@ -196,11 +196,29 @@ async def _localize(state: DebugState, runtime: Runtime[GraphContext]) -> DebugS
 
 
 async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugState:
-    """LLM call #2 (only when a failure is established): explain why it happens."""
-    if not state.get("has_established_failure", False):
-        return {"bug_explanation": None}
+    """LLM call #2: explain why the bug happens.
+
+    Deliberately NOT gated on `has_established_failure`. That flag means "the
+    sandbox proved a failure", and it is false whenever no test suite could be
+    derived -- which is the common shape of a real debug turn: a pasted function
+    with no worked examples, where synthesis was unavailable or came back empty.
+    Gating the explanation on it meant a learner who pasted broken code and
+    asked "find the error" got their own approach restated and "no code was
+    executed", and no diagnosis at all. That is the single worst failure the
+    debug route had.
+
+    Explaining is not claiming correctness, so the project's verification
+    invariant is intact: `_patch` below is still gated on a sandbox-proven
+    failure, `fixed` still comes only from `verify_final`, and
+    `DebugResult.to_outcome` still derives `solved` from `initial_verdict`, so
+    an unverified diagnosis moves no skill. `app.response.generate` marks the
+    explanation as unverified when no verdict backs it.
+    """
     problem = state.get("problem")
     if problem is None:
+        return {"bug_explanation": None}
+    if not state.get("code"):
+        # Nothing to read: without code there is no bug to describe.
         return {"bug_explanation": None}
     explanation = await explain_bug(
         problem,
