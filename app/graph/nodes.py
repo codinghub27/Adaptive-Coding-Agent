@@ -68,7 +68,7 @@ from app.llm.base import LLMError
 from app.memory.conversation import add_turn, get_recent_context
 from app.memory.events import record_event, requested_help_for
 from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress, save_hint_progress
-from app.memory.profile import PRIOR, get_profile
+from app.memory.profile import PRIOR, apply_event, get_profile
 from app.response.format import SAFE_FALLBACK_RESPONSE
 from app.response.generate import generate_response
 from app.schemas.agent_results import HintLevel
@@ -1403,6 +1403,33 @@ async def _persist_turns(state: AgentState, ctx: GraphContext) -> NodeError | No
     return None
 
 
+def _skill_deltas(
+    profile: LearnerProfileView | None, event: LearningEventCreate
+) -> dict[str, float]:
+    """How far this turn moved each skill it touched.
+
+    Computed with `apply_event` -- the same pure projection `record_event` uses
+    -- against the profile as it was at the START of this turn, so the numbers
+    here are exactly what was written, not an estimate. Only non-zero moves are
+    returned: an exposure event creates a key at `PRIOR` without moving it, and
+    reporting "trees +0.0" as an adaptation would be noise dressed as feedback.
+
+    The frontend renders these; it never derives them. The learner model has one
+    owner, and it is the server.
+    """
+    before = dict(profile.skill_levels) if profile is not None else {}
+    after, _errors = apply_event(before, {}, event)
+    deltas: dict[str, float] = {}
+    for key, new_value in after.items():
+        # An unseen key starts from `PRIOR`, not from its own new value --
+        # comparing it against itself reported no movement at all for the very
+        # first outcome on a topic, which is the one a learner most wants to see.
+        moved = round(new_value - before.get(key, PRIOR), 6)
+        if moved:
+            deltas[key] = moved
+    return deltas
+
+
 async def update_learner_model(
     state: AgentState, runtime: Runtime[GraphContext]
 ) -> AgentStateUpdate:
@@ -1422,6 +1449,7 @@ async def update_learner_model(
     events: list[LearningEventCreate] = []
     events_persisted: list[UUID] = []
     errors: list[NodeError] = []
+    skill_deltas: dict[str, float] = {}
 
     agent_output = state.agent_output
     if (
@@ -1452,6 +1480,7 @@ async def update_learner_model(
                 persisted_id, event_error = await _persist_event(ctx, event)
                 if persisted_id is not None:
                     events_persisted.append(persisted_id)
+                    skill_deltas = _skill_deltas(state.profile, event)
                 if event_error is not None:
                     errors.append(event_error)
 
@@ -1467,6 +1496,8 @@ async def update_learner_model(
         update["events_persisted"] = events_persisted
     if errors:
         update["errors"] = errors
+    if skill_deltas:
+        update["skill_deltas"] = skill_deltas
     return update
 
 

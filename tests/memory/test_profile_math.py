@@ -334,3 +334,13 @@ def test_calibrated_trajectory_changes_the_teaching_not_just_the_number() -> Non
     assert (first, second) == (0.65, 0.755)
     assert difficulty_for(first) == "medium"
     assert difficulty_for(second) == "hard"
+
+
+def test_suggested_focus_is_weakest_first_and_stable() -> None:
+    from app.memory.profile import suggested_focus
+
+    skills = {"hashing": 0.65, "bfs": 0.38, "trees": 0.5, "dp_1d": 0.38}
+    # Weakest first; ties break alphabetically so the order does not wobble
+    # between requests.
+    assert suggested_focus(skills) == ["bfs", "dp_1d", "trees"]
+    assert suggested_focus({}) == []

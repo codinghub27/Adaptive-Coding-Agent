@@ -148,6 +148,24 @@ def common_errors_list(counts: Mapping[str, int], top_n: int = COMMON_ERRORS_TOP
     return [tag for tag, _count in ordered[:top_n]]
 
 
+SUGGESTED_FOCUS_TOP_N: Final = 3
+
+
+def suggested_focus(
+    skill_levels: Mapping[str, float], top_n: int = SUGGESTED_FOCUS_TOP_N
+) -> list[str]:
+    """The topics worth working on next, weakest first.
+
+    Just the lowest-scoring keys the learner has actually been exposed to --
+    deliberately not a recommendation engine. A topic sitting at `PRIOR` is
+    included: it means the topic was encountered and never demonstrated, which
+    is exactly as worth revisiting as one that was failed. Ties break
+    alphabetically so the order is stable between requests.
+    """
+    ordered = sorted(skill_levels.items(), key=lambda item: (item[1], item[0]))
+    return [topic for topic, _level in ordered[:top_n]]
+
+
 def to_view(profile: LearnerProfile) -> LearnerProfileView:
     """Convert a `LearnerProfile` ORM row to its read view."""
     return LearnerProfileView(
@@ -155,6 +173,7 @@ def to_view(profile: LearnerProfile) -> LearnerProfileView:
         skill_levels=profile.skill_levels,
         learning_preferences=profile.learning_preferences,
         common_errors=common_errors_list(profile.common_errors),
+        suggested_focus=suggested_focus(profile.skill_levels),
     )
 
 

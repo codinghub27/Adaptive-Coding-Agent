@@ -96,11 +96,35 @@ export function messageMarkup(message) {
       ${workMarkup(message.work || [])}
       ${conceptMarkup(message.concept)}
       <div class="agent-content">${renderMarkdown(message.content)}</div>
+      ${skillDeltaMarkup(message.skillDeltas)}
       ${hintMarkup(message.hint, message.id, message.topic)}
       ${questionMarkup(message.question)}
       ${actionsMarkup()}
     </div>
   </article>`;
+}
+
+/**
+ * Render this turn's skill movement, e.g. "hashing +0.15".
+ *
+ * The values come straight from the server's `skill_deltas`; nothing here
+ * computes or infers a learner model. An empty object renders nothing, which is
+ * the common case: exposure creates a skill key without moving it, and a turn
+ * with no verified outcome must not claim progress.
+ */
+function skillDeltaMarkup(deltas = {}) {
+  const entries = Object.entries(deltas);
+  if (!entries.length) return "";
+  const chips = entries
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .map(([topic, delta]) => {
+      const up = delta > 0;
+      const sign = up ? "+" : "−";
+      const value = Math.abs(delta).toFixed(2);
+      return `<span class="skill-delta ${up ? "up" : "down"}">${escapeHtml(topic)} ${sign}${value}</span>`;
+    })
+    .join("");
+  return `<div class="skill-deltas" aria-label="How this turn changed your skill levels">${chips}</div>`;
 }
 
 export function renderMessages(container, messages) {
@@ -314,9 +338,14 @@ export function renderProfile(profile) {
   if (heroTitle) heroTitle.textContent = fluencyBand(overall);
   const heroNote = document.querySelector(".profile-panel .profile-hero p");
   if (heroNote) {
-    heroNote.textContent = skills.length
-      ? `${skills.length} skill${skills.length === 1 ? "" : "s"} tracked`
-      : "No skills tracked yet";
+    // `suggested_focus` is the server's call on what to work on next (weakest
+    // first); the panel shows it rather than ranking anything itself.
+    const focus = profile?.suggested_focus || [];
+    heroNote.textContent = focus.length
+      ? `Work on next: ${focus.join(", ")}`
+      : skills.length
+        ? `${skills.length} skill${skills.length === 1 ? "" : "s"} tracked`
+        : "No skills tracked yet";
   }
   const topbarRing = document.querySelector(".profile-ring");
   if (topbarRing) topbarRing.textContent = String(overall);

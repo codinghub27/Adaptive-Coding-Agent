@@ -59,3 +59,28 @@
 .profile-identity small{color:var(--text-3);font-size:10px}
 .profile-modal .profile-section:first-of-type{margin-top:18px}
 .skill-empty{color:var(--text-3);font-size:10px;margin:0}
+
+/* Skill movement for one turn, rendered from the server's `skill_deltas`. */
+.skill-deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 2px;
+}
+.skill-delta {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.skill-delta.up {
+  color: #0f7b52;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.skill-delta.down {
+  color: #a33a3a;
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+}

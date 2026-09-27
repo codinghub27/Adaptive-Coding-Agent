@@ -24,6 +24,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.deps import get_current_user
@@ -75,6 +76,9 @@ class ChatResponse(APIModel):
     verification: Verdict | None
     events: list[LearningEventCreate]
     events_persisted: list[UUID]
+    #: Per-topic skill change this turn produced, for the UI to surface.
+    #: Computed server-side; the frontend renders it and never derives it.
+    skill_deltas: dict[str, float] = Field(default_factory=dict[str, float])
     errors: list[NodeError]
     llm_calls: int
     generated: GeneratedResponse | None
@@ -193,6 +197,7 @@ def _to_chat_response(result: GraphRunResult, conversation_id: UUID | None) -> C
         llm_calls=result.llm_calls,
         generated=state.generated_response,
         conversation_id=conversation_id,
+        skill_deltas=dict(result.state.skill_deltas),
     )
 
 

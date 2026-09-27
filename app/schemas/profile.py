@@ -5,7 +5,7 @@ The store assembles this view from the `LearnerProfile` row (converting the
 module only defines the shape and validates it.
 """
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 from app.schemas.base import APIModel
 
@@ -19,6 +19,10 @@ class LearnerProfileView(APIModel):
     skill_levels: dict[str, float]
     learning_preferences: dict[str, bool]
     common_errors: list[str]
+    #: Topics to work on next, weakest first -- derived server-side by
+    #: `app.memory.profile.suggested_focus`. The frontend renders this; it never
+    #: computes the learner model itself.
+    suggested_focus: list[str] = Field(default_factory=list[str])
 
     @field_validator("skill_levels")
     @classmethod

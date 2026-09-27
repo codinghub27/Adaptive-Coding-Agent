@@ -836,3 +836,36 @@ def test_trusted_labels_ignores_hits_below_the_relevance_floor() -> None:
 
 def test_trusted_labels_is_empty_without_context() -> None:
     assert _trusted_labels([]) == frozenset()
+
+
+def test_skill_deltas_report_the_first_outcome_on_a_new_topic() -> None:
+    """A brand-new skill must report its movement from `PRIOR`.
+
+    The first version compared an unseen key against its own new value and so
+    reported nothing at all for the very first outcome on a topic -- the one
+    moment a learner most wants to see feedback. Caught live, not by the suite.
+    """
+    from app.graph.nodes import (
+        _skill_deltas,  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+    )
+    from app.memory.profile import PRIOR  # noqa: PLC0415
+    from app.schemas.profile import LearnerProfileView  # noqa: PLC0415
+
+    # hints_used=1 costs HINT_PENALTY, so the outcome is 0.85 rather than 1.0:
+    # 0.5 -> 0.605 at ALPHA 0.3, a +0.105 move.
+    event = LearningEventCreate(topic="hashing", solved=True, hints_used=1)
+    assert _skill_deltas(LearnerProfileView.empty(), event) == {"hashing": pytest.approx(0.105)}
+
+    # Unaided, the same outcome is worth the full +0.15.
+    unaided = LearningEventCreate(topic="hashing", solved=True, hints_used=0)
+    assert _skill_deltas(LearnerProfileView.empty(), unaided) == {"hashing": pytest.approx(0.15)}
+
+    # Exposure creates the key at PRIOR without moving it, so there is no delta
+    # to report and none is invented.
+    exposure = LearningEventCreate(topic="trees", solved=None)
+    assert _skill_deltas(LearnerProfileView.empty(), exposure) == {}
+
+    known = LearnerProfileView(
+        skill_levels={"hashing": PRIOR}, learning_preferences={}, common_errors=[]
+    )
+    assert _skill_deltas(known, event) == {"hashing": pytest.approx(0.105)}

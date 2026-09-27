@@ -105,6 +105,8 @@ function buildMessage(payload, steps) {
     route: payload.route,
     topic: payload.plan?.topic || null,
     conversationId: payload.conversation_id,
+    // Computed by the server; the UI only renders it (see app/graph/api.py).
+    skillDeltas: payload.skill_deltas || {},
     adapted: true,
   };
 }

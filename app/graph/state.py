@@ -125,6 +125,10 @@ class AgentState(BaseModel):
     structured_input: StructuredInput | None = None
     intent: IntentResult | None = None
     profile: LearnerProfileView | None = None
+    #: Per-topic skill change this turn produced, keyed by skill map key.
+    #: Empty whenever no event was recorded or the event carried no outcome
+    #: -- exposure creates a key without moving it, so it has no delta.
+    skill_deltas: dict[str, float] = Field(default_factory=dict[str, float])
     recent_context: list[MessageView] = Field(default_factory=list[MessageView])
     plan: TeachingPlan | None = None
     topic_source: TopicSource | None = None
@@ -152,6 +156,7 @@ class AgentStateUpdate(TypedDict, total=False):
     structured_input: StructuredInput | None
     intent: IntentResult | None
     profile: LearnerProfileView | None
+    skill_deltas: dict[str, float]
     recent_context: list[MessageView]
     plan: TeachingPlan | None
     topic_source: TopicSource | None
