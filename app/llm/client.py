@@ -60,6 +60,26 @@ _ALLOWED_TRACE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "user_id",
         "conversation_id",
         "max_llm_calls",
+        # Control-flow values from our own schemas. All enum-ish, numeric or
+        # boolean -- none can hold learner prose. Keys that CAN (text,
+        # question, problem, code, error, response, summary, title) are
+        # deliberately absent, so they surface as `<str:N>` placeholders.
+        "assistance_level",
+        "cases_passed",
+        "cases_total",
+        "category",
+        "confidence",
+        "difficulty",
+        "fixed",
+        "hint_level",
+        "hint_ceiling",
+        "reveals_code",
+        "solution_strategy",
+        "solved",
+        "source",
+        "status",
+        "suite_source",
+        "topic_source",
         # `_trace_outputs`
         "route",
         "intent",
@@ -87,6 +107,65 @@ def _is_safe_trace_scalar(value: object) -> bool:
     return False
 
 
+_MAX_TRACE_DEPTH: Final = 3
+_MAX_TRACE_KEYS: Final = 24
+
+
+def _shape_of(value: object, depth: int) -> object:
+    """A structural placeholder for one value: its kind and size, never its content."""
+    if isinstance(value, dict):
+        nested = cast("dict[str, object]", value)
+        if depth < _MAX_TRACE_DEPTH:
+            return _summarize_trace_payload(nested, depth=depth + 1)
+        return f"<dict:{len(nested)}>"
+    if isinstance(value, (list, tuple)):
+        seq = cast("list[object] | tuple[object, ...]", value)
+        return f"<list:{len(seq)}>"
+    if isinstance(value, str):
+        return f"<str:{len(value)}>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump) and depth < _MAX_TRACE_DEPTH:
+        # A Pydantic model (AgentState, TeachingPlan, Verdict, ...) is the most
+        # informative thing in a node payload: it carries the decisions. Its
+        # FIELDS go through the same allow-list as any other dict, so
+        # `plan.topic` survives while `structured_input.question` does not.
+        try:
+            fields = cast("dict[str, object]", dump())
+        except Exception:  # noqa: BLE001 - a trace must never break the turn
+            return f"<{type(value).__name__}>"
+        return _summarize_trace_payload(fields, depth=depth + 1)
+    return f"<{type(value).__name__}>"
+
+
+def _summarize_trace_payload(items: dict[str, object], *, depth: int = 0) -> dict[str, object]:
+    """Describe a payload's SHAPE, keeping only allow-listed control-flow values.
+
+    Blanket redaction was safe and useless: every node run in LangSmith read
+    `{"redacted": true, "key_count": 1}`, so the trace showed the tree and
+    nothing about what happened in it. This keeps the same guarantee -- no
+    learner text ever leaves the process -- while making a trace readable
+    again. An allow-listed key whose value is a short scalar (`route`,
+    `intent`, `topic`, `verification_status`, ...) passes through as itself;
+    everything else becomes a placeholder naming its type and size, so
+    `question` shows as `<str:412>` and never its characters.
+
+    Key NAMES are structural: they come from our own schemas, not from
+    anything a learner typed.
+    """
+    summary: dict[str, object] = {}
+    for index, (key, value) in enumerate(items.items()):
+        if index >= _MAX_TRACE_KEYS:
+            summary["..."] = f"<{len(items) - _MAX_TRACE_KEYS} more>"
+            break
+        if key in _ALLOWED_TRACE_METADATA_KEYS and _is_safe_trace_scalar(value):
+            summary[key] = value
+        else:
+            summary[key] = _shape_of(value, depth)
+    return summary
+
+
 def redact_trace_payload(payload: object) -> dict[str, object]:
     """Redact one LangSmith run's `inputs`/`outputs` before they ever leave the process.
 
@@ -111,15 +190,15 @@ def redact_trace_payload(payload: object) -> dict[str, object]:
     nothing about what was redacted: never a value, and never even an
     original key name outside the allow-list.
     """
-    if isinstance(payload, dict):
-        items = cast("dict[str, object]", payload)
-        if items and all(
-            key in _ALLOWED_TRACE_METADATA_KEYS and _is_safe_trace_scalar(value)
-            for key, value in items.items()
-        ):
-            return items
-        return {"redacted": True, "key_count": len(items)}
-    return {"redacted": True, "key_count": 0}
+    if not isinstance(payload, dict):
+        return {"redacted": True, "key_count": 0}
+    items = cast("dict[str, object]", payload)
+    if items and all(
+        key in _ALLOWED_TRACE_METADATA_KEYS and _is_safe_trace_scalar(value)
+        for key, value in items.items()
+    ):
+        return items
+    return _summarize_trace_payload(items, depth=0)
 
 
 class Tracer:

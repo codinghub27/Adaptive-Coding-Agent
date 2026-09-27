@@ -595,7 +595,12 @@ _SENTINEL = "zzqxflarp_leak_sentinel_do_not_transmit"
 def test_realistic_node_payload_is_redacted_and_sentinel_is_gone() -> None:
     """A shape like what LangGraph would hand `hide_inputs` for the
     `understand_input` node -- nested, and carrying the learner's raw text --
-    must come back as a bare marker with the sentinel nowhere in it."""
+    must come back with its SHAPE intact and the sentinel nowhere in it.
+
+    Updated when blanket redaction was replaced by shape-preserving redaction:
+    a trace where every node read `{"redacted": true, "key_count": 1}` was safe
+    and useless. Key names are structural (they come from our own schemas);
+    values that could carry learner prose become type+size placeholders."""
     node_payload = {
         "input": {
             "text": f"please help me fix this: {_SENTINEL}",
@@ -607,7 +612,12 @@ def test_realistic_node_payload_is_redacted_and_sentinel_is_gone() -> None:
 
     result = redact_trace_payload(node_payload)
 
-    assert result == {"redacted": True, "key_count": 2}
+    shown = f"<str:{len(f'please help me fix this: {_SENTINEL}')}>"
+    assert result == {
+        "input": {"text": shown, "language": "python", "image": None},
+        "normalized": {"text": shown, "language": "python"},
+    }
+    # The security property is unchanged and is what actually matters here.
     assert _SENTINEL not in str(result)
 
 
@@ -635,7 +645,8 @@ def test_allow_listed_keys_with_an_overlong_string_value_are_redacted() -> None:
 
     result = redact_trace_payload(payload)
 
-    assert result == {"redacted": True, "key_count": 2}
+    # The oversized value is replaced; the safe one beside it still passes.
+    assert result == {"route": "<str:65>", "llm_calls": 1}
 
 
 def test_allow_listed_keys_with_a_max_length_string_value_pass_through() -> None:
@@ -647,7 +658,9 @@ def test_allow_listed_keys_with_a_max_length_string_value_pass_through() -> None
 
 def test_non_dict_empty_dict_and_none_payloads_do_not_raise() -> None:
     assert redact_trace_payload(None) == {"redacted": True, "key_count": 0}
-    assert redact_trace_payload({}) == {"redacted": True, "key_count": 0}
+    # An empty payload now summarises to an empty payload -- there is nothing
+    # to hide and a marker would be noise.
+    assert redact_trace_payload({}) == {}
     assert redact_trace_payload("not a dict") == {"redacted": True, "key_count": 0}
     assert redact_trace_payload(["also", "not", "a", "dict"]) == {
         "redacted": True,
