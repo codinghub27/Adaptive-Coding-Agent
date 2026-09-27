@@ -7,8 +7,10 @@ from app.schemas import Intent, IntentResult, StructuredInput
 from app.schemas.intent import LOW_CONFIDENCE_THRESHOLD
 
 
-def test_intent_has_exactly_eleven_members() -> None:
-    assert len(Intent) == 11
+def test_intent_has_exactly_twelve_members() -> None:
+    # Was eleven until P4 added PRACTICE_REQUEST, which gave asking to be
+    # handed a practice problem its own intent and route.
+    assert len(Intent) == 12
 
 
 def test_intent_result_rejects_confidence_above_one() -> None:

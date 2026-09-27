@@ -29,6 +29,7 @@ STAGE_LABELS: Final[Mapping[str, str]] = MappingProxyType(
         "dsa_agent": "Working through the problem",
         "debug_agent": "Debugging your code",
         "explain_agent": "Reading your code",
+        "practice_agent": "Picking a problem for you",
         "clarify": "Asking for a bit more",
         "execute_code": "Running your code in the sandbox",
         "verify": "Checking the results",

@@ -95,6 +95,7 @@ _EXPECTED_ROUTE: dict[Intent, RouteKey] = {
     Intent.IMAGE_CODE_ANALYSIS: "explain",
     Intent.CODE_REVIEW: "explain",
     Intent.OPTIMIZATION: "explain",
+    Intent.PRACTICE_REQUEST: "practice",
 }
 
 

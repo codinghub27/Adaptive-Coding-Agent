@@ -51,6 +51,7 @@ INTENT_TO_HELP: Final[Mapping[Intent, RequestedHelp]] = MappingProxyType(
         Intent.OPTIMIZATION: "review",
         Intent.TEST_CASE_ANALYSIS: "test_analysis",
         Intent.APPROACH_DISCUSSION: "approach",
+        Intent.PRACTICE_REQUEST: "approach",
     }
 )
 

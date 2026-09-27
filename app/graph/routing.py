@@ -34,6 +34,7 @@ INTENT_ROUTES: Final[Mapping[Intent, RouteKey]] = MappingProxyType(
         Intent.DSA_SOLVE: "dsa",
         Intent.DSA_HINT: "dsa",
         Intent.APPROACH_DISCUSSION: "dsa",
+        Intent.PRACTICE_REQUEST: "practice",
         Intent.CODE_DEBUG: "debug",
         Intent.ERROR_EXPLANATION: "debug",
         Intent.TEST_CASE_ANALYSIS: "debug",
@@ -50,6 +51,7 @@ ROUTE_NODES: Final[Mapping[RouteKey, str]] = MappingProxyType(
         "dsa": "dsa_agent",
         "debug": "debug_agent",
         "explain": "explain_agent",
+        "practice": "practice_agent",
         "clarify": "clarify",
     }
 )

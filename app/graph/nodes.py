@@ -41,6 +41,7 @@ from app.agents.planner import (
     build_plan,
     clamp_assistance,
 )
+from app.agents.practice import render_practice_problem, select_practice_problem
 from app.agents.reviewer import review_code
 from app.execution.synth import synthesize_test_suite
 from app.execution.testgen import extract_test_suite
@@ -55,7 +56,10 @@ from app.graph.state import (
     SuiteSource,
 )
 from app.graph.subgraphs.debug import run_debug
-from app.graph.subgraphs.dsa import run_dsa
+from app.graph.subgraphs.dsa import (
+    corpus_chunks_by_pattern,
+    run_dsa,
+)
 from app.graph.subgraphs.explain import run_explain
 from app.input.intent import classify_intent as _classify_intent_llm
 from app.input.normalize import merge_inputs, normalize_text
@@ -1009,6 +1013,46 @@ async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Agen
     return update
 
 
+_NO_PRACTICE_TOPIC_TEXT: Final = (
+    "Tell me which pattern you want to practise -- two pointers, sliding window, "
+    "binary search, graphs, dynamic programming -- and I will pick a problem at the "
+    "right level for you."
+)
+
+
+async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
+    """Hand the learner a practice problem from the corpus, at their level.
+
+    Difficulty comes from `plan.difficulty`, which the planner already derived
+    from this learner's skill in this topic via `difficulty_for` -- there is no
+    second difficulty scale here. The problem itself is parsed out of the
+    curated corpus (`app.agents.practice`), never generated, so it cannot be a
+    problem that does not exist.
+
+    `solved` is always `None`: asking for practice is exposure to a topic, not
+    evidence about whether the learner can do it. The rendered problem is
+    display data and nothing else -- see `app.agents.practice`'s module
+    docstring for how that is preserved.
+    """
+    del runtime
+    plan = state.plan
+    topic = plan.topic if plan is not None else None
+    difficulty = plan.difficulty if plan is not None else "medium"
+    chunks = corpus_chunks_by_pattern().get(topic or "", ())
+    problem = select_practice_problem(topic, difficulty, chunks)
+    text = render_practice_problem(problem) if problem is not None else _NO_PRACTICE_TOPIC_TEXT
+    return {
+        "agent_output": AgentOutcome(
+            text=text,
+            topic=topic,
+            solved=None,
+            hints_used=0,
+            needed_full_solution=False,
+            errors=[],
+        )
+    }
+
+
 _REVIEW_INTENTS: Final[frozenset[Intent]] = frozenset({Intent.CODE_REVIEW, Intent.OPTIMIZATION})
 
 
@@ -1479,6 +1523,7 @@ FALLBACKS: Final[MappingProxyType[str, Callable[[AgentState], AgentStateUpdate]]
             "dsa_agent": _agent_outcome_fallback,
             "debug_agent": _agent_outcome_fallback,
             "explain_agent": _agent_outcome_fallback,
+            "practice_agent": _agent_outcome_fallback,
             "execute_code": _execute_code_fallback,
             "verify": _verify_execution_fallback,
             "clarify": _agent_outcome_fallback,

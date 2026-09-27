@@ -134,7 +134,7 @@ _ANCHOR_HIT_SCORE: Final = 0.0
 
 
 @cache
-def _corpus_chunks_by_pattern() -> Mapping[str, tuple[KnowledgeChunk, ...]]:
+def corpus_chunks_by_pattern() -> Mapping[str, tuple[KnowledgeChunk, ...]]:
     """Every curated corpus chunk, grouped by its `pattern` slug.
 
     `pattern` (e.g. `sliding_window`), not `topic` (e.g. `arrays`), is the
@@ -179,7 +179,7 @@ def _grounding_context(
     """
     extended = list(context)
     if ladder_topic:
-        for chunk in _corpus_chunks_by_pattern().get(ladder_topic, ()):
+        for chunk in corpus_chunks_by_pattern().get(ladder_topic, ()):
             extended.append(
                 RetrievalHit(chunk=chunk, score=_ANCHOR_HIT_SCORE, retrievers=(), reranked=False)
             )

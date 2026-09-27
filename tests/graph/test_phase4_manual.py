@@ -296,6 +296,14 @@ def _node_inputs() -> dict[str, tuple[RawInput, FakeLLMClient]]:
                 chat_content='{"intent": "CODE_EXPLAIN", "confidence": 0.95, "rationale": "n/a"}'
             ),
         ),
+        "practice_agent": (
+            RawInput(text="give me a two pointer problem to practise"),
+            FakeLLMClient(
+                chat_content=(
+                    '{"intent": "PRACTICE_REQUEST", "confidence": 0.95, "rationale": "n/a"}'
+                )
+            ),
+        ),
         # No agent sets an `execution_request` in Phase 06, so these two
         # nodes are always no-op skips on the straight-line path -- any input
         # that reaches them (i.e. not "clarify", which skips execute_code

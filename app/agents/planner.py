@@ -70,6 +70,7 @@ INTENT_DEFAULTS: Final[Mapping[Intent, tuple[AssistanceLevel, SolutionStrategy]]
             Intent.DSA_HINT: ("hint", "socratic_hints"),
             Intent.DSA_SOLVE: ("concept", "socratic_hints"),
             Intent.APPROACH_DISCUSSION: ("concept", "socratic_hints"),
+            Intent.PRACTICE_REQUEST: ("hint", "socratic_hints"),
             Intent.CODE_DEBUG: ("hint", "guided_debugging"),
             Intent.ERROR_EXPLANATION: ("concept", "guided_debugging"),
             Intent.TEST_CASE_ANALYSIS: ("hint", "guided_debugging"),
