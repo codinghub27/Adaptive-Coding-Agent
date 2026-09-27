@@ -472,3 +472,58 @@ The Streamlit frontend shipped in this phase (`frontend/app.py`,
 replaced by the Figma-designed web UI wired to this same backend. See
 `docs/features/UI-integration.md` for the integration work and the reasoning.
 This phase's history above is left unchanged.
+
+---
+
+## Evaluation harness (the deferred `eval/`) — delivered
+
+One command, local, no LangSmith dependency:
+
+```
+.\venv\Scripts\python.exe -m eval.run          # whole suite
+.\venv\Scripts\python.exe -m eval.run --only <case_id>
+```
+
+`eval/dataset.py` holds 15 hand-labelled turns across dsa / debug / explain /
+review / practice / contentless. `expected_topic=None` is a real label, not a
+missing one: three cases exist precisely to catch a topic being invented from
+noise. Every case runs through the REAL graph — real intent classifier, live
+Qdrant, real LLM, real Docker sandbox — with `session=None`, so each is
+evaluated as a fresh account and runs stay independent of the database.
+
+Evaluation is local by design. LangSmith answers "what did this turn do" (one
+`teaching_graph` run per turn, learner text redacted); the harness answers "did
+the build get better or worse", and needs to be cheap to re-run and free of a
+third-party network call. They are complements.
+
+### Baseline for this build
+
+| metric | score | |
+|---|---|---|
+| routing | 93.3% | 14/15 |
+| topic | 93.3% | 14/15 |
+| hint_safety | 100% | 3/3 |
+| debug_fix | 50% | 1/2 |
+| groundedness | 30% | 3/10 |
+
+Misses, all real:
+
+- **groundedness 3/10** — `generated.citations` is empty on every debug,
+  explain and review turn. Only the DSA route cites the chunks it retrieved, so
+  most answers do not show their sources. The largest gap this harness found.
+- **`debug_fix` is flaky, not simply failing.** `dsa_correct_submission`
+  recorded `solved=None` in the full run and `solved=True` when run alone, so
+  suite derivation for that turn is nondeterministic — it depends on whether
+  extraction or LLM synthesis produced the suite. Worth pinning down; a flaky
+  outcome signal is worse than a missing one.
+- `explain_bfs_concept` resolves to `dfs`; `contentless_factorial` routes to
+  `explain` rather than `debug`. Both are known sibling-confusion cases.
+
+### One correction worth recording
+
+The first version of `debug_fix` scored 0/2 and both were the harness's fault,
+not the product's: it compared `verification.status`, which on a debug turn is
+the verdict on the **patched** code, so it reads "pass" exactly when the agent
+fixed the learner's bug — the opposite of the question being asked. It now
+reads the event's `solved`, the same distinction `DebugResult.to_outcome`
+already makes by deriving from `initial_verdict`.
