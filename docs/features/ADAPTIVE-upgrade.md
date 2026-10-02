@@ -668,6 +668,54 @@ yet", HINTS "Hint ladder".
 5. (low) The profile-prose path skipped `skill_for`. Fixed.
 `pytest`: **1694 passed** (non-live).
 
+### P7 — Scorecard gates + CI (commit `b78a1fa`)
+
+`eval.run --gate` and `eval.transcript_probes --gate` exit 1 on any Section 10
+miss. `.github/workflows/ci.yml` runs the static checks on every push/PR and
+the live gates nightly or on demand. It is validated as YAML locally but has
+**not been run on GitHub**: it needs repository secrets, and pushing is your
+call.
+
+**The final live scorecard could not be taken in this session.** Right after
+P7 the gated `eval.run` reported routing 33%, topic 47%, debug_fix 0%, and
+every case "got None". That is the keyword fallback: the Groq free-tier daily
+token quota was exhausted again. Single small probes still succeed, so the
+quota is not at zero, but sustained runs starve. The gate failed the run, which
+is what it should do. It also means those numbers measure the quota, not the
+agent. Re-run once the quota resets:
+`python -m eval.run --gate`, `python -m eval.determinism --runs 10`,
+`python -m eval.transcript_probes --langsmith --gate`.
+
+#### Scorecard: last VALID measurement of each check (same instrument throughout)
+
+| Check (Section 10) | Baseline (P0) | Latest valid | Where measured |
+|---|---|---|---|
+| **HARD** hint_safety | 100% | 100% | eval.run (P4) |
+| **HARD** user code only in sandbox | yes | yes (no exec/eval/subprocess added; reveal runs in the sandbox) | code + review |
+| **HARD** no learner text in traces | yes | yes (redaction tests incl. stream path) | test_tracing |
+| **HARD** solved from initial_verdict only | yes | yes (reveal never sets solved) | tests, P4 |
+| **HARD** revealed code always verified | **0/1** | **6/6** + 5/5 | P4 transcript + E re-check |
+| **HARD** LangSmith root per probed turn | not on stream path | 64/64, 65/65 | P0..P5 runs |
+| routing >= 95% | 93.3% | **100%** | eval.run (P2–P4) |
+| topic >= 95% | 93.3% (30-probe: 90%) | **100%** (30-probe: 100%, no longer held-out) | eval.run, 30-probe |
+| groundedness >= 80% | 30% | **90–100%** | eval.run (P3, P4) |
+| debug_fix 100% | 100% | 100% (flaked to 50% once before P5's determinism fix) | eval.run (P4) |
+| follow-up continuity 100% | 9/12 knows_problem, 3/6 same_topic | **12/12, 6/6, topic_trees 16/16** | transcript (P1–P4) |
+| evidence-path determinism 100% | 7/10 | **10/10** | eval.determinism (P5, pre-review code) |
+| provenance 100% | none recorded | **100%** of the live outcome events checked | postgres (P5) |
+| 0 phantom UI steps | 4/62 clean | **62/62**, plus the rendered UI | transcript + Playwright (P5) |
+| 0 truncated / cross-topic rungs | 27/39, 39/39 | 39/39, 39/39 | transcript (P5 run 1) |
+| escalation reachable per mode | 0/2 | **2/2** + Challenge strict 2/2 | transcript (P4) |
+| T1–T13 | 245/360 overall | **313/365 = 85.8%** (P4 full run) | transcript |
+| family adaptation speed | 15 turns | **3 turns** | eval.adaptation_speed (P6) |
+| untouched profile keys | present (F10) | **0** across 78 profiles | postgres (P6) |
+
+**Against the 95% bar.** The last full, unstarved transcript run (P4) scored
+85.8%. P5 then fixed the largest remaining failure class, phantom steps
+(58 failed checks, now clean). The P5 transcript run, half-starved by the
+provider, still scored 94.2%. A clean, quota-unconstrained full run is the one
+outstanding measurement, and the 95% claim stays **unverified** until it exists.
+
 ### Session handoff (usage limit reached mid-P4)
 
 - Committed: P0 `d4bc915`, P1 `5c48d92`, P2 `cb9e558`, P3 `afcd81e`.
