@@ -26,7 +26,7 @@ from app.schemas.base import APIModel
 from app.schemas.conversation import MessageView
 from app.schemas.event import LearningEventCreate
 from app.schemas.execution import ExecutionRequest, ExecutionResult, Verdict
-from app.schemas.input import StructuredInput
+from app.schemas.input import ActiveProblem, ProblemRelation, StructuredInput
 from app.schemas.intent import IntentResult
 from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import AssistanceLevel, TeachingPlan
@@ -140,6 +140,12 @@ class AgentState(BaseModel):
     agent_output: AgentOutcome | None = None
     agent_result: AgentResult | None = None
     suite_source: SuiteSource = "none"
+    #: The conversation's stored active problem (loaded by
+    #: `load_learner_profile`), how this turn relates to it, and the hint-ladder
+    #: key of the problem this turn is about (ADAPTIVE-upgrade P1).
+    active_problem: ActiveProblem | None = None
+    problem_relation: ProblemRelation = "none"
+    problem_key: str | None = None
     response: str | None = None
     generated_response: GeneratedResponse | None = None
     events: Annotated[list[LearningEventCreate], operator.add] = Field(
@@ -168,6 +174,9 @@ class AgentStateUpdate(TypedDict, total=False):
     agent_output: AgentOutcome | None
     agent_result: AgentResult | None
     suite_source: SuiteSource
+    active_problem: ActiveProblem | None
+    problem_relation: ProblemRelation
+    problem_key: str | None
     response: str | None
     generated_response: GeneratedResponse | None
     events: list[LearningEventCreate]

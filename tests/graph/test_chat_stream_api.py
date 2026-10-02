@@ -23,6 +23,7 @@ from app.graph.api import STREAM_ERROR_DETAIL
 from app.input.api import get_llm
 from app.main import create_app
 from app.schemas.auth import AuthUser
+from tests.graph._conversation_stub import ConversationStub
 from tests.input.fakes import FakeLLMClient
 
 _DEBUG_TEXT = (
@@ -37,14 +38,6 @@ _DEBUG_TEXT = (
 _DEFAULT_TEST_USER = AuthUser(id=uuid4(), handle="test-user", session_id=uuid4())
 
 
-class _EmptyResult:
-    def scalar_one_or_none(self) -> None:
-        return None
-
-    def scalars(self) -> list[Any]:
-        return []
-
-
 class _NoOpNestedTransaction:
     async def __aenter__(self) -> "_NoOpNestedTransaction":
         return self
@@ -53,17 +46,19 @@ class _NoOpNestedTransaction:
         return False
 
 
-class _FakeSession:
+class _FakeSession(ConversationStub):
     """A minimal stand-in for `AsyncSession`, usable both as the value yielded
     by `get_session` and as what `session_factory()` returns from an `async
     with` block (mirrors `_StubSession` in `tests/graph/test_chat_api.py`,
     plus the async context manager protocol `async_sessionmaker()` instances
     support)."""
 
-    def __init__(self, *, fail_commit: bool = False) -> None:
+    def __init__(self, *, fail_commit: bool = False, commits_before_failure: int = 0) -> None:
+        super().__init__()
         self.committed = False
         self.rolled_back = False
         self.fail_commit = fail_commit
+        self.commits_before_failure = commits_before_failure
 
     async def __aenter__(self) -> "_FakeSession":
         return self
@@ -72,16 +67,14 @@ class _FakeSession:
         return False
 
     async def commit(self) -> None:
-        if self.fail_commit:
+        if self.fail_commit and self.commits_before_failure > 0:
+            self.commits_before_failure -= 1
+        elif self.fail_commit:
             raise RuntimeError("simulated commit failure")
         self.committed = True
 
     async def rollback(self) -> None:
         self.rolled_back = True
-
-    async def execute(self, *args: object, **kwargs: object) -> _EmptyResult:
-        del args, kwargs
-        return _EmptyResult()
 
     def begin_nested(self) -> _NoOpNestedTransaction:
         return _NoOpNestedTransaction()
@@ -162,7 +155,15 @@ async def test_chat_stream_done_frame_matches_post_chat_body(
         plain_response = await client.post("/chat", data={"text": _DEBUG_TEXT})
     assert plain_response.status_code == 200
 
-    assert streamed_body == plain_response.json()
+    # ADAPTIVE-upgrade P1: each call without a `conversation_id` now creates
+    # its own conversation (B7), so the two ids legitimately differ; every
+    # other field must still match exactly.
+    plain_body = plain_response.json()
+    assert streamed_body["conversation_id"] is not None
+    assert plain_body["conversation_id"] is not None
+    streamed_body.pop("conversation_id")
+    plain_body.pop("conversation_id")
+    assert streamed_body == plain_body
     assert fake_session.committed is True
 
 
@@ -220,7 +221,10 @@ async def test_chat_stream_rejects_invalid_bearer_token(make_settings: Any) -> N
 async def test_chat_stream_emits_error_frame_with_fixed_message_on_graph_failure(
     make_settings: Any,
 ) -> None:
-    fake_session = _FakeSession(fail_commit=True)
+    # ADAPTIVE-upgrade P1: the handler first creates the conversation and
+    # commits that (before the stream starts, so a bad id is a real 404). The
+    # failure under test is the in-stream commit after the graph ran.
+    fake_session = _FakeSession(fail_commit=True, commits_before_failure=1)
     fake = FakeLLMClient(chat_content="unused")
 
     transport = _build_app(make_settings, fake, session_factory=_FakeSessionFactory(fake_session))

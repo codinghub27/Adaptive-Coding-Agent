@@ -65,9 +65,9 @@ from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE, HintLevel, 
 from app.schemas.base import APIModel
 from app.schemas.input import StructuredInput
 from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
-from app.schemas.plan import TeachingPlan
+from app.schemas.plan import AssistanceLevel, TeachingPlan
 
-__all__ = ["HintProgress", "next_hint"]
+__all__ = ["HintProgress", "base_ladder_ceiling", "ladder_ceiling", "next_hint"]
 
 
 class HintProgress(APIModel):
@@ -86,6 +86,42 @@ class HintProgress(APIModel):
     last_level: HintLevel | None = None
     solved: bool = False
     has_verified_attempt: bool = False
+    #: The ladder's ceiling, fixed when the ladder started (ADAPTIVE-upgrade P1,
+    #: F3), or `None` for a new ladder / a row written before it was stored.
+    ceiling: HintLevel | None = None
+
+
+def ladder_ceiling(plan: TeachingPlan, progress: HintProgress) -> HintLevel:
+    """This turn's hint-ladder ceiling: the ladder's own, fixed one.
+
+    The per-turn ceiling (`MAX_HINT_LEVEL_FOR_ASSISTANCE[assistance_level]`)
+    moved with the intent of each message -- "next hint" classifies as
+    `DSA_HINT` (ceiling L2) while the problem itself was `DSA_SOLVE` (L3) --
+    so the learner saw "Hint 1 of 4", then "Hint 2 of 3" (F3). Once a ladder
+    has a stored ceiling it is kept, with two exceptions that are both
+    explicit decisions, never message phrasing: an escalation to `full`, and
+    a client cap (`assistance_capped`), which may only lower it.
+    """
+    turn_ceiling = MAX_HINT_LEVEL_FOR_ASSISTANCE[plan.assistance_level]
+    if plan.assistance_level == "full":
+        return turn_ceiling
+    base = base_ladder_ceiling(plan.assistance_level, progress)
+    if "assistance_capped" in plan.rationale:
+        return min(base, turn_ceiling)
+    return base
+
+
+def base_ladder_ceiling(assistance: AssistanceLevel, progress: HintProgress) -> HintLevel:
+    """The ladder's stored ceiling, or this assistance level's for a new ladder.
+
+    Shared by `ladder_ceiling` and the planner's escalation rule so both agree
+    on when "the ceiling is reached". A capped turn can never escalate anyway
+    (`clamp_assistance` runs after the plan and lowers `full` back down), so the
+    cap itself is applied only in `ladder_ceiling`.
+    """
+    if progress.ceiling is not None:
+        return progress.ceiling
+    return MAX_HINT_LEVEL_FOR_ASSISTANCE[assistance]
 
 
 #: Below this score a retrieved chunk is noise, not evidence -- same
@@ -417,7 +453,7 @@ def next_hint(
     if progress.solved:
         return None
 
-    ceiling = MAX_HINT_LEVEL_FOR_ASSISTANCE[plan.assistance_level]
+    ceiling = ladder_ceiling(plan, progress)
 
     if plan.assistance_level == "full":
         level = ceiling

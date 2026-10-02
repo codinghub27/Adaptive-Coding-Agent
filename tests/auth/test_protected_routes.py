@@ -248,12 +248,12 @@ async def test_chat_with_conversation_owned_by_another_user_does_not_leak(
             headers=auth_headers(pair_a["access_token"]),
         )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["errors"]
-    assert any(
-        err["node"] in {"load_learner_profile", "update_learner_model"} for err in body["errors"]
-    )
+    # ADAPTIVE-upgrade P1 (B7): the conversation is resolved BEFORE the graph
+    # runs, so someone else's conversation id is now a 404 (same answer as a
+    # missing id) instead of a 200 whose memory reads/writes fail inside the
+    # graph. Still no leak: nothing is written to the owner's conversation.
+    assert response.status_code == 404
+    assert response.json() == {"detail": "conversation not found"}
 
     turns = await get_recent_context(db_session, user_b, owner_conversation_id)
     assert turns == []

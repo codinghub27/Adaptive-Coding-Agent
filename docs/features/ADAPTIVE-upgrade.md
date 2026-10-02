@@ -174,3 +174,96 @@ test `test_closing_stream_graph_early_cancels_the_graph_task`. Final suite:
 **Still not working after P0** (everything the baseline table shows failing):
 follow-up continuity, ladder N, topic drift, escalation, phantom steps,
 non-problem routing, grounded sections — P1..P6.
+
+### P1 — Conversation continuity (B7, B3, F1, F3)
+
+**Target (stated first):** follow-up probes resolve the correct problem + topic
+100%; 0 ladder resets on a same-problem re-paste; N constant per ladder.
+
+**Design (Architecture Decision AD-1: the conversation's ACTIVE PROBLEM).**
+- `conversations` gains `active_problem` (JSONB `StructuredInput` dump —
+  untrusted, stored like `messages.content`), `active_problem_key` (hash of the
+  statement) and `active_topic` (closed-vocabulary slug). Migration
+  `d1e2f3a4b5c6`. `hint_progress` gains `ceiling` (fixed at insert, never
+  updated: `COALESCE` in the upsert).
+- `load_learner_profile` loads it; `retrieve_knowledge` decides the turn's
+  relation (`resolve_problem_relation`): **new** statement, **same** statement
+  (equal after normalization, or one contains the other — a re-paste with a
+  trailing "give full code" that normalization kept inside the statement),
+  **followup** (no statement, no code, names no corpus subject), or **none**.
+  A follow-up's `structured_input` becomes the stored statement + this turn's
+  question (stored code is never re-run), and retrieval is re-run on it, so
+  hint grounding/citations are about the problem, not about "give full answer".
+- `analyze_problem(inherited_topic=...)`: new `topic_source="conversation"`,
+  after an explicit hint and before profile/retrieval (F2).
+- The hint ladder is keyed by the PROBLEM (`problem_key`), not the topic: two
+  different trees problems in one conversation used to share one `trees`
+  ladder. `ladder_ceiling` keeps the stored N unless the plan escalates to
+  `full` or a client cap lowers it (F3: "Hint 1 of 4" -> "Hint 2 of 3").
+- `/chat` and `/chat/stream` create the conversation when none is sent, and
+  return 404 for a missing / foreign id (resolved before the stream starts).
+
+**A measurement that changed the design.** The first cut decided "follow-up
+vs own question" with the retrieval floor. Measured: "give full answer"
+retrieves `heaps` at **-4.79** (above the -5.0 floor) and "hi" retrieves
+`binary_search` at **+3.85** — so the score cannot separate them, and T3 kept
+drifting to heaps. The decision is now lexical against the corpus's own
+vocabulary (pattern/title/topic/aliases, `names_corpus_subject`): "what is a
+trie?" is its own question, "give full answer" is a follow-up.
+
+**Result on the fixed instrument — `eval/results/P1.json`: 278/360 = 77.2%
+(baseline 68.1%).** P1's own checks:
+
+| check | baseline | P1 |
+|---|---|---|
+| knows_problem (T2,T3,T5,T9) | 9/12 | **12/12** |
+| same_topic (T9,T10) | 3/6 | **6/6** |
+| topic_trees (T1..T5) | 6/16 | **16/16** |
+| no_heaps_drift (T3) | 0/3 | **3/3** |
+| hint_advanced (T2,C2) | 3/4 | **4/4** |
+| same_N (T2,T10) | 3/6 | **6/6** |
+| ladder_resumed (T10) | 3/3 | 3/3 (now on the problem's own ladder: 1->2) |
+| conversation_created (C1) | 0/1 | **1/1** |
+
+Follow-ups now record events against the inherited topic (B3) — postgres, one
+probe account: `trees` 6 events, `union_find` 5, `bfs` 1, all `solved=NULL`
+(exposure only, as designed). `eval.run` unchanged (routing 93.3, topic 93.3,
+hint_safety 100, debug_fix 100, groundedness 30).
+
+**Verification:** pyright 0 · ruff clean · `alembic check` clean · `pytest`
+1604 passed, 2 skipped. Tests updated with the reason inline: retrieve-node
+expectations (+`problem_relation`/`problem_key`), the stream "done == /chat"
+comparison (ids differ now that each call creates a conversation), the
+in-stream commit-failure test, and `test_chat_with_conversation_owned_by_another_user_does_not_leak`
+(200-with-errors -> 404, still no leak). The table-less session stubs got a
+one-conversation mixin (`tests/graph/_conversation_stub.py`).
+
+**Known issues from P1**
+- Code pasted without a statement never inherits the active problem (by
+  design: a wrong statement must not judge unrelated code). A learner who
+  pastes only their attempt on the active problem gets no statement-gated
+  evidence for it.
+- "hi" and the study-plan request are follow-ups under the lexical rule (no
+  corpus term). Harmless for "hi" (clarify, no event), but T12 inherits the
+  graph problem's ladder — P2 adds a non-problem intent so such turns never
+  inherit.
+- The stored ceiling is per ladder; an escalation to `full` still raises N for
+  that turn (P4 decides how the reveal is presented).
+
+**Code review (medium) before commit: 6 findings, all fixed.**
+1. (high) the new `_p…` problem key could reach hint text as a "topic" via
+   `_anchored_ladder_topic` (only `_q` was filtered) — now filtered.
+2. (high) an error-only turn (pasted traceback) was inheriting the active
+   problem and dropping its traceback — `.error` now blocks inheritance.
+3. (med) a client cap on a ladder's FIRST turn became its permanent N — a
+   capped turn no longer stores the ceiling.
+4. (med) planner and hint engine computed "ceiling reached" differently —
+   one helper, `base_ladder_ceiling`.
+5. (med) a retriever failure (safe_node fallback) lost relation/key — the
+   relation is now pure, decided before retrieval, and kept by the fallback.
+6. (low) substring "same" merged a longer variant into the old ladder —
+   `_is_repaste` allows at most 60 chars of extra text (room for an ask).
+Regression tests added for 2, 5, 6. Single-mode re-check on the live API after
+the fixes: all P1 checks still pass (knows_problem 4/4, same_topic 2/2,
+topic_trees 6/6, same_N 2/2, ladder_resumed 1/1, conversation_created 1/1).
+Final suite: **1607 passed, 2 skipped**.

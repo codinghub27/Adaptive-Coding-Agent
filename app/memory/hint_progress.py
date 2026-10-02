@@ -43,6 +43,7 @@ async def get_hint_progress(
         last_level=HintLevel(row.level),
         solved=row.solved,
         has_verified_attempt=row.has_verified_attempt,
+        ceiling=HintLevel(row.ceiling) if row.ceiling is not None else None,
     )
 
 
@@ -77,6 +78,7 @@ async def save_hint_progress(
     level: int,
     solved: bool,
     has_verified_attempt: bool = False,
+    ceiling: int | None = None,
 ) -> None:
     """Upsert this `(user, conversation, topic)`'s hint-ladder progress.
 
@@ -91,6 +93,10 @@ async def save_hint_progress(
     `app.agents.hint_engine.HintProgress` (e.g. `app.graph.nodes.dsa_agent`)
     must read the prior value first and pass forward `already_true or
     this_turn`.
+
+    `ceiling` is the ladder's fixed ceiling (ADAPTIVE-upgrade P1, F3): it is
+    written on insert and NEVER changed by a later upsert (`COALESCE` keeps
+    the stored value), so "Hint k of N" keeps one N for the ladder's life.
 
     `updated_at` is set explicitly to `func.now()` in the `SET` clause below:
     the column's `onupdate=func.now()` (see `app.db.models.hint_progress`) is
@@ -107,6 +113,7 @@ async def save_hint_progress(
         level=level,
         solved=solved,
         has_verified_attempt=has_verified_attempt,
+        ceiling=ceiling,
     )
     upsert_stmt = insert_stmt.on_conflict_do_update(
         index_elements=[
@@ -118,6 +125,7 @@ async def save_hint_progress(
             "level": insert_stmt.excluded.level,
             "solved": insert_stmt.excluded.solved,
             "has_verified_attempt": insert_stmt.excluded.has_verified_attempt,
+            "ceiling": func.coalesce(HintProgressRow.ceiling, insert_stmt.excluded.ceiling),
             "updated_at": func.now(),
         },
     )

@@ -34,19 +34,10 @@ from app.schemas.execution import (
     TestCase,
     TestSuite,
 )
+from tests.graph._conversation_stub import ConversationStub
 from tests.input.fakes import FakeLLMClient
 
 MakeSettings = Callable[..., Settings]
-
-
-class _EmptyResult:
-    """Stands in for a SQLAlchemy `Result` that matched no rows."""
-
-    def scalar_one_or_none(self) -> None:
-        return None
-
-    def scalars(self) -> list[Any]:
-        return []
 
 
 class _NoOpNestedTransaction:
@@ -59,15 +50,11 @@ class _NoOpNestedTransaction:
         return False
 
 
-class _StubSession:
+class _StubSession(ConversationStub):
     """Minimal `AsyncSession` stand-in, mirroring `tests/graph/test_chat_api.py`'s."""
 
     async def commit(self) -> None:
         return None
-
-    async def execute(self, *args: object, **kwargs: object) -> _EmptyResult:
-        del args, kwargs
-        return _EmptyResult()
 
     def begin_nested(self) -> _NoOpNestedTransaction:
         return _NoOpNestedTransaction()

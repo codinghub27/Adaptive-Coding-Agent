@@ -25,6 +25,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Callable, Sequence
+from functools import cache
 from types import MappingProxyType
 from typing import Final, Protocol, cast
 from uuid import UUID
@@ -64,8 +65,14 @@ from app.graph.subgraphs.explain import run_explain
 from app.input.intent import classify_intent as _classify_intent_llm
 from app.input.normalize import merge_inputs, normalize_text
 from app.input.vision import ImageValidationError, extract_from_image
+from app.knowledge.ingest import load_corpus
 from app.llm.base import LLMError
-from app.memory.conversation import add_turn, get_recent_context
+from app.memory.conversation import (
+    add_turn,
+    get_active_problem,
+    get_recent_context,
+    set_active_problem,
+)
 from app.memory.events import record_event, requested_help_for
 from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress, save_hint_progress
 from app.memory.profile import PRIOR, apply_event, get_profile
@@ -74,7 +81,7 @@ from app.response.generate import generate_response
 from app.schemas.agent_results import HintLevel
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verdict
-from app.schemas.input import CodeBlock, StructuredInput
+from app.schemas.input import ActiveProblem, CodeBlock, ProblemRelation, StructuredInput
 from app.schemas.intent import Intent
 from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import TeachingPlan
@@ -240,7 +247,24 @@ async def load_learner_profile(
             )
         )
 
-    update = {"profile": profile, "recent_context": recent_context}
+    active_problem: ActiveProblem | None = None
+    try:
+        async with ctx.session.begin_nested():
+            active_problem = await get_active_problem(ctx.session, ctx.user_id, ctx.conversation_id)
+    except Exception as exc:
+        errors.append(
+            NodeError(
+                node="load_learner_profile",
+                error_type=type(exc).__name__,
+                message=_RECENT_CONTEXT_FAILED_MESSAGE,
+            )
+        )
+
+    update = {
+        "profile": profile,
+        "recent_context": recent_context,
+        "active_problem": active_problem,
+    }
     if errors:
         update["errors"] = errors
     return update
@@ -272,11 +296,18 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     """
     ctx = runtime.context
     profile = state.profile if state.profile is not None else LearnerProfileView.empty()
+    active = state.active_problem
+    inherited_topic = (
+        active.topic
+        if active is not None and state.problem_relation in ("followup", "same")
+        else None
+    )
     analysis = analyze_problem(
         state.structured_input,
         profile,
         state.input.topic_hint,
         context=state.retrieved_context,
+        inherited_topic=inherited_topic,
     )
     hint_progress = await resolve_hint_progress(
         state,
@@ -500,20 +531,163 @@ async def retrieve_knowledge(state: AgentState, runtime: Runtime[GraphContext]) 
 
     Never touches `runtime.context.llm`/the LLM budget: retrieval runs
     entirely on local embedding/BM25/rerank models.
+
+    It first settles WHICH problem this turn is about (ADAPTIVE-upgrade P1,
+    `_problem_update`, pure and DB-free so the fallback below keeps it even
+    when retrieval fails). A follow-up retrieves against the conversation's
+    active problem, so its corpus context (hint grounding, citations) is about
+    that problem, not about the words "give full answer"; that retrieval skips
+    the intent gate, since a bare follow-up often classifies low-confidence.
     """
+    update = _problem_update(state)
+    effective = state.model_copy(update=dict(update))
     retriever = runtime.context.retriever
-    if retriever is None or not should_retrieve(state):
-        return {"retrieved_context": []}
-    query = build_retrieval_query(state)
+    followup = update.get("problem_relation") == "followup"
+    if retriever is None or not (followup or should_retrieve(effective)):
+        return {**update, "retrieved_context": []}
+    query = build_retrieval_query(effective)
     if not query:
-        return {"retrieved_context": []}
+        return {**update, "retrieved_context": []}
     hits = await retriever.retrieve(query, runtime.context.knowledge_top_k)
-    return {"retrieved_context": hits}
+    return {**update, "retrieved_context": hits}
+
+
+def _problem_update(state: AgentState) -> AgentStateUpdate:
+    """This turn's relation to the active problem, its ladder key, and -- for a
+    follow-up -- the structured input re-anchored on the active statement."""
+    relation, key = resolve_problem_relation(state.structured_input, state.active_problem)
+    update: AgentStateUpdate = {"problem_relation": relation, "problem_key": key}
+    if relation == "followup" and state.active_problem is not None:
+        update["structured_input"] = inherit_active_problem(
+            state.structured_input, state.active_problem
+        )
+    return update
+
+
+def _normalized_statement(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+#: How much text a re-paste may add around the stored statement and still be
+#: the same problem: room for a direct ask ("give full code"), not for a
+#: variant with extra constraints (which must start its own ladder).
+_REPASTE_SLACK_CHARS: Final = 60
+
+
+def _is_repaste(new: str, old: str) -> bool:
+    """`new` is `old` again, give or take a short ask the normalizer left inside."""
+    new_text, old_text = _normalized_statement(new), _normalized_statement(old)
+    shorter, longer = sorted((new_text, old_text), key=len)
+    return shorter in longer and len(longer) - len(shorter) <= _REPASTE_SLACK_CHARS
+
+
+@cache
+def _corpus_term_re() -> re.Pattern[str]:
+    """Word-boundary matcher for the curated corpus's own vocabulary.
+
+    Pattern names, titles, topics and aliases from `app/knowledge/corpus` --
+    trusted, closed vocabulary (plus naive singulars: "heaps" -> "heap").
+    Used only to decide whether a short turn names a subject of its own.
+    """
+    terms: set[str] = set()
+    for doc in load_corpus():
+        for raw in (doc.pattern, doc.topic, doc.title, *doc.aliases):
+            term = raw.replace("_", " ").replace("-", " ").strip().lower()
+            if len(term) >= 3:
+                terms.add(term)
+                if term.endswith("s") and len(term) > 4:
+                    terms.add(term[:-1])
+    alternation = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
+    return re.compile(rf"\b(?:{alternation})\b")
+
+
+def names_corpus_subject(text: str | None) -> bool:
+    """Whether `text` names a DSA subject from the corpus vocabulary."""
+    if not text:
+        return False
+    normalized = text.lower().replace("_", " ").replace("-", " ")
+    return _corpus_term_re().search(normalized) is not None
+
+
+def problem_key(structured_input: StructuredInput | None) -> str | None:
+    """Hint-ladder key for the problem STATEMENT this turn carries, or `None`.
+
+    Unlike `_problem_fingerprint`, the direct-ask line (`question`) is left
+    out: "<statement> + give full code" must resolve to the same ladder as
+    "<statement>" alone (F3: a re-paste reset the ladder to Hint 1). A hash
+    of untrusted text, never the text -- never rendered, logged or returned.
+    """
+    if structured_input is None or not structured_input.problem:
+        return None
+    normalized = " ".join(structured_input.problem.lower().split())
+    return "_p" + hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+
+def resolve_problem_relation(
+    structured_input: StructuredInput | None,
+    active: ActiveProblem | None,
+) -> tuple[ProblemRelation, str | None]:
+    """How this turn relates to the conversation's active problem, and its ladder key.
+
+    - A turn carrying a statement is "same" when it is the active statement --
+      equal after normalization, or one contains the other (a re-paste with a
+      trailing "give full code" that normalization kept inside the statement)
+      -- else "new".
+    - A turn with no statement AND no code is a "followup" when there is an
+      active problem and the turn names no corpus subject of its own ("give
+      full answer", "next hint", "why does that work?"), versus "what is a
+      trie?", which is its own question. Deliberately NOT decided by
+      retrieval score: measured, "give full answer" retrieves `heaps` at
+      -4.79 (above the -5.0 topic floor) and "hi" retrieves `binary_search`
+      at +3.85, so a score floor cannot tell a follow-up from a question.
+    - Code or an error without a statement never inherits: attaching the
+      active problem would let a wrong statement judge unrelated code, and
+      would drop a pasted traceback the debugger needs.
+    """
+    if structured_input is None:
+        return "none", None
+    key = problem_key(structured_input)
+    if key is not None and structured_input.problem is not None:
+        if active is not None and active.problem.problem:
+            if active.key == key:
+                return "same", active.key
+            if _is_repaste(structured_input.problem, active.problem.problem):
+                return "same", active.key
+        return "new", key
+    if active is None or structured_input.code or structured_input.error:
+        return "none", None
+    if names_corpus_subject(structured_input.question):
+        return "none", None
+    return "followup", active.key
+
+
+def inherit_active_problem(
+    structured_input: StructuredInput | None, active: ActiveProblem
+) -> StructuredInput:
+    """This follow-up turn, re-anchored on the active problem's statement.
+
+    Keeps this turn's own question (the follow-up ask) and takes the problem
+    statement and constraints from the stored problem. Both halves are
+    untrusted learner data and stay in the untrusted slots they came from.
+    Stored code is NOT carried over, so a "next hint" never re-runs a stale
+    attempt in the sandbox.
+    """
+    question = structured_input.question if structured_input is not None else None
+    language = structured_input.language if structured_input is not None else None
+    return active.problem.model_copy(
+        update={
+            "question": question,
+            "code": [],
+            "error": None,
+            "language": language or active.problem.language,
+        }
+    )
 
 
 def _retrieve_knowledge_fallback(state: AgentState) -> AgentStateUpdate:
-    del state
-    return {"retrieved_context": []}
+    # Retrieval failed, but which problem this turn is about does not depend on
+    # it: keep continuity (relation, ladder key, inherited statement).
+    return {**_problem_update(state), "retrieved_context": []}
 
 
 # --- route --------------------------------------------------------------------
@@ -661,8 +835,16 @@ async def _hint_topic_key(
     ctx: GraphContext,
     *,
     topic_is_stable: bool = True,
+    problem_key: str | None = None,
 ) -> str:
     """Return the hint-ladder store key for this turn.
+
+    0. `problem_key` (ADAPTIVE-upgrade P1) wins whenever this turn is about a
+       known problem statement -- a new one, a re-paste, or a follow-up on the
+       conversation's active one. One ladder per PROBLEM, not per topic: two
+       different trees problems in one conversation used to share (and
+       corrupt) one `trees` ladder (F3). Everything below is the pre-P1
+       resolution, still used for turns with no problem in play.
 
     `topic` is whatever topic this turn has already resolved to -- normally
     `plan.topic`, but `plan_teaching` also calls this (via
@@ -705,6 +887,8 @@ async def _hint_topic_key(
     written anything this turn, so all resolve identically and can never key
     differently.
     """
+    if problem_key is not None:
+        return problem_key
     has_problem = structured_input is not None and bool(structured_input.problem)
     unstable_followup = not has_problem and not topic_is_stable
 
@@ -769,7 +953,13 @@ async def resolve_hint_progress(
         topic = state.plan.topic if state.plan is not None else None
     if topic_is_stable is None:
         topic_is_stable = _topic_is_stable(state.topic_source)
-    key = await _hint_topic_key(state.structured_input, topic, ctx, topic_is_stable=topic_is_stable)
+    key = await _hint_topic_key(
+        state.structured_input,
+        topic,
+        ctx,
+        topic_is_stable=topic_is_stable,
+        problem_key=state.problem_key,
+    )
 
     try:
         async with ctx.session.begin_nested():
@@ -802,8 +992,9 @@ async def _anchored_ladder_topic(state: AgentState, ctx: GraphContext) -> str | 
         topic_plan,
         ctx,
         topic_is_stable=_topic_is_stable(state.topic_source),
+        problem_key=state.problem_key,
     )
-    if key == DEFAULT_HINT_TOPIC or key.startswith("_q"):
+    if key == DEFAULT_HINT_TOPIC or key.startswith(("_q", "_p")):
         return None
     return key
 
@@ -881,6 +1072,7 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
             topic_plan,
             ctx,
             topic_is_stable=_topic_is_stable(state.topic_source),
+            problem_key=state.problem_key,
         )
         try:
             async with ctx.session.begin_nested():
@@ -892,6 +1084,13 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
                     level=int(run.result.hint.level),
                     solved=progress.solved,
                     has_verified_attempt=has_verified_attempt,
+                    # A client cap lowers THIS turn only; never let it become
+                    # the ladder's permanent N (stored once, never updated).
+                    ceiling=(
+                        None
+                        if state.plan is not None and "assistance_capped" in state.plan.rationale
+                        else int(run.result.hint.ceiling)
+                    ),
                 )
         except Exception:
             pass
@@ -938,6 +1137,7 @@ async def _record_verified_attempt(
         topic_plan,
         ctx,
         topic_is_stable=_topic_is_stable(state.topic_source),
+        problem_key=state.problem_key,
     )
     try:
         async with ctx.session.begin_nested():
@@ -1403,6 +1603,56 @@ async def _persist_turns(state: AgentState, ctx: GraphContext) -> NodeError | No
     return None
 
 
+_SAVE_ACTIVE_PROBLEM_FAILED_MESSAGE: Final = "failed to remember this conversation's problem"
+
+
+def active_problem_update(state: AgentState) -> ActiveProblem | None:
+    """The active problem to store after this turn, or `None` to leave it as is.
+
+    - A NEW statement becomes the active problem, with this turn's topic.
+    - A re-paste/follow-up on a problem stored WITHOUT a topic adopts this
+      turn's topic once one is inferred -- but never a topic inherited from
+      the conversation (there is none to inherit) and never an explicit
+      client `topic` hint, which describes the request, not the problem.
+    - Anything else (no problem in play) leaves the stored one untouched.
+    """
+    plan_topic = state.plan.topic if state.plan is not None else None
+    trusted_topic = plan_topic if state.topic_source in ("retrieval", "profile_match") else None
+    if state.problem_relation == "new":
+        if state.structured_input is None or state.problem_key is None:
+            return None
+        problem = state.structured_input.model_copy(update={"code": [], "error": None})
+        return ActiveProblem(problem=problem, key=state.problem_key, topic=trusted_topic)
+    active = state.active_problem
+    if (
+        state.problem_relation in ("same", "followup")
+        and active is not None
+        and active.topic is None
+        and trusted_topic is not None
+    ):
+        return active.model_copy(update={"topic": trusted_topic})
+    return None
+
+
+async def _persist_active_problem(state: AgentState, ctx: GraphContext) -> NodeError | None:
+    """Store this turn's active problem (see `active_problem_update`), in a savepoint."""
+    active = active_problem_update(state)
+    if active is None or ctx.session is None or ctx.user_id is None:
+        return None
+    if ctx.conversation_id is None:
+        return None
+    try:
+        async with ctx.session.begin_nested():
+            await set_active_problem(ctx.session, ctx.user_id, ctx.conversation_id, active)
+    except Exception as exc:
+        return NodeError(
+            node="update_learner_model",
+            error_type=type(exc).__name__,
+            message=_SAVE_ACTIVE_PROBLEM_FAILED_MESSAGE,
+        )
+    return None
+
+
 def _skill_deltas(
     profile: LearnerProfileView | None, event: LearningEventCreate
 ) -> dict[str, float]:
@@ -1488,6 +1738,9 @@ async def update_learner_model(
         turn_error = await _persist_turns(state, ctx)
         if turn_error is not None:
             errors.append(turn_error)
+        active_error = await _persist_active_problem(state, ctx)
+        if active_error is not None:
+            errors.append(active_error)
 
     update: AgentStateUpdate = {}
     if events:

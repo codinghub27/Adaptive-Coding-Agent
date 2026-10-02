@@ -13,7 +13,7 @@ from pydantic import Field, computed_field
 
 from app.schemas.base import APIModel
 
-__all__ = ["CodeBlock", "InputSource", "StructuredInput"]
+__all__ = ["ActiveProblem", "CodeBlock", "InputSource", "ProblemRelation", "StructuredInput"]
 
 
 class CodeBlock(APIModel):
@@ -48,3 +48,25 @@ class StructuredInput(APIModel):
             and not self.problem
             and not self.constraints
         )
+
+
+#: How this turn relates to the conversation's active problem (P1):
+#: "new"      -- carries a problem statement the conversation has not seen,
+#: "same"     -- re-pastes the active problem's statement (resume its ladder),
+#: "followup" -- carries no statement of its own; the active problem applies,
+#: "none"     -- no statement and no active problem to inherit.
+ProblemRelation = Literal["new", "same", "followup", "none"]
+
+
+class ActiveProblem(APIModel):
+    """A conversation's most recent problem statement, stored across turns.
+
+    `problem` is UNTRUSTED learner data exactly like any `StructuredInput`; it
+    is only ever put back into the untrusted slots it came from. `key` is a
+    hash of the statement (never the text) and keys the hint ladder. `topic`
+    is a closed-vocabulary corpus slug, or `None` if none was inferred.
+    """
+
+    problem: StructuredInput
+    key: str = Field(min_length=1, max_length=32)
+    topic: str | None = None

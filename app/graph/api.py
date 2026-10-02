@@ -47,6 +47,11 @@ from app.input.vision import MAX_IMAGE_BYTES, ImageValidationError, validate_ima
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
 from app.llm.base import LLMClient
 from app.llm.client import Tracer
+from app.memory.conversation import (
+    ConversationNotFoundError,
+    get_owned_conversation,
+    start_conversation,
+)
 from app.schemas.auth import AuthUser
 from app.schemas.base import APIModel
 from app.schemas.event import LearningEventCreate
@@ -182,6 +187,26 @@ async def _build_raw_input(
     )
 
 
+async def _ensure_conversation(
+    session: AsyncSession, user_id: UUID, conversation_id: UUID | None
+) -> UUID:
+    """The conversation this turn belongs to, created when the client sent none.
+
+    Without a conversation a turn has no memory: no stored history, no hint
+    ladder, no active problem (B7) -- so `/chat` used to answer every turn as
+    if it were the first. A client-supplied id must exist and be owned by the
+    caller; anything else is a 404 (the same answer for "missing" and "not
+    yours", so ids cannot be probed).
+    """
+    if conversation_id is None:
+        return await start_conversation(session, user_id)
+    try:
+        await get_owned_conversation(session, user_id, conversation_id)
+    except ConversationNotFoundError:
+        raise HTTPException(status_code=404, detail="conversation not found") from None
+    return conversation_id
+
+
 def _to_chat_response(result: GraphRunResult, conversation_id: UUID | None) -> ChatResponse:
     """Assemble the `ChatResponse` body shared verbatim by `/chat` and the
     `done` frame of `/chat/stream`."""
@@ -225,6 +250,7 @@ async def chat(
     given, never raise it.
     """
     raw = await _build_raw_input(text, language, image, topic, assistance_cap)
+    conversation_id = await _ensure_conversation(session, current_user.id, conversation_id)
 
     result = await run_graph(
         raw,
@@ -352,6 +378,11 @@ async def chat_stream(
     (or an `error` frame with a fixed, safe message on failure).
     """
     raw = await _build_raw_input(text, language, image, topic, assistance_cap)
+    # Resolved (and, if new, committed) BEFORE the stream starts, so a bad id is
+    # a real 404 status rather than an `error` frame inside a 200 response.
+    async with _get_session_factory(request)() as session:
+        conversation_id = await _ensure_conversation(session, current_user.id, conversation_id)
+        await session.commit()
 
     return StreamingResponse(
         _chat_stream_events(request, llm, current_user, raw, conversation_id),

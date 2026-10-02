@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, HintProgress, Message
 from app.schemas.conversation import ConversationSummary, MessageView, Role
+from app.schemas.input import ActiveProblem, StructuredInput
 from app.schemas.intent import Intent
 
 __all__ = [
@@ -26,11 +27,13 @@ __all__ = [
     "ConversationNotFoundError",
     "add_turn",
     "delete_conversation",
+    "get_active_problem",
     "get_owned_conversation",
     "get_recent_context",
     "list_conversations",
     "list_messages",
     "rename_conversation",
+    "set_active_problem",
     "start_conversation",
 ]
 
@@ -267,3 +270,40 @@ async def list_messages(
 
     result = await session.execute(stmt)
     return [MessageView.model_validate(message) for message in result.scalars()]
+
+
+async def get_active_problem(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> ActiveProblem | None:
+    """This conversation's active problem, or `None` (none stored, or not owned).
+
+    A stored payload that no longer validates (schema drift) reads as `None`
+    rather than raising: losing the active problem costs one follow-up its
+    context, never the turn.
+    """
+    stmt = select(
+        Conversation.active_problem, Conversation.active_problem_key, Conversation.active_topic
+    ).where(Conversation.id == conversation_id, Conversation.user_id == user_id)
+    row = (await session.execute(stmt)).one_or_none()
+    if row is None or row[0] is None or row[1] is None:
+        return None
+    try:
+        problem = StructuredInput.model_validate(row[0])
+    except ValueError:
+        return None
+    return ActiveProblem(problem=problem, key=row[1], topic=row[2])
+
+
+async def set_active_problem(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID, active: ActiveProblem
+) -> None:
+    """Store `active` as this conversation's active problem (ownership-scoped).
+
+    Raises `ConversationNotFoundError` if the conversation is missing or not
+    owned by `user_id`.
+    """
+    conversation = await get_owned_conversation(session, user_id, conversation_id)
+    conversation.active_problem = active.problem.model_dump(mode="json", exclude={"is_empty"})
+    conversation.active_problem_key = active.key
+    conversation.active_topic = active.topic
+    await session.flush()

@@ -39,6 +39,10 @@ class HintProgress(Base):
     level: Mapped[int] = mapped_column(Integer, nullable=False)
     solved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     has_verified_attempt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: The ladder's ceiling, fixed when the ladder starts, so "Hint k of N"
+    #: keeps one N for the ladder's lifetime (ADAPTIVE-upgrade P1, F3). NULL on
+    #: rows written before this column existed: the per-turn ceiling applies.
+    ceiling: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -22,12 +22,11 @@ from typing import Final, Literal
 # `HintProgress` is the hint-ladder's own conversation-state record (see
 # `app.memory.hint_progress`); the planner only ever reads it, never writes
 # it, to decide whether this turn may escalate past `MAX_INITIAL_ASSISTANCE`.
-from app.agents.hint_engine import HintProgress
+from app.agents.hint_engine import HintProgress, base_ladder_ceiling
 
 # `PRIOR` (the neutral starting skill for an unseen topic) is owned by the
 # profile store; the planner reuses it rather than redefining its own.
 from app.memory.profile import PRIOR
-from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE
 from app.schemas.base import APIModel
 from app.schemas.event import Difficulty, slug_tag
 from app.schemas.input import StructuredInput
@@ -57,7 +56,7 @@ __all__ = [
 #: ladder's `_hint_topic_key`) can tell a deliberate topic signal ("hint",
 #: "profile_match") from a turn-local guess ("retrieval") without needing
 #: the raw `ProblemAnalysis` in scope.
-TopicSource = Literal["hint", "profile_match", "retrieval", "unknown"]
+TopicSource = Literal["hint", "conversation", "profile_match", "retrieval", "unknown"]
 
 WEAK_SKILL: Final = 0.42
 STRONG_SKILL: Final = 0.75
@@ -219,11 +218,15 @@ def analyze_problem(
     profile: LearnerProfileView,
     topic_hint: str | None = None,
     context: Sequence[RetrievalHit] = (),
+    *,
+    inherited_topic: str | None = None,
 ) -> ProblemAnalysis:
     """Infer a topic and skill level for this turn.
 
     Resolution order, first match wins:
     1. an explicit `topic_hint` ("hint"),
+    1b. `inherited_topic`, the conversation's active problem's topic, when this
+       turn is a follow-up on / re-paste of that problem ("conversation"),
     2. the learner's known skill keys matched against the prose of `inp`
        (question/problem/error only) ("profile_match"),
     3. the top-ranked hit in `context`, the knowledge corpus chunks retrieved
@@ -254,6 +257,18 @@ def analyze_problem(
             topic=slug,
             skill_level=profile.skill_levels.get(slug, PRIOR),
             topic_source="hint",
+        )
+
+    # The conversation's active problem already has a topic, and this turn is a
+    # follow-up on (or a re-paste of) that same problem: keep it. Re-inferring
+    # from a bare "give full answer" let the topic drift (F2: a trees problem
+    # became heaps) and re-inferring from a re-paste could fork the ladder.
+    # `inherited_topic` was itself a closed-vocabulary slug when it was stored.
+    if inherited_topic:
+        return ProblemAnalysis(
+            topic=inherited_topic,
+            skill_level=profile.skill_levels.get(inherited_topic, PRIOR),
+            topic_source="conversation",
         )
 
     prose = _prose(inp).lower()
@@ -362,7 +377,9 @@ def build_plan(
     # did/didn't it give the answer" -- even when the other two hold.
     if intent.intent in DSA_ROUTE_INTENTS:
         progress = hint_progress if hint_progress is not None else HintProgress()
-        ceiling = MAX_HINT_LEVEL_FOR_ASSISTANCE[assistance]
+        # The ladder's own fixed ceiling once it has one (F3), else this
+        # turn's -- the same value `next_hint` will climb to.
+        ceiling = base_ladder_ceiling(assistance, progress)
         ceiling_reached = progress.last_level is not None and progress.last_level >= ceiling
         explicit_ask = _explicit_solution_request(intent, structured_input)
         verified_attempt = progress.has_verified_attempt

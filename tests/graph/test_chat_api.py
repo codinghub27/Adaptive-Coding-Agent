@@ -28,6 +28,7 @@ from app.main import create_app
 from app.memory.conversation import get_recent_context, start_conversation
 from app.memory.profile import ensure_profile, get_profile, set_learning_preferences
 from app.schemas.auth import AuthUser
+from tests.graph._conversation_stub import ConversationStub
 from tests.input.fakes import FakeLLMClient
 
 MakeSettings = Callable[..., Settings]
@@ -51,16 +52,6 @@ _SLIDING_WINDOW_DEBUG_TEXT = (
 )
 
 
-class _EmptyResult:
-    """Stands in for a SQLAlchemy `Result` that matched no rows."""
-
-    def scalar_one_or_none(self) -> None:
-        return None
-
-    def scalars(self) -> list[Any]:
-        return []
-
-
 class _NoOpNestedTransaction:
     """Stands in for the async context manager `AsyncSession.begin_nested()` returns."""
 
@@ -71,7 +62,7 @@ class _NoOpNestedTransaction:
         return False
 
 
-class _StubSession:
+class _StubSession(ConversationStub):
     """A minimal stand-in for `AsyncSession`, with every request now authenticated.
 
     Every `/chat` call carries a real `user_id` (from the token), so
@@ -84,14 +75,11 @@ class _StubSession:
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self.committed = False
 
     async def commit(self) -> None:
         self.committed = True
-
-    async def execute(self, *args: object, **kwargs: object) -> _EmptyResult:
-        del args, kwargs
-        return _EmptyResult()
 
     def begin_nested(self) -> _NoOpNestedTransaction:
         return _NoOpNestedTransaction()
