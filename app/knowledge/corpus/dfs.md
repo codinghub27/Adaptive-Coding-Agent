@@ -5,8 +5,8 @@ topic: graph_traversal
 pattern_family: graphs
 difficulty: E:0 M:33 H:9
 aliases: dfs, depth first search, recursive traversal, backtracking traversal
-identification_signals: does a path exist, connected components, islands or flood fill, cycle detection, topological order via post-order
-representative_problems: Number of Islands | Medium | https://leetcode.com/problems/number-of-islands/ ; Clone Graph | Medium | https://leetcode.com/problems/clone-graph/ ; Max Area of Island | Medium | https://leetcode.com/problems/max-area-of-island/ ; Pacific Atlantic Water Flow | Medium | https://leetcode.com/problems/pacific-atlantic-water-flow/ ; Surrounded Regions | Medium | https://leetcode.com/problems/surrounded-regions/ ; Number of Connected Components | Medium | https://leetcode.com/problems/number-of-connected-components-in-an-undirected-graph/ ; Graph Valid Tree | Medium | https://leetcode.com/problems/graph-valid-tree/
+identification_signals: does a path exist, connected components, islands or flood fill, cycle detection, topological order via post-order, bridges or critical connections
+representative_problems: Number of Islands | Medium | https://leetcode.com/problems/number-of-islands/ ; Clone Graph | Medium | https://leetcode.com/problems/clone-graph/ ; Max Area of Island | Medium | https://leetcode.com/problems/max-area-of-island/ ; Pacific Atlantic Water Flow | Medium | https://leetcode.com/problems/pacific-atlantic-water-flow/ ; Surrounded Regions | Medium | https://leetcode.com/problems/surrounded-regions/ ; Number of Connected Components | Medium | https://leetcode.com/problems/number-of-connected-components-in-an-undirected-graph/ ; Graph Valid Tree | Medium | https://leetcode.com/problems/graph-valid-tree/ ; Critical Connections in a Network | Hard | https://leetcode.com/problems/critical-connections-in-a-network/
 ---
 
 # Depth-First Search
@@ -26,6 +26,7 @@ DFS commits fully to one branch before trying the next, using the call stack (or
 - detecting a cycle in a directed or undirected graph
 - computing a topological order via post-order DFS
 - a naturally recursive "combine children's results" structure
+- finding bridges / critical connections: an edge whose removal disconnects the graph
 
 ## General Template
 ```python
@@ -65,7 +66,7 @@ Marking a node visited *after* popping it instead of before pushing, which can e
 If the problem asks for the shortest path or fewest steps in an unweighted graph, use `bfs` instead — DFS finds *a* path, not the shortest one. If edges carry different weights, DFS's ordering says nothing about cost; use `dijkstra` (non-negative weights) or `bellman_ford` (possible negative weights).
 
 ## Variations
-Recursive DFS (simplest, risks stack depth); iterative DFS with an explicit stack (safe for deep graphs); pre-order/in-order/post-order variants on trees; DFS for cycle detection (track a "currently in recursion stack" set, distinct from "globally visited"); DFS for topological sort (push to result on post-order, then reverse); DFS as the backbone of `backtracking` (DFS + pruning + choice/undo).
+Recursive DFS (simplest, risks stack depth); iterative DFS with an explicit stack (safe for deep graphs); pre-order/in-order/post-order variants on trees; DFS for cycle detection (track a "currently in recursion stack" set, distinct from "globally visited"); DFS for topological sort (push to result on post-order, then reverse); DFS as the backbone of `backtracking` (DFS + pruning + choice/undo); DFS with discovery times and low-link values (Tarjan) to find bridges and articulation points: an edge to a child is a bridge when the child's subtree cannot reach back above the parent.
 
 ## Representative Problems
 - [Number of Islands](https://leetcode.com/problems/number-of-islands/) — Medium
@@ -75,3 +76,4 @@ Recursive DFS (simplest, risks stack depth); iterative DFS with an explicit stac
 - [Surrounded Regions](https://leetcode.com/problems/surrounded-regions/) — Medium
 - [Number of Connected Components](https://leetcode.com/problems/number-of-connected-components-in-an-undirected-graph/) — Medium
 - [Graph Valid Tree](https://leetcode.com/problems/graph-valid-tree/) — Medium
+- [Critical Connections in a Network](https://leetcode.com/problems/critical-connections-in-a-network/) — Hard

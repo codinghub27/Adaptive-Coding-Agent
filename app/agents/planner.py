@@ -14,16 +14,19 @@ pass/fail attempt on record for it. See `build_plan`'s docstring and the
 block it guards for the exact rule.
 """
 
+import ast
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from functools import cache
 from types import MappingProxyType
 from typing import Final, Literal
+
+from app.agents.hint_engine import HintProgress, base_ladder_ceiling
 
 # `HintProgress` is the hint-ladder's own conversation-state record (see
 # `app.memory.hint_progress`); the planner only ever reads it, never writes
 # it, to decide whether this turn may escalate past `MAX_INITIAL_ASSISTANCE`.
-from app.agents.hint_engine import HintProgress, base_ladder_ceiling
-
 # `PRIOR` (the neutral starting skill for an unseen topic) is owned by the
 # profile store; the planner reuses it rather than redefining its own.
 from app.memory.profile import PRIOR
@@ -56,7 +59,7 @@ __all__ = [
 #: ladder's `_hint_topic_key`) can tell a deliberate topic signal ("hint",
 #: "profile_match") from a turn-local guess ("retrieval") without needing
 #: the raw `ProblemAnalysis` in scope.
-TopicSource = Literal["hint", "conversation", "profile_match", "retrieval", "unknown"]
+TopicSource = Literal["hint", "conversation", "title", "profile_match", "retrieval", "unknown"]
 
 WEAK_SKILL: Final = 0.42
 STRONG_SKILL: Final = 0.75
@@ -78,6 +81,7 @@ INTENT_DEFAULTS: Final[Mapping[Intent, tuple[AssistanceLevel, SolutionStrategy]]
             Intent.IMAGE_CODE_ANALYSIS: ("concept", "step_by_step_explanation"),
             Intent.CODE_REVIEW: ("concept", "concise_review"),
             Intent.OPTIMIZATION: ("concept", "concise_review"),
+            Intent.GENERAL_GUIDANCE: ("concept", "step_by_step_explanation"),
         }
     )
 )
@@ -213,6 +217,198 @@ def _best_topic_match(skill_levels: Mapping[str, float], prose_lower: str) -> st
 MIN_RETRIEVAL_TOPIC_SCORE: Final = -5.0
 
 
+@dataclass(frozen=True, slots=True)
+class _CorpusVocab:
+    """Trusted recognition vocabulary per pattern, read once from the corpus."""
+
+    #: normalized representative-problem title -> patterns that list it
+    titles: Mapping[str, tuple[str, ...]]
+    #: pattern -> normalized phrases of its identification signals + aliases
+    signals: Mapping[str, tuple[str, ...]]
+    #: patterns that are an umbrella over narrower ones (pattern == family)
+    umbrellas: frozenset[str]
+
+
+_STOPWORDS: Final = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "in",
+        "on",
+        "to",
+        "for",
+        "by",
+        "with",
+        "and",
+        "or",
+        "is",
+        "are",
+        "be",
+        "it",
+        "its",
+        "this",
+        "that",
+        "as",
+        "at",
+        "from",
+        "or",
+        "vs",
+        "via",
+        "into",
+        "over",
+    ]
+)
+
+
+def _tokens(text: str) -> list[str]:
+    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in _STOPWORDS]
+
+
+@cache
+def _corpus_vocab() -> _CorpusVocab:
+    # Imported here, not at module level: `app.graph.state` imports this module
+    # and must stay free of the knowledge stack's heavy imports.
+    from app.knowledge.ingest import load_corpus  # noqa: PLC0415
+
+    titles: dict[str, list[str]] = {}
+    signals: dict[str, list[str]] = {}
+    umbrellas: set[str] = set()
+    for doc in load_corpus():
+        for entry in doc.representative_problems:
+            title = " ".join(_tokens(entry.split("|", 1)[0]))
+            if title:
+                titles.setdefault(title, []).append(doc.pattern)
+        for phrase in (*doc.identification_signals, *doc.aliases):
+            tokens = _tokens(phrase)
+            if len(tokens) >= 2:
+                signals.setdefault(doc.pattern, []).append(" ".join(tokens))
+        if doc.pattern_family and doc.pattern_family == doc.pattern:
+            umbrellas.add(doc.pattern)
+    return _CorpusVocab(
+        titles={k: tuple(v) for k, v in titles.items()},
+        signals={k: tuple(v) for k, v in signals.items()},
+        umbrellas=frozenset(umbrellas),
+    )
+
+
+def _rank(pattern: str, context: Sequence[RetrievalHit]) -> int:
+    for index, hit in enumerate(context):
+        if (hit.chunk.pattern or hit.chunk.topic) == pattern:
+            return index
+    return len(context)
+
+
+_TITLE_LEAD_TOKENS: Final = frozenset({"problem", "question", "leetcode", "lc"})
+
+
+def _heading_tokens(inp: StructuredInput | None) -> list[str]:
+    """Tokens of the statement's first line, minus a "Problem:" / number lead-in."""
+    if inp is None:
+        return []
+    text = inp.problem or inp.question or ""
+    first = next((line for line in text.splitlines() if line.strip()), "")
+    tokens = _tokens(first)
+    while tokens and (tokens[0] in _TITLE_LEAD_TOKENS or tokens[0].isdigit()):
+        tokens = tokens[1:]
+    return tokens
+
+
+def _title_match(inp: StructuredInput | None, context: Sequence[RetrievalHit]) -> str | None:
+    """The pattern whose curated representative problem is this statement's TITLE.
+
+    Learners paste a problem with its title as the heading ("Problem: Word
+    Ladder"); the corpus lists each pattern's canonical problems by title, so
+    a heading that IS a listed title is the strongest topic evidence there is.
+    Deliberately exact -- the whole first line must be the title -- because a
+    title found anywhere in the text misfires: "Binary Search" inside "insert
+    into a binary search tree", "Subsets" inside "count subsets with sum k".
+    A title several docs list ("Two Sum": hashing AND prefix_sum) counts only
+    among docs this turn's retrieval surfaced, then a narrow pattern over its
+    umbrella doc.
+    """
+    vocab = _corpus_vocab()
+    heading = " ".join(_heading_tokens(inp))
+    candidates = vocab.titles.get(heading) if heading else None
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    ranked = [p for p in candidates if _rank(p, context) < len(context)]
+    if not ranked:
+        return None
+    return min(ranked, key=lambda p: (_rank(p, context), p in vocab.umbrellas, p))
+
+
+#: Siblings the reranker scores within this margin of the top hit are
+#: treated as tied, and the corpus's own cues break the tie. Measured: the
+#: misfiled sibling pairs sat 0.6-1.5 apart (`bfs` -3.6 vs `dfs` -5.1,
+#: `two_pointers` -0.2 vs `binary_search` -1.2, `dfs` 7.3 vs `bfs` 6.7).
+SIBLING_MARGIN: Final = 2.0
+
+
+def _code_cues(inp: StructuredInput | None) -> dict[str, int]:
+    """Traversal-shape cues read from the code's AST NAMES only (never its text).
+
+    Popping from the left (`popleft`) is the BFS shape; popping a `stack` (or a
+    deque used as one) from the end is the iterative-DFS shape. Identifier names are structural
+    features, the same kind `build_retrieval_query` already folds in.
+    """
+    names: set[str] = set()
+    for block in inp.code if inp is not None else []:
+        try:
+            tree = ast.parse(block.content)
+        except (SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                names.add(node.id.lower())
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr.lower())
+    cues: dict[str, int] = {}
+    # How the container is consumed decides it, not its type: a deque popped
+    # from the right (`stack = deque(); stack.pop()`) is still a DFS stack.
+    if "popleft" in names:
+        cues["bfs"] = 1
+    elif "pop" in names and ("stack" in names or "deque" in names):
+        cues["dfs"] = 1
+    return cues
+
+
+def _signal_choice(
+    prose: str, context: Sequence[RetrievalHit], inp: StructuredInput | None = None
+) -> str | None:
+    """Among siblings retrieval scored almost equally with the top hit (within
+    `SIBLING_MARGIN`), the one whose own curated recognition cues --
+    identification signals and multi-word aliases, matched as whole phrases --
+    appear in the prose, plus traversal-shape cues from the code's AST names.
+    `None` when no candidate has a cue, so the top hit stands."""
+    if not context:
+        return None
+    vocab = _corpus_vocab()
+    padded = f" {' '.join(_tokens(prose))} "
+    code_cues = _code_cues(inp)
+    floor = context[0].score - SIBLING_MARGIN
+    best: tuple[int, int, str] | None = None
+    seen: list[str] = []
+    for hit in context:
+        if hit.score < floor:
+            continue
+        pattern = hit.chunk.pattern or hit.chunk.topic
+        if pattern in seen:
+            continue
+        seen.append(pattern)
+        matched = sum(1 for cue in vocab.signals.get(pattern, ()) if f" {cue} " in padded)
+        matched += code_cues.get(pattern, 0)
+        if matched == 0:
+            continue
+        key = (-matched, len(seen), pattern)
+        if best is None or key < best:
+            best = key
+    return best[2] if best is not None else None
+
+
 def analyze_problem(
     inp: StructuredInput | None,
     profile: LearnerProfileView,
@@ -229,6 +425,7 @@ def analyze_problem(
        turn is a follow-up on / re-paste of that problem ("conversation"),
     2. the learner's known skill keys matched against the prose of `inp`
        (question/problem/error only) ("profile_match"),
+    2b. a curated representative-problem TITLE named in the prose ("title"),
     3. the top-ranked hit in `context`, the knowledge corpus chunks retrieved
        for this turn ("retrieval"),
     4. otherwise the topic is unknown and skill defaults to `PRIOR`
@@ -281,9 +478,17 @@ def analyze_problem(
                 topic_source="profile_match",
             )
 
+    titled = _title_match(inp, context)
+    if titled is not None:
+        return ProblemAnalysis(
+            topic=titled,
+            skill_level=profile.skill_levels.get(titled, PRIOR),
+            topic_source="title",
+        )
+
     if context and context[0].score >= MIN_RETRIEVAL_TOPIC_SCORE:
         chunk = context[0].chunk
-        slug = chunk.pattern or chunk.topic
+        slug = _signal_choice(prose, context, inp) or chunk.pattern or chunk.topic
         return ProblemAnalysis(
             topic=slug,
             skill_level=profile.skill_levels.get(slug, PRIOR),

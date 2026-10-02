@@ -5,7 +5,7 @@ topic: searching
 pattern_family: searching
 difficulty: E:3 M:8 H:3
 aliases: binary search on answer, lo hi search, bisect, log n search
-identification_signals: sorted array, monotonic predicate over a range, find the smallest x such that, first or last occurrence, insertion point
+identification_signals: sorted array, monotonic predicate over a range, find the smallest x such that, first or last occurrence, insertion point, O(log n) time, first and last position
 representative_problems: Binary Search | Easy | https://leetcode.com/problems/binary-search/ ; Search a 2D Matrix | Medium | https://leetcode.com/problems/search-a-2d-matrix/ ; Search in Rotated Sorted Array | Medium | https://leetcode.com/problems/search-in-rotated-sorted-array/ ; Find Minimum in Rotated Sorted Array | Medium | https://leetcode.com/problems/find-minimum-in-rotated-sorted-array/ ; Median of Two Sorted Arrays | Hard | https://leetcode.com/problems/median-of-two-sorted-arrays/ ; Find First and Last Position of Element in Sorted Array | Medium | https://leetcode.com/problems/find-first-and-last-position-of-element-in-sorted-array/ ; Find Peak Element | Medium | https://leetcode.com/problems/find-peak-element/
 ---
 

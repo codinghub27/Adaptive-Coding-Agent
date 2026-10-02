@@ -37,6 +37,10 @@ class Intent(StrEnum):
     TEST_CASE_ANALYSIS = "TEST_CASE_ANALYSIS"
     APPROACH_DISCUSSION = "APPROACH_DISCUSSION"
     PRACTICE_REQUEST = "PRACTICE_REQUEST"
+    #: Not about a specific problem, piece of code or single concept: study
+    #: plans, roadmaps, interview/career advice, greetings and small talk
+    #: (ADAPTIVE-upgrade P2, F7). Never enters the hint ladder.
+    GENERAL_GUIDANCE = "GENERAL_GUIDANCE"
 
 
 LOW_CONFIDENCE_THRESHOLD: Final = 0.6

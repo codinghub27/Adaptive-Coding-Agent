@@ -9,8 +9,10 @@ from app.schemas.intent import LOW_CONFIDENCE_THRESHOLD
 
 def test_intent_has_exactly_twelve_members() -> None:
     # Was eleven until P4 added PRACTICE_REQUEST, which gave asking to be
-    # handed a practice problem its own intent and route.
-    assert len(Intent) == 12
+    # handed a practice problem its own intent and route. Thirteen since
+    # ADAPTIVE-upgrade P2 added GENERAL_GUIDANCE (study plans, advice, small
+    # talk), which must never be forced into a DSA intent and the hint ladder.
+    assert len(Intent) == 13
 
 
 def test_intent_result_rejects_confidence_above_one() -> None:

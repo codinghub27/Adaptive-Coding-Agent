@@ -96,6 +96,8 @@ _EXPECTED_ROUTE: dict[Intent, RouteKey] = {
     Intent.CODE_REVIEW: "explain",
     Intent.OPTIMIZATION: "explain",
     Intent.PRACTICE_REQUEST: "practice",
+    # ADAPTIVE-upgrade P2 (F7): study plans / advice never enter the DSA ladder.
+    Intent.GENERAL_GUIDANCE: "explain",
 }
 
 

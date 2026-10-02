@@ -64,8 +64,15 @@ code involved.
 that code without a more specific intent (debug/explain/review/etc.) clearly applying.
 - TEST_CASE_ANALYSIS: the user wants to know why a specific test case fails or passes, or \
 wants help designing test cases.
-- APPROACH_DISCUSSION: the user wants to discuss strategy or an idea before writing code, \
-not a solution or a hint yet.
+- APPROACH_DISCUSSION: the user wants to discuss strategy or an idea for a SPECIFIC \
+problem before writing code, not a solution or a hint yet.
+- GENERAL_GUIDANCE: the request is not about a specific problem, piece of code, or single \
+concept -- e.g. a study plan or roadmap, interview/placement/career advice, which topics \
+to learn, motivation, a greeting or small talk.
+
+When code is shared with only a vague request ("take a look at this", "check this", \
+"is this right?") and no request to explain it, classify as CODE_DEBUG: the learner \
+usually suspects a problem.
 
 Reply with ONLY a single JSON object and nothing else, in exactly this shape:
 {"intent": "<ONE_OF_THE_INTENT_NAMES_ABOVE>", "confidence": <number between 0 and 1>, \
@@ -88,9 +95,34 @@ intents.
 _PROBLEM_ASK_OVERRIDE_RE = re.compile(r"(?i)\b(hint|stuck|approach|explain|optimi\w*)\b")
 
 
+#: A whole message that is only a greeting / acknowledgement. Classified
+#: GENERAL_GUIDANCE at low confidence, which routes to `clarify`.
+_SMALL_TALK_WORDS = (
+    r"(?:hi|hello|hey|hiya|yo|thanks|thank you|thx|ty|ok|okay|cool|great|nice|got it|"
+    r"good (?:morning|afternoon|evening)|bye)"
+)
+_SMALL_TALK_RE = re.compile(
+    rf"(?i)^\s*{_SMALL_TALK_WORDS}(?:[\s!.,:)]+{_SMALL_TALK_WORDS})*[\s!.,:)]*$"
+)
+
+
 def rule_intent(inp: StructuredInput) -> IntentResult | None:
     """Deterministic, LLM-free classification for unambiguous cases."""
     has_code = bool(inp.code)
+
+    if (
+        not has_code
+        and not inp.problem
+        and not inp.error
+        and inp.question
+        and _SMALL_TALK_RE.match(inp.question)
+    ):
+        return IntentResult(
+            intent=Intent.GENERAL_GUIDANCE,
+            confidence=0.3,
+            source="rule",
+            rationale="greeting or acknowledgement only",
+        )
 
     if inp.error and not inp.question and not inp.problem:
         confidence = 0.9 if has_code else 0.8

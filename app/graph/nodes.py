@@ -555,7 +555,11 @@ async def retrieve_knowledge(state: AgentState, runtime: Runtime[GraphContext]) 
 def _problem_update(state: AgentState) -> AgentStateUpdate:
     """This turn's relation to the active problem, its ladder key, and -- for a
     follow-up -- the structured input re-anchored on the active statement."""
-    relation, key = resolve_problem_relation(state.structured_input, state.active_problem)
+    relation, key = resolve_problem_relation(
+        state.structured_input,
+        state.active_problem,
+        state.intent.intent if state.intent is not None else None,
+    )
     update: AgentStateUpdate = {"problem_relation": relation, "problem_key": key}
     if relation == "followup" and state.active_problem is not None:
         update["structured_input"] = inherit_active_problem(
@@ -623,9 +627,15 @@ def problem_key(structured_input: StructuredInput | None) -> str | None:
     return "_p" + hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 
+#: Intents that are never about the conversation's active problem: a study
+#: plan or a request for a NEW practice problem must not inherit the last one.
+_NON_PROBLEM_INTENTS: Final = frozenset({Intent.GENERAL_GUIDANCE, Intent.PRACTICE_REQUEST})
+
+
 def resolve_problem_relation(
     structured_input: StructuredInput | None,
     active: ActiveProblem | None,
+    intent: Intent | None = None,
 ) -> tuple[ProblemRelation, str | None]:
     """How this turn relates to the conversation's active problem, and its ladder key.
 
@@ -655,6 +665,8 @@ def resolve_problem_relation(
                 return "same", active.key
         return "new", key
     if active is None or structured_input.code or structured_input.error:
+        return "none", None
+    if intent in _NON_PROBLEM_INTENTS:
         return "none", None
     if names_corpus_subject(structured_input.question):
         return "none", None
@@ -1389,7 +1401,16 @@ _INTENT_PHRASES: Final[MappingProxyType[Intent, str]] = MappingProxyType(
         Intent.IMAGE_CODE_ANALYSIS: "analyze code from an image",
         Intent.CODE_REVIEW: "review your code",
         Intent.OPTIMIZATION: "optimize your code",
+        Intent.PRACTICE_REQUEST: "practise on a new problem",
     }
+)
+
+#: A greeting / acknowledgement (low-confidence GENERAL_GUIDANCE) gets an
+#: invitation, not "it looks like you might want to ..." (P2).
+_GREETING_REPLY: Final = (
+    "Hi! Share a problem statement, your code, or a concept you'd like to learn, "
+    "and tell me whether you want a hint, a debugging walkthrough, an explanation, "
+    "or a code review."
 )
 
 
@@ -1398,6 +1419,8 @@ async def clarify(state: AgentState, runtime: Runtime[GraphContext]) -> AgentSta
     del runtime
     if state.structured_input is None or state.structured_input.is_empty:
         text = _ASK_FOR_INPUT
+    elif state.intent is not None and state.intent.intent not in _INTENT_PHRASES:
+        text = _GREETING_REPLY
     elif state.intent is not None:
         phrase = _INTENT_PHRASES[state.intent.intent]
         text = (
@@ -1617,7 +1640,9 @@ def active_problem_update(state: AgentState) -> ActiveProblem | None:
     - Anything else (no problem in play) leaves the stored one untouched.
     """
     plan_topic = state.plan.topic if state.plan is not None else None
-    trusted_topic = plan_topic if state.topic_source in ("retrieval", "profile_match") else None
+    trusted_topic = (
+        plan_topic if state.topic_source in ("title", "retrieval", "profile_match") else None
+    )
     if state.problem_relation == "new":
         if state.structured_input is None or state.problem_key is None:
             return None

@@ -43,6 +43,9 @@ INTENT_ROUTES: Final[Mapping[Intent, RouteKey]] = MappingProxyType(
         Intent.IMAGE_CODE_ANALYSIS: "explain",
         Intent.CODE_REVIEW: "explain",
         Intent.OPTIMIZATION: "explain",
+        # ADAPTIVE-upgrade P2 (F7): study plans / advice get a grounded answer
+        # from the explain route, never the DSA hint ladder.
+        Intent.GENERAL_GUIDANCE: "explain",
     }
 )
 

@@ -267,3 +267,72 @@ Regression tests added for 2, 5, 6. Single-mode re-check on the live API after
 the fixes: all P1 checks still pass (knows_problem 4/4, same_topic 2/2,
 topic_trees 6/6, same_N 2/2, ladder_resumed 1/1, conversation_created 1/1).
 Final suite: **1607 passed, 2 skipped**.
+
+### P2 — Routing + topic accuracy (B4, F2, F7, F8)
+
+**Target (stated first):** 30-probe topic >=95%; routing >=95%; contentless
+probes still resolve None; 0 non-problem requests routed to the ladder.
+
+**What changed**
+- **AD-2: a `GENERAL_GUIDANCE` intent** (study plans, roadmaps, career advice,
+  greetings). The classifier had no honest label for "give me a 4-month plan",
+  so the LLM picked a DSA intent and the turn entered the hint ladder (F7).
+  It routes to `explain`, never inherits the active problem
+  (`_NON_PROBLEM_INTENTS`, also `PRACTICE_REQUEST`), and a deterministic rule
+  sends greeting/acknowledgement-only messages ("hi", "ok thanks") to it at
+  low confidence -> `clarify`. The classifier prompt also now says code shared
+  with only a vague "take a look" is `CODE_DEBUG`.
+- **Topic from the corpus's own recognition vocabulary**, read once from
+  front matter (`planner._corpus_vocab`):
+  1. a **representative-problem title** named in the statement ("Word
+     Ladder" -> `bfs`, "Binary Tree Maximum Path Sum" -> `trees`); a title
+     listed by several docs counts only among docs this turn surfaced
+     ("Two Sum": `hashing` and `prefix_sum`). Ordered after profile match.
+  2. **sibling tie-break**: among hits within `SIBLING_MARGIN = 2.0` of the
+     top score (measured misfiled pairs sat 0.6-1.5 apart), the pattern
+     whose identification signals / aliases appear as whole phrases wins,
+     plus traversal-shape cues from the code's AST names (`stack`+`pop` ->
+     DFS, `deque`/`popleft` -> BFS).
+- **Corpus gaps closed, workbook-supported only.** `dfs.md`: bridges /
+  critical connections signal, a Tarjan low-link variation, and *Critical
+  Connections in a Network* (scheduled under Graphs in the workbook) as a
+  representative problem. `binary_search.md`: `O(log n) time`, `first and
+  last position` front-matter signals (already taught in its body). Index
+  rebuilt: 300 points.
+
+**Results**
+- 30-probe topic set: **90.0% -> 100% (30/30)**. Honest caveat: two of the
+  three fixes were found by looking at those exact misses (the O(log n)
+  signal, the stack/deque cue), so the set is no longer a held-out measure;
+  the transcript probes and `eval.run` are the independent checks.
+- `eval.run`: routing 93.3 -> 93.3 (factorial paste now `debug` ✓; "ok
+  thanks" went to `explain` before the multi-word small-talk rule — fixed and
+  re-checked deterministically), **topic 93.3 -> 100**, hint_safety 100,
+  groundedness 30 (P3). `debug_fix` read **50%** on one run: the
+  correct-submission case got `solved=None`; re-running that case alone gave
+  one miss and one pass — the B2 synthesis nondeterminism, P5's target.
+- Transcript (`eval/results/P2.json`): **279/360 = 77.5%**. `not_ladder` (T12)
+  **0/3 -> 3/3**, `route_clarify` 3/3, T8 now `dfs` in all modes. `grounded`
+  (T12) 3/3 -> 0/3: the study plan no longer gets a ladder hint (whose
+  citations were whatever retrieval returned) and the explain route has no
+  answer for it yet — P3 builds the grounded one.
+
+**Known issues from P2**
+- Title matching needs the exact title; partial names ("first and last
+  position") rely on signals.
+- `debug_fix` is not reliably 100% until P5 (synthesis determinism).
+
+**Code review (medium) before commit: 4 findings, all fixed.**
+1. (high) `clarify` looked `GENERAL_GUIDANCE` up in a phrase map that lacked
+   it -> a plain "hi" raised `KeyError` (masked live by `safe_node`'s fallback).
+   Greetings now get an invitation; `PRACTICE_REQUEST` added to the map too.
+2. (med) title matching was a substring check: "Binary Search" fired inside
+   "insert into a binary search tree". Now the statement's HEADING (first
+   line, minus a "Problem:"/number lead-in) must BE a listed title.
+3. (low/med) "Two Sum II" fell back to the shorter "Two Sum" title — fixed by
+   the same exact-heading rule.
+4. (low) any `deque` counted as BFS; now `popleft` decides, and a deque popped
+   from the right counts as a DFS stack.
+After the fixes: 30-probe set still 100%; `eval.run` **routing 100%, topic
+100%, hint_safety 100%, debug_fix 100% (2/2 this run), groundedness 30%**;
+`pytest` 1644 passed, 2 skipped.
