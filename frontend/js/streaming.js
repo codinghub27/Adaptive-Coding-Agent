@@ -85,6 +85,17 @@ function answerBody(generated, hasHintCard) {
   return rest.map((section) => `## ${section.title}\n\n${section.body}`).join("\n\n");
 }
 
+/**
+ * The corpus sources this answer actually drew on (server-computed: only what
+ * the prompt contained and the model reported using). Previously sent but
+ * never shown.
+ */
+function withReferences(body, citations) {
+  if (!citations || !citations.length) return body;
+  const list = citations.map((label) => `- ${label}`).join("\n");
+  return `${body}\n\n## References\n\n${list}`;
+}
+
 /** Turn a finished `ChatResponse` into the workspace's message shape. */
 function buildMessage(payload, steps) {
   const generated = payload.generated;
@@ -93,7 +104,7 @@ function buildMessage(payload, steps) {
     id: `msg_${crypto.randomUUID()}`,
     role: "agent",
     createdAt: new Date().toISOString(),
-    content: answerBody(generated, Boolean(hint)) || payload.response,
+    content: withReferences(answerBody(generated, Boolean(hint)) || payload.response, generated?.citations),
     concept: buildConcept(payload),
     work: steps.map((step) => ({ ...step, status: "completed" })),
     hint,
@@ -107,7 +118,9 @@ function buildMessage(payload, steps) {
     conversationId: payload.conversation_id,
     // Computed by the server; the UI only renders it (see app/graph/api.py).
     skillDeltas: payload.skill_deltas || {},
-    adapted: true,
+    // Server-computed (app/graph/api.py): true only when profile evidence
+    // actually changed the plan. Never assumed by the client.
+    adapted: Boolean(payload.adapted),
   };
 }
 

@@ -722,3 +722,18 @@ async def test_a_429_on_the_last_key_does_not_postpone_the_rewind() -> None:
     now[0] = 61.0
     result = await client.chat([ChatMessage(role="user", content="y")])
     assert result.content == "k1"
+
+
+async def test_a_limited_last_fallback_retries_earlier_keys_once() -> None:
+    """P5: with the cursor stuck on a 429-ing fallback, an earlier key whose
+    per-minute limit has reset still serves the call."""
+    first = _StubClient("k1", fail=LLMRateLimitError("limited"))
+    last = _StubClient("k2", fail=LLMRateLimitError("limited"))
+    client = FailoverLLMClient([first, last], rewind_after_s=3600.0)
+    with pytest.raises(LLMRateLimitError):
+        await client.chat([ChatMessage(role="user", content="x")])
+    assert client.active_index == 1
+    first.fail = None
+    result = await client.chat([ChatMessage(role="user", content="y")])
+    assert result.content == "k1"
+    assert client.active_index == 0

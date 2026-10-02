@@ -1657,6 +1657,9 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
         needed_full_solution=agent_output.needed_full_solution,
         errors=agent_output.errors,
         solved=solved,
+        # Provenance of the OUTCOME: when the gate above dropped it, the
+        # event is exposure only and its source is honestly "none".
+        evidence_source=state.suite_source if solved is not None else "none",
     )
 
 

@@ -321,6 +321,26 @@ class GraphResultEvent:
 GraphStreamEvent = GraphStageEvent | GraphResultEvent
 
 
+#: Nodes that always run but often do nothing: `execute_code` / `verify` are
+#: no-ops when no agent produced a run request. Streaming their labels anyway
+#: showed "Running your code in the sandbox" on turns where nothing ran (F9).
+_CONDITIONAL_STAGES: Final[Mapping[str, str]] = MappingProxyType(
+    {"execute_code": "execution_result", "verify": "verification"}
+)
+
+
+def _stage_did_work(node: str, payload: object) -> bool:
+    """Whether `node` actually did its job this turn (only checked for the
+    conditional stages; every other node always counts). Reads only whether
+    the result field is present -- never its content."""
+    field = _CONDITIONAL_STAGES.get(node)
+    if field is None:
+        return True
+    if not isinstance(payload, Mapping):
+        return False
+    return cast("Mapping[str, object]", payload).get(field) is not None
+
+
 async def stream_graph(
     raw: RawInput,
     *,
@@ -381,7 +401,9 @@ async def stream_graph(
             mode = cast("str", mode)
             if mode == "updates":
                 update = cast("Mapping[str, object]", chunk)
-                for node in update:
+                for node, payload in update.items():
+                    if not _stage_did_work(node, payload):
+                        continue
                     queue.put_nowait(
                         GraphStageEvent(
                             node=node, label=STAGE_LABELS.get(node, DEFAULT_STAGE_LABEL)

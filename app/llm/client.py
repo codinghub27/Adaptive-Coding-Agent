@@ -564,6 +564,7 @@ class FailoverLLMClient:
             self._index = 0
             self._advanced_at = None
         index = self._index
+        start = index
         while index < len(self._clients):
             try:
                 result = await call(self._clients[index])
@@ -580,6 +581,23 @@ class FailoverLLMClient:
                     self._advanced_at = self._clock()
                 continue
             self._index = index
+            return result
+        # Everything from the cursor onward is limited. Groq's limits are per
+        # minute as well as per day, so a key passed over earlier may already
+        # have recovered: give each earlier credential ONE more try before
+        # failing the call (P5: a burst pinned the cursor on a 429-ing last
+        # fallback and every later call failed instantly, sending turns to the
+        # keyword classifier and `clarify`).
+        for retry in range(start):
+            try:
+                result = await call(self._clients[retry])
+            except LLMRateLimitError as exc:
+                last = exc
+                continue
+            self._index = retry
+            # Still off the first key: keep a window running so the primary
+            # is re-tried once it has had time to recover.
+            self._advanced_at = self._clock() if retry > 0 else None
             return result
         if last is None:  # pragma: no cover - only reachable with an empty chain
             raise LLMError("no LLM credential is configured")

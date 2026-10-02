@@ -22,6 +22,7 @@ from app.memory.conversation import get_owned_conversation
 from app.memory.profile import apply_event, ensure_profile, to_view
 from app.schemas.event import (
     Difficulty,
+    EvidenceSource,
     LearningEventCreate,
     LearningEventView,
     RecordEventResult,
@@ -75,6 +76,7 @@ def _row_to_create(row: LearningEvent) -> LearningEventCreate:
         requested_help=cast("RequestedHelp | None", row.requested_help),
         hints_used=row.hints_used,
         needed_full_solution=row.needed_full_solution,
+        evidence_source=cast("EvidenceSource", row.evidence_source),
         errors=row.errors,
         solved=row.solved,
         time_spent=row.time_spent,
@@ -122,6 +124,7 @@ async def record_event(
             requested_help=requested_help,
             hints_used=event.hints_used,
             needed_full_solution=event.needed_full_solution,
+            evidence_source=event.evidence_source,
             errors=event.errors,
             solved=event.solved,
             time_spent=event.time_spent,

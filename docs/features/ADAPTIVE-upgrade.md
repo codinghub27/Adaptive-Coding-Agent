@@ -525,6 +525,91 @@ timed out on the provider (268 s). `pytest`: **1681 passed, 2 skipped**.
   P1's synthesis). The reveal text says so.
 - The UI never rendered `citations` (P5 adds them).
 
+### P5 — Evidence determinism + honest UI (B2, F9)
+
+**Target (stated first):** 10/10 identical debug requests take the same
+evidence path; provenance 100% populated; 0 phantom steps across the
+transcript probes (checked in the rendered UI).
+
+**What changed**
+- **Determinism (B2):** synthesis runs at temperature 0 with ONE bounded retry
+  (`SYNTH_ATTEMPTS = 2`) when a proposal fails validation.
+  `eval/determinism.py` (new) runs one fixed debug request (a real statement,
+  no worked examples, so synthesis is the only path) through the real graph N
+  times.
+- **Provenance:** `LearningEventCreate.evidence_source` and a
+  `learning_events.evidence_source` column (migration `f3a4b5c6d7e8`):
+  `extracted | synthesised | none`. Rows that predate it and carry an outcome
+  are backfilled `unknown`, never a guessed source.
+- **Honest steps (F9):** `stream_graph` streams `execute_code` / `verify` only
+  when they produced a result. The `explain_agent` label "Reading your code"
+  became "Working through your question", since it now also answers concept
+  and study-plan questions with no code.
+- **Honest "adapted" (F9):** `ChatResponse.adapted` = `planner.plan_adapted`:
+  true only when the difficulty moved off the PRIOR default or a
+  profile-driven rule fired (weak/strong skill, stored preferences). The UI
+  renders the server value instead of a hard-coded `true`.
+- **References shown:** the UI never rendered `generated.citations`; answers
+  now end with a References list (only the server-computed sources).
+- **Failover wrap-around (infra, recorded for the same reason as P4's
+  rewind):** when every credential from the cursor onward is 429-limited,
+  earlier keys get ONE more try before the call fails. In the first P5 run, a
+  burst pinned the cursor on the 429-ing last fallback, and half the turns hit
+  the keyword classifier instantly (0.1–1 s turns, `clarify`). A per-key probe
+  right after showed all five Groq keys healthy.
+
+**Results**
+- Determinism, same request x10: **7/10 -> 10/10** identical evidence path
+  (`synthesised / fail / solved=False`). Before: 3/10 runs produced no suite at
+  all (`none / inconclusive / None`).
+- Provenance (postgres, live API): a debug turn -> `binary_search, solved=false,
+  synthesised`; a DSA attempt -> `sliding_window, solved=true, synthesised`.
+  The 70 exposure events in the window are all `none`.
+- Phantom steps: **4/62 -> 62/62** clean on the transcript probes.
+  **Playwright, rendered UI**, fresh account, "What is a trie…": the steps are
+  Reading your input / … / Writing your answer / Updating what I know about
+  you, with **no sandbox steps**; **no "Adapted to your level"**; References
+  shows `Trie - Overview / Core Intuition / When to Recognize It / Complexity`.
+- Transcript (first P5 run, provider-starved in its second half — see the
+  wrap-around): 341/362 = 94.2%, with no_phantom_steps 62/62 and
+  no_truncated_text 39/39.
+
+**Known issues from P5**
+- The debug probe's topic resolved to `binary_search` for a
+  "longest increasing run" bug (identifier-only retrieval query). It is a
+  topic-accuracy case outside the 30-probe set.
+- The worked-example extractor still misses the `Example 1: s = "…" -> 3`
+  format, so those turns synthesise (deterministically now) rather than
+  extract.
+
+**Code review (medium) before commit: 5 findings, all fixed.**
+1. (med) A successful wrap-around retry cleared the rewind timer, so the
+   primary key was never re-tried. The window is now kept when landing on any
+   key but the first.
+2. (med) The synthesis retry also fired on LLM/budget/sandbox errors, which
+   just repeat. Now only a proposal that failed VALIDATION is retried (a
+   `RETRY` marker); an LLM error makes exactly one call.
+3. (low) `evidence_source` said `synthesised` on rows whose outcome the
+   statement gate had dropped. Provenance now follows the recorded outcome
+   (`none` when `solved` is NULL).
+4. (low) A fallback response kept the citations of the sections it dropped.
+   It now cites nothing.
+5. (low) `eval/determinism.py` would report "10/10" with the sandbox down. It
+   now refuses to measure without a runner, and closes Qdrant.
+`pytest`: 1688 passed (non-live).
+
+**Provider quota, measured rather than assumed.** After the fixes, a
+determinism re-run showed every turn at `clarify` (keyword fallback). A direct
+probe found all five Groq keys answer a 5-token request, but return
+`RateLimitError` for the real intent-classifier request (prompt plus
+`max_tokens=1024`). Today's free-tier token quota is exhausted on every key.
+Live numbers taken after this point would measure the quota, not the agent,
+so the post-review determinism re-run and the clean P5 transcript re-run wait
+for the quota to reset. The 10/10 figure above was measured on the
+pre-review code. The review changes only narrow WHEN the retry fires (no
+retry on LLM/sandbox errors), which cannot make the validated-suite path less
+deterministic.
+
 ### Session handoff (usage limit reached mid-P4)
 
 - Committed: P0 `d4bc915`, P1 `5c48d92`, P2 `cb9e558`, P3 `afcd81e`.

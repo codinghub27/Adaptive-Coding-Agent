@@ -359,6 +359,8 @@ def generate_response(
         text = stripped_fallback if stripped_fallback else SAFE_FALLBACK_RESPONSE
         sections = []
         reveals_code = False
+        # The fallback text used none of the sources (P5 review).
+        citations = []
 
     return GeneratedResponse(
         text=text,

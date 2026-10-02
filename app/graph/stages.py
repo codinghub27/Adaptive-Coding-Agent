@@ -28,7 +28,9 @@ STAGE_LABELS: Final[Mapping[str, str]] = MappingProxyType(
         "route": "Choosing an approach",
         "dsa_agent": "Working through the problem",
         "debug_agent": "Debugging your code",
-        "explain_agent": "Reading your code",
+        # Also answers concept questions and study-plan requests with no code
+        # (P3), so the label must not claim code was read (F9).
+        "explain_agent": "Working through your question",
         "practice_agent": "Picking a problem for you",
         "clarify": "Asking for a bit more",
         "execute_code": "Running your code in the sandbox",

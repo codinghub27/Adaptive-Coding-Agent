@@ -17,6 +17,7 @@ from app.schemas.intent import Intent
 
 __all__ = [
     "Difficulty",
+    "EvidenceSource",
     "LearningEventCreate",
     "LearningEventView",
     "RecordEventResult",
@@ -25,6 +26,8 @@ __all__ = [
 ]
 
 Difficulty = Literal["easy", "medium", "hard"]
+EvidenceSource = Literal["extracted", "synthesised", "none", "unknown"]
+
 RequestedHelp = Literal[
     "hint", "solution", "debug", "explanation", "review", "test_analysis", "approach"
 ]
@@ -52,6 +55,11 @@ class LearningEventCreate(APIModel):
     requested_help: RequestedHelp | None = None
     hints_used: int = Field(default=0, ge=0, le=1000)
     needed_full_solution: bool = False
+    #: Where this turn's outcome evidence came from (P5): a suite EXTRACTED
+    #: from the statement's examples, one SYNTHESISED and sandbox-validated,
+    #: or none at all (exposure only). "unknown" only on rows written before
+    #: provenance was recorded.
+    evidence_source: EvidenceSource = "none"
     errors: list[str] = Field(default_factory=list[str])
     # `True`/`False` are observed outcomes. `None` means the topic was
     # encountered this turn (e.g. a hint request) but no outcome was

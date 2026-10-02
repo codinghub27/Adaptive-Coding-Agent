@@ -64,6 +64,10 @@ class LearningEvent(Base):
     requested_help: Mapped[str | None] = mapped_column(String(32), nullable=True)
     hints_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     needed_full_solution: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: extracted | synthesised | none (P5 provenance)
+    evidence_source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="none", server_default="none"
+    )
     errors: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )

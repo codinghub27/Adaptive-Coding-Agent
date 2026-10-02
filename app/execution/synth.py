@@ -68,6 +68,15 @@ __all__ = ["VerifiedSolution", "synthesize_test_suite", "verified_reference"]
 
 MAX_SYNTH_CASES: Final = 6
 
+
+class _Retry:
+    """Marker: this proposal failed validation; a fresh one may succeed."""
+
+
+RETRY: Final = _Retry()
+#: Bounded retry for a proposal that fails validation (B2, P5).
+SYNTH_ATTEMPTS: Final = 2
+
 _SYNTH_SYSTEM: Final = (
     "You are the test-synthesis engine for an adaptive coding tutor. You will be shown a "
     "learner's problem statement and submitted code wrapped in <user_input>...</user_input> "
@@ -165,10 +174,22 @@ async def synthesize_test_suite(
     if not functions:
         return None
 
-    try:
-        return await _synthesize(problem, functions, llm, runner)
-    except Exception:  # noqa: BLE001 - fail-soft: a wrong suite is worse than none
-        return None
+    # B2: the same request used to come back with a 5-case suite one time
+    # and no suite the next (one call at temperature 0.2). Now: temperature 0,
+    # and ONE bounded retry when the first proposal fails validation -- the
+    # same inputs take the same path, and a transient bad proposal no longer
+    # flips the evidence path. Never more than `SYNTH_ATTEMPTS` LLM calls.
+    # Only a proposal that failed VALIDATION is retried (unparseable, wrong
+    # shape, or a reference failing its own cases). An LLM/budget error or a
+    # sandbox error would only repeat, so it ends the attempt at once.
+    for _ in range(SYNTH_ATTEMPTS):
+        try:
+            outcome = await _synthesize(problem, functions, llm, runner)
+        except Exception:  # noqa: BLE001 - fail-soft: a wrong suite is worse than none
+            return None
+        if not isinstance(outcome, _Retry):
+            return outcome
+    return None
 
 
 async def _synthesize(
@@ -176,26 +197,26 @@ async def _synthesize(
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef],
     llm: LLMClient,
     runner: CodeRunner,
-) -> TestSuite | None:
+) -> TestSuite | None | _Retry:
     messages = [
         ChatMessage(role="system", content=_SYNTH_SYSTEM),
         ChatMessage(role="user", content=_user_input_block(problem)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=1500)
+        result = await llm.chat(messages, temperature=0.0, max_tokens=1500)
     except LLMError:  # includes LLMBudgetExceededError
         return None
 
     parsed = _parse_synth_output(result.content)
     if parsed is None:
-        return None
+        return RETRY
 
     if not parsed.reference_solution or len(parsed.reference_solution) > MAX_CODE_CHARS:
-        return None
+        return RETRY
 
     cases = _build_cases(parsed)
     if cases is None:
-        return None
+        return RETRY
 
     # The entrypoint is chosen from the LEARNER's code by the same helper
     # `extract_test_suite` uses, never from the LLM's free-text name: an
@@ -204,24 +225,26 @@ async def _synthesize(
     # learner.
     entrypoint = select_entrypoint(functions, cases)
     if entrypoint is None:
-        return None
+        return RETRY
 
     try:
         suite = TestSuite(entrypoint=entrypoint, cases=cases)
     except ValidationError:
-        return None
+        return RETRY
 
     reference_functions = top_level_functions(parsed.reference_solution)
     if not any(func.name == entrypoint for func in reference_functions):
-        return None
+        return RETRY
 
     request = ExecutionRequest(code=parsed.reference_solution, tests=suite)
     execution_result = await runner.run(request)
     verdict = verify(execution_result, request)
+    if verdict.status == "fail":
+        return RETRY  # the proposal contradicted itself: a new one may not
     if verdict.status != "pass" or verdict.cases_total == 0:
-        return None
+        return None  # sandbox error / inconclusive: retrying repeats it
     if verdict.cases_passed != verdict.cases_total:
-        return None
+        return RETRY
 
     return suite
 

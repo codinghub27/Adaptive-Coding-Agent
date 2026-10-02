@@ -665,6 +665,27 @@ def build_plan(
     )
 
 
+#: Rationale tags that only ever come from the learner's PROFILE (skill
+#: estimate or stored preferences) -- the evidence half of "adapted".
+_PROFILE_RATIONALE: Final = frozenset(
+    {"weak_skill", "strong_skill", "prefers_hints", "likes_step_by_step", "line_by_line"}
+)
+
+
+def plan_adapted(plan: TeachingPlan | None) -> bool:
+    """Whether `plan` deviates from the default because of profile evidence.
+
+    "Adapted to your level" was shown on every turn, including a fresh
+    account with every skill at PRIOR (F9). It is now true only when the
+    difficulty moved off the PRIOR default or a profile-driven rule fired.
+    """
+    if plan is None:
+        return False
+    if plan.difficulty != difficulty_for(PRIOR):
+        return True
+    return any(tag in _PROFILE_RATIONALE for tag in plan.rationale)
+
+
 def clamp_assistance(plan: TeachingPlan, cap: AssistanceLevel | None) -> TeachingPlan:
     """Apply a client-requested assistance ceiling to `plan`, never raising it.
 
