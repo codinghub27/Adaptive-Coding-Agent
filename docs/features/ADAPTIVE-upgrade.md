@@ -409,3 +409,139 @@ After the fixes: `eval.run` groundedness **90% (9/10)** (one DSA hint case at
 L0 on a retrieval-guessed topic now — correctly — quotes no section), all other
 metrics 100%; single-mode transcript re-check: every section check still
 passes; `pytest` 1658 passed, 2 skipped.
+
+### P4 — Escalation + hint quality (F4, F5, F10 teaching mode)
+
+**Target (stated first):** full solution reachable per mode; hint_safety 100%;
+0 truncated rungs; 0 cross-topic rungs; revealed code always sandbox-verified.
+
+**AD-4: escalation policy by teaching mode.** The ceiling and an explicit ask
+are required in every mode; what counts as effort differs:
+- **Guidance:** ceiling + explicit ask.
+- **Balanced:** ceiling + explicit ask + (verified attempt OR a second explicit
+  ask at the ceiling; refused asks counted in `hint_progress.asks_at_ceiling`,
+  migration `e2f3a4b5c6d7`).
+- **Challenge:** ceiling + explicit ask + sandbox-verified attempt (unchanged).
+
+Whatever is revealed is ONLY `synth.verified_reference`: an LLM-proposed
+reference that must define its entrypoint and pass every proposed case in the
+sandbox. The solver LLM's own `code` is discarded unconditionally. If no
+reference verifies, the L6 hint says so and reveals nothing
+(`reveals_code=False`). The verified request then runs again through
+`execute_code -> verify`, so the turn's `verification` shows the pass. A reveal
+sets `needed_full_solution=true` (L6) and never `solved` (that still comes only
+from the learner's own `initial_verdict`). `assistance_cap` still applies after
+the plan, so it can only lower assistance.
+
+**Teaching mode end to end.** `teaching_mode` form field (`guidance |
+balanced | challenge`, default `balanced`, 422 on anything else) ->
+`RawInput.teaching_mode` -> `build_plan(teaching_mode=)`. UI: the pill used to
+be a "Guidance" label plus Balanced/Challenge buttons, with Challenge mapped to
+`assistance_cap=hint`. It is now a "Mode" label plus three buttons, each sending
+`teaching_mode`; the composer's Hint-mode button keeps the cap. **Playwright,
+rendered UI:** clicking Guidance made the next `/chat/stream` carry
+`teaching_mode=guidance, assistance_cap=null`.
+
+**Explicit asks that never matched (F4).** "give full answer", "give full code"
+and "give code for that" did not match the old regex, and only `DSA_SOLVE`
+counted. The regex is broadened and now accepts any DSA-route intent. "give code
+for that" as a follow-up was also classified as a low-confidence concept
+question and went to `clarify`. A follow-up on the active problem that matches
+the fixed ask phrases is now classified `DSA_SOLVE` deterministically.
+
+**Rungs (F5).**
+- `_first_clause` never cuts a sentence: it takes a whole sentence (up to 320
+  chars) or no quote at all.
+- L0 is specific: what makes this a `<topic>` problem, from the corpus
+  "When to Recognize It" section plus an identification cue, instead of
+  "restate the problem in your own words".
+- The L2 shape suggestion only uses labels from the same pattern family (or the
+  doc's own topic), so "For a heaps problem, trees is often the right shape"
+  can no longer be produced.
+
+**Failover rewind (an infrastructure fix outside the packet's own list, recorded
+because it changed what could be measured).** The first P4 live run was invalid.
+`FailoverLLMClient` never rewound by design, so one per-minute 429 on the
+primary Groq key pinned the process to the slow free fallback, and every later
+turn misclassified to `clarify` (24–85 s latencies). The cursor now returns to
+the first key `DEFAULT_REWIND_AFTER_S = 300` s after it advanced. That costs at
+most one failed call per exhausted key per window.
+
+**Result on the fixed instrument — `eval/results/P4.json`: 313/365 = 85.8%**
+(P3 81.7%; the denominator grew because revealed turns add
+`revealed_code_verified` checks).
+
+| check | P3 | P4 |
+|---|---|---|
+| full_solution_reachable (Guidance E4, Balanced E5) | 0/2 | **2/2** |
+| revealed_code_verified (HARD GATE) | 0/1 | **6/6** |
+| reveal_after_verified_attempt / no_reveal_without_attempt (Challenge) | 1/1, 1/1 | 1/1, 1/1 |
+| hint_specific (T1) | 0/3 | **3/3** |
+| no_truncated_text | 36/39 | 38/39 |
+| no_cross_topic | 39/39 | 39/39 |
+| ladder_resumed (T10) | 3/3 | 2/3 |
+
+The two misses:
+- `ladder_resumed` (balanced): T9 "give code for that" had been routed to
+  `clarify`. That is the classification fixed above, after this run.
+- `no_truncated_text` (balanced T7): the solver LLM's own "understanding" text,
+  not a rung.
+
+`eval.run`: routing 100, topic 100, **hint_safety 100**, debug_fix 100,
+groundedness 100. `pytest`: 1677 passed, 2 skipped.
+
+**Seen in the rendered UI (P5's job, not fixed here):** a concept question with
+no code showed "Running your code in the sandbox" and "Checking the results",
+and "Adapted to your level" on a fresh account.
+
+**Code review (medium) before commit: 6 findings, all fixed.**
+1. (high) The ask phrase was matched against the problem STATEMENT too, so
+   "return the answer modulo 10^9+7" plus "next hint" counted as asks. Now only
+   the learner's own question is read.
+2. (med) The widened phrase list matched ordinary sentences ("I'll write code
+   myself", "explain the code for this"). It is narrowed back to `give …` /
+   `show me the …` / the original phrases. The follow-up intent override now
+   applies only to a missing or low-confidence classification.
+3. (high) A problem already marked solved could crash the turn (code with no
+   L6 hint). The reveal is skipped when `progress.solved`, and code is only
+   attached at L6.
+4. (med) An UNverified reveal still counted as one (`needed_full_solution`,
+   `hints_used=7`, stored L6). The ladder now holds at its previous rung.
+5. (med) A 429 on the LAST credential kept postponing the rewind. Only an
+   actual cursor move starts the window now.
+6. (low) The reveal text overclaimed ("test cases derived from the problem").
+   It now says the reference passed cases proposed together with it: checked,
+   not proven.
+
+Live re-check of escalation after the fixes (`eval/results/P4-review-E.json`):
+Guidance revealed at **E4** (first ask at the ceiling), Balanced at **E5**
+(second ask), Challenge **never** without an attempt and at **E8** right after
+the verified attempt. **revealed_code_verified 5/5.** One Guidance E6 turn
+timed out on the provider (268 s). `pytest`: **1681 passed, 2 skipped**.
+
+**Known issues from P4**
+- The verified reference and its cases come from one LLM reply: a wrong
+  solution with matching wrong cases still "verifies" (same limitation as
+  P1's synthesis). The reveal text says so.
+- The UI never rendered `citations` (P5 adds them).
+
+### Session handoff (usage limit reached mid-P4)
+
+- Committed: P0 `d4bc915`, P1 `5c48d92`, P2 `cb9e558`, P3 `afcd81e`.
+- P4 was later completed and committed (see above). Original note: **P4 is applied in the working tree, NOT committed.** It includes the teaching
+  mode end to end (form field, UI pill, policy), the verified-only reveal
+  (`synth.verified_reference`), the `asks_at_ceiling` counter (migration
+  `e2f3a4b5c6d7`), and the rung fixes (no truncation, specific L0,
+  same-family shape). It also includes a failover cooldown rewind
+  (`DEFAULT_REWIND_AFTER_S = 300`). The first P4 live run was invalidated:
+  the cursor never rewound, so the process stayed pinned to the slow fallback
+  model, and every turn after that went to `clarify`.
+  Non-sandbox tests pass (1653), pyright 0, ruff clean, `eval.run` all
+  metrics 100%. Live re-run writing `eval/results/P4.json` was in progress.
+  First live evidence: Guidance revealed a verified solution at E4
+  (`verification=pass`).
+- Still to do for P4: read `eval/results/P4.json`, run the full pytest
+  suite, playwright-check the mode pill, run the code review, then commit.
+- P5 / P6 are drafted as scratch scripts (`p5_apply.py`, `p6_apply.py`).
+  `eval/adaptation_speed.py` (untracked) depends on P6's `skill_for`.
+  P7 has not started.

@@ -29,7 +29,12 @@ from app.schemas.execution import ExecutionRequest, ExecutionResult, Verdict
 from app.schemas.input import ActiveProblem, ProblemRelation, StructuredInput
 from app.schemas.intent import IntentResult
 from app.schemas.knowledge import RetrievalHit
-from app.schemas.plan import AssistanceLevel, TeachingPlan
+from app.schemas.plan import (
+    DEFAULT_TEACHING_MODE,
+    AssistanceLevel,
+    TeachingMode,
+    TeachingPlan,
+)
 from app.schemas.profile import LearnerProfileView
 from app.schemas.response import GeneratedResponse
 
@@ -71,6 +76,9 @@ class RawInput(APIModel):
     #: how much help is given, never raise it -- so a hostile client cannot
     #: use it to extract a full solution the planner wouldn't otherwise give.
     assistance_cap: AssistanceLevel | None = None
+    #: Guidance / Balanced / Challenge (ADAPTIVE-upgrade P4): when a full
+    #: solution may be revealed. Never raises assistance on its own.
+    teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE
 
 
 class AgentOutcome(APIModel):

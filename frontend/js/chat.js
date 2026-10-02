@@ -44,6 +44,11 @@ const state = {
    * it, never raise it — the hint ladder stays server-enforced.
    */
   assistanceCap: null,
+  /**
+   * Guidance / Balanced / Challenge. Decides only WHEN the server may reveal a
+   * (sandbox-verified) full solution; it never raises help on its own.
+   */
+  teachingMode: "balanced",
 };
 
 const IMAGE_FALLBACK_TEXT = "Help me understand what’s happening in this screenshot.";
@@ -174,6 +179,7 @@ async function sendMessage(explicitText = null, { topic = null } = {}) {
     await api.streamChat(state.activeConversation.id, fallbackText, {
       attachmentFile,
       assistanceCap: state.assistanceCap,
+      teachingMode: state.teachingMode,
       topic,
       onEvent(event) {
         if (event.type === "start") {
@@ -255,10 +261,16 @@ function clearAttachment() {
 function setAssistanceCap(capped, note) {
   state.assistanceCap = capped ? "hint" : null;
   document.querySelector("#hint-mode")?.classList.toggle("active", capped);
+  if (note) showToast(note);
+}
+
+/** The teaching-mode pill: one of guidance / balanced / challenge, sent per turn. */
+function setTeachingMode(mode, note) {
+  state.teachingMode = mode;
   document.querySelectorAll(".mode-pill button").forEach((button) => {
-    const isChallenge = button.textContent.trim() === "Challenge";
-    button.classList.toggle("active", isChallenge === capped);
-    button.setAttribute("aria-pressed", String(isChallenge === capped));
+    const active = button.textContent.trim().toLowerCase() === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
   });
   if (note) showToast(note);
 }
@@ -410,9 +422,8 @@ function bindChrome() {
   });
   document.querySelector(".session-search input").addEventListener("input", (event) => sessionManager.render(event.target.value));
   document.querySelectorAll(".mode-pill button").forEach((button) => button.addEventListener("click", () => {
-    document.querySelectorAll(".mode-pill button").forEach((item) => item.classList.remove("active"));
-    button.classList.add("active");
-    setAssistanceCap(button.textContent === "Challenge", `${button.textContent} guidance selected`);
+    const label = button.textContent.trim();
+    setTeachingMode(label.toLowerCase(), `${label} mode selected`);
   }));
   elements.userChip.addEventListener("click", openProfileModal);
   document.querySelector(".profile-settings").addEventListener("click", openProfileModal);

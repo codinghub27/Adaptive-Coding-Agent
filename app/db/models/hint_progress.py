@@ -43,6 +43,10 @@ class HintProgress(Base):
     #: keeps one N for the ladder's lifetime (ADAPTIVE-upgrade P1, F3). NULL on
     #: rows written before this column existed: the per-turn ceiling applies.
     ceiling: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Explicit full-solution asks refused while at the ceiling (P4).
+    asks_at_ceiling: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

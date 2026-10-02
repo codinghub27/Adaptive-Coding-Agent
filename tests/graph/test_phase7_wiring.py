@@ -25,6 +25,7 @@ from app.agents.hint_engine import HintProgress
 from app.agents.reviewer import ReviewRunResult
 from app.db.models import HintProgress as HintProgressRow
 from app.execution.base import CodeRunner
+from app.execution.synth import VerifiedSolution
 from app.graph.build import NODE_FUNCTIONS, build_graph, run_graph
 from app.graph.nodes import (
     DEFAULT_HINT_TOPIC,
@@ -49,6 +50,7 @@ from app.schemas.execution import (
     ExecutionResult,
     TestCase,
     TestSuite,
+    Verdict,
 )
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
@@ -151,7 +153,7 @@ async def test_dsa_agent_returns_real_outcome_without_execution_request() -> Non
 
 @pytest.mark.db
 async def test_dsa_agent_sets_execution_request_once_ladder_reaches_full(
-    db_session: AsyncSession, user_id: uuid.UUID
+    db_session: AsyncSession, user_id: uuid.UUID, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A prior hint-progress row already at rung L5 for this conversation+topic
     resumes the ladder at L6 this turn, producing code and an execution request.
@@ -172,6 +174,23 @@ async def test_dsa_agent_sets_execution_request_once_ladder_reaches_full(
     )
     llm = FakeLLMClient(chat_content='{"code": "print(1)"}')
 
+    # ADAPTIVE-upgrade P4 (AD-4): a granted escalation reveals only the
+    # sandbox-verified reference from `synth.verified_reference`; the solver's
+    # own `{"code": "print(1)"}` is discarded. Stub the verified reference.
+    verified = "def solve():\n    return 1\n"
+    suite = TestSuite(entrypoint="solve", cases=[TestCase(name="c", args=[], expected=1)])
+    solution = VerifiedSolution(
+        code=verified,
+        request=ExecutionRequest(code=verified, tests=suite),
+        verdict=Verdict(status="pass", cases_passed=1, cases_total=1, summary="ok"),
+    )
+
+    async def _fake_reference(*args: object, **kwargs: object) -> VerifiedSolution:
+        del args, kwargs
+        return solution
+
+    monkeypatch.setattr("app.graph.nodes.verified_reference", _fake_reference)
+
     update = await dsa_agent(
         state,
         _runtime(llm=llm, session=db_session, user_id=user_id, conversation_id=conversation_id),
@@ -179,7 +198,7 @@ async def test_dsa_agent_sets_execution_request_once_ladder_reaches_full(
 
     request = update.get("execution_request")
     assert request is not None
-    assert request.code == "print(1)"
+    assert request.code == verified
     outcome = update.get("agent_output")
     assert outcome is not None
     assert outcome.needed_full_solution is True

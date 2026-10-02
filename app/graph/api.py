@@ -20,7 +20,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Annotated, cast
+from typing import Annotated, Final, cast, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -57,7 +57,12 @@ from app.schemas.base import APIModel
 from app.schemas.event import LearningEventCreate
 from app.schemas.execution import Verdict
 from app.schemas.intent import IntentResult
-from app.schemas.plan import ASSISTANCE_ORDER, TeachingPlan
+from app.schemas.plan import (
+    ASSISTANCE_ORDER,
+    DEFAULT_TEACHING_MODE,
+    TeachingMode,
+    TeachingPlan,
+)
 from app.schemas.response import GeneratedResponse
 
 __all__ = ["STREAM_ERROR_DETAIL", "ChatResponse", "router"]
@@ -70,6 +75,8 @@ router = APIRouter(tags=["chat"])
 #: never the raw exception text, which may carry secrets or untrusted input
 #: (mirrors `NodeError.message`'s convention).
 STREAM_ERROR_DETAIL = "the request could not be completed"
+
+_TEACHING_MODES: Final = frozenset(get_args(TeachingMode))
 
 
 class ChatResponse(APIModel):
@@ -162,6 +169,7 @@ async def _build_raw_input(
     image: UploadFile | None,
     topic: str | None,
     assistance_cap: str | None = None,
+    teaching_mode: str | None = None,
 ) -> RawInput:
     """Shared request parsing/validation for `/chat` and `/chat/stream`: same
     size/type checks, same "text and/or image" requirement, so the two
@@ -174,6 +182,8 @@ async def _build_raw_input(
     if assistance_cap is not None and assistance_cap not in ASSISTANCE_ORDER:
         # Never echo the submitted value back in the detail.
         raise HTTPException(status_code=422, detail="invalid assistance_cap")
+    if teaching_mode is not None and teaching_mode not in _TEACHING_MODES:
+        raise HTTPException(status_code=422, detail="invalid teaching_mode")
 
     image_bytes = await _read_image(image) if image is not None else None
 
@@ -184,6 +194,7 @@ async def _build_raw_input(
         image_mime=image.content_type if image is not None else None,
         topic_hint=topic,
         assistance_cap=assistance_cap,
+        teaching_mode=cast("TeachingMode", teaching_mode or DEFAULT_TEACHING_MODE),
     )
 
 
@@ -239,6 +250,7 @@ async def chat(
     conversation_id: Annotated[UUID | None, Form()] = None,
     topic: Annotated[str | None, Form(max_length=64)] = None,
     assistance_cap: Annotated[str | None, Form(max_length=16)] = None,
+    teaching_mode: Annotated[str | None, Form(max_length=16)] = None,
 ) -> ChatResponse:
     """Run one turn of the teaching graph over `text`/`image` and return its outcome.
 
@@ -249,7 +261,7 @@ async def chat(
     `app.agents.planner.clamp_assistance`) -- it can only lower the help
     given, never raise it.
     """
-    raw = await _build_raw_input(text, language, image, topic, assistance_cap)
+    raw = await _build_raw_input(text, language, image, topic, assistance_cap, teaching_mode)
     conversation_id = await _ensure_conversation(session, current_user.id, conversation_id)
 
     result = await run_graph(
@@ -371,13 +383,14 @@ async def chat_stream(
     conversation_id: Annotated[UUID | None, Form()] = None,
     topic: Annotated[str | None, Form(max_length=64)] = None,
     assistance_cap: Annotated[str | None, Form(max_length=16)] = None,
+    teaching_mode: Annotated[str | None, Form(max_length=16)] = None,
 ) -> StreamingResponse:
     """Streaming counterpart of `POST /chat`: same request shape, validation,
     and auth; emits SSE `stage` events as the graph progresses, then a single
     terminal `done` frame carrying the exact same body `POST /chat` returns
     (or an `error` frame with a fixed, safe message on failure).
     """
-    raw = await _build_raw_input(text, language, image, topic, assistance_cap)
+    raw = await _build_raw_input(text, language, image, topic, assistance_cap, teaching_mode)
     # Resolved (and, if new, committed) BEFORE the stream starts, so a bad id is
     # a real 404 status rather than an `error` frame inside a 200 response.
     async with _get_session_factory(request)() as session:

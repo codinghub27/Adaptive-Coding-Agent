@@ -53,10 +53,10 @@ from app.agents.debugger import extract_learner_code
 from app.agents.dsa_solver import (
     DSAAnalysis,
     analyze_dsa_problem,
-    build_execution_request,
     prompt_hits,
 )
 from app.agents.hint_engine import HintProgress, next_hint
+from app.execution.synth import VerifiedSolution
 from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
 from app.knowledge.ingest import chunk_corpus, load_corpus
@@ -407,6 +407,18 @@ async def _run_learner_code(
 _CONFIDENT_TOPIC_SOURCES: Final = frozenset({"hint", "conversation", "title", "profile_match"})
 
 
+_VERIFIED_REVEAL_TEXT: Final = (
+    "Here is a full solution. It was run in the sandbox and passed every test case it was "
+    "checked against -- cases proposed together with it from the problem statement, so it "
+    "is checked, not proven. Read it line by line, then rewrite it yourself without looking."
+)
+_UNVERIFIED_REVEAL_TEXT: Final = (
+    "You've earned the full solution, but I couldn't verify one in the sandbox this time, "
+    "and I won't show code that hasn't been run. Ask again in a moment, or paste your "
+    "attempt and I'll run it against the examples."
+)
+
+
 def _citation_labels(context: Sequence[RetrievalHit]) -> list[str]:
     """Human-readable citation labels for the chunks this turn drew on.
 
@@ -435,6 +447,8 @@ async def run_dsa(
     progress: HintProgress = _DEFAULT_PROGRESS,
     tests: TestSuite | None = None,
     ladder_topic: str | None = None,
+    solution: VerifiedSolution | None = None,
+    reveal_requested: bool = False,
 ) -> DSARunResult:
     """Run the DSA solver subgraph for this turn and map the result back.
 
@@ -509,17 +523,39 @@ async def run_dsa(
     for section in teaching:
         if section.citation not in citations:
             citations.append(section.citation)
+    # AD-4: the only code ever revealed is `solution`, the reference that
+    # passed its own cases in the sandbox. The solver LLM's own `code` is
+    # discarded unconditionally -- an unverified solution is never shown.
+    hint = final_state.get("hint")
+    at_full = hint is not None and hint.level >= HintLevel.L6_FULL
+    revealed_code = solution.code if solution is not None and at_full else None
+    if hint is not None and at_full and revealed_code is None:
+        # Nothing verified, nothing shown -- so the turn must not COUNT as a
+        # full reveal either (needed_full_solution, hints_used, stored level):
+        # the ladder stays where it was (code review P4).
+        held = progress.last_level if progress.last_level is not None else HintLevel.L0_NUDGE
+        hint = hint.model_copy(
+            update={
+                "level": held,
+                "ceiling": max(held, hint.ceiling if hint.ceiling < HintLevel.L6_FULL else held),
+                "reveals_code": False,
+                "is_terminal": True,
+                "text": _UNVERIFIED_REVEAL_TEXT,
+            }
+        )
+    elif hint is not None and revealed_code is not None:
+        hint = hint.model_copy(update={"text": _VERIFIED_REVEAL_TEXT})
     result = DSAResult(
         topic=final_state.get("topic"),
         pattern=final_state.get("pattern"),
-        hint=final_state.get("hint"),
+        hint=hint,
         understanding=final_state.get("understanding"),
         constraints=final_state.get("constraints") or [],
         brute_force=final_state.get("brute_force"),
         why_slow=final_state.get("why_slow"),
         key_insight=final_state.get("key_insight"),
         pseudocode=final_state.get("pseudocode"),
-        code=final_state.get("code"),
+        code=revealed_code,
         complexity_time=final_state.get("complexity_time"),
         complexity_space=final_state.get("complexity_space"),
         common_mistakes=final_state.get("common_mistakes") or [],
@@ -527,6 +563,9 @@ async def run_dsa(
         teaching_sections={s.kind: s.body for s in teaching},
         initial_verdict=initial_verdict,
     )
-    solution_request = build_execution_request(result.code) if result.code else None
+    del reveal_requested  # the hint level already carries the decision
+    # The verified reference runs again through execute_code -> verify, so the
+    # turn's own `verification` shows the sandbox pass the learner can trust.
+    solution_request = solution.request if solution is not None else None
     execution_request = learner_request or solution_request
     return DSARunResult(result=result, execution_request=execution_request)

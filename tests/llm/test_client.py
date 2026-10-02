@@ -685,3 +685,40 @@ def test_trace_inputs_and_outputs_keys_are_all_allow_listed() -> None:
 
     assert set(inputs) <= _ALLOWED_TRACE_METADATA_KEYS
     assert set(outputs) <= _ALLOWED_TRACE_METADATA_KEYS
+
+
+async def test_failover_rewinds_to_the_first_key_after_the_cooldown() -> None:
+    """ADAPTIVE-upgrade P4: a per-minute 429 must not pin the process to the
+    last fallback forever. Within the window the cursor stays sticky; after it,
+    the first credential is tried again (and kept if it works)."""
+    now = [0.0]
+    first = _StubClient("k1", fail=LLMRateLimitError("limited"))
+    second = _StubClient("k2")
+    client = FailoverLLMClient([first, second], rewind_after_s=60.0, clock=lambda: now[0])
+
+    await client.chat([ChatMessage(role="user", content="a")])
+    now[0] = 30.0
+    await client.chat([ChatMessage(role="user", content="b")])
+    assert first.calls == 1  # still sticky inside the window
+
+    first.fail = None  # the per-minute limit has reset
+    now[0] = 61.0
+    result = await client.chat([ChatMessage(role="user", content="c")])
+    assert result.content == "k1"
+    assert client.active_index == 0
+
+
+async def test_a_429_on_the_last_key_does_not_postpone_the_rewind() -> None:
+    """Code review P4: only an actual cursor move starts the rewind window."""
+    now = [0.0]
+    first = _StubClient("k1", fail=LLMRateLimitError("limited"))
+    last = _StubClient("k2", fail=LLMRateLimitError("limited"))
+    client = FailoverLLMClient([first, last], rewind_after_s=60.0, clock=lambda: now[0])
+    for at in (0.0, 30.0, 59.0):
+        now[0] = at
+        with pytest.raises(LLMRateLimitError):
+            await client.chat([ChatMessage(role="user", content="x")])
+    first.fail = None
+    now[0] = 61.0
+    result = await client.chat([ChatMessage(role="user", content="y")])
+    assert result.content == "k1"

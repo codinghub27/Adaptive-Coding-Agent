@@ -134,12 +134,13 @@ function parseFrame(frame) {
   return { event, data: data.join("\n") };
 }
 
-function buildBody({ conversationId, content, attachmentFile, assistanceCap, topic }) {
+function buildBody({ conversationId, content, attachmentFile, assistanceCap, teachingMode, topic }) {
   const form = new FormData();
   if (content) form.append("text", content);
   if (conversationId) form.append("conversation_id", conversationId);
   if (attachmentFile) form.append("image", attachmentFile, attachmentFile.name || "upload.png");
   if (assistanceCap) form.append("assistance_cap", assistanceCap);
+  if (teachingMode) form.append("teaching_mode", teachingMode);
   if (topic) form.append("topic", topic);
   return form;
 }
@@ -159,10 +160,10 @@ async function typeOut(text, onEvent) {
  * Run one streamed turn. Resolves with the finished message, or throws —
  * a mid-stream 401 is handled by `authFetch` (refresh + one retry).
  */
-export async function streamChat({ conversationId, content, attachmentFile = null, assistanceCap = null, topic = null, onEvent } = {}) {
+export async function streamChat({ conversationId, content, attachmentFile = null, assistanceCap = null, teachingMode = null, topic = null, onEvent } = {}) {
   const response = await authFetch("/chat/stream", {
     method: "POST",
-    body: buildBody({ conversationId, content, attachmentFile, assistanceCap, topic }),
+    body: buildBody({ conversationId, content, attachmentFile, assistanceCap, teachingMode, topic }),
   });
 
   if (!response.ok || !response.body) {

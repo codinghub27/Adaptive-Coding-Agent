@@ -44,6 +44,7 @@ async def get_hint_progress(
         solved=row.solved,
         has_verified_attempt=row.has_verified_attempt,
         ceiling=HintLevel(row.ceiling) if row.ceiling is not None else None,
+        asks_at_ceiling=row.asks_at_ceiling,
     )
 
 
@@ -79,6 +80,7 @@ async def save_hint_progress(
     solved: bool,
     has_verified_attempt: bool = False,
     ceiling: int | None = None,
+    asks_at_ceiling: int = 0,
 ) -> None:
     """Upsert this `(user, conversation, topic)`'s hint-ladder progress.
 
@@ -114,6 +116,7 @@ async def save_hint_progress(
         solved=solved,
         has_verified_attempt=has_verified_attempt,
         ceiling=ceiling,
+        asks_at_ceiling=asks_at_ceiling,
     )
     upsert_stmt = insert_stmt.on_conflict_do_update(
         index_elements=[
@@ -126,6 +129,7 @@ async def save_hint_progress(
             "solved": insert_stmt.excluded.solved,
             "has_verified_attempt": insert_stmt.excluded.has_verified_attempt,
             "ceiling": func.coalesce(HintProgressRow.ceiling, insert_stmt.excluded.ceiling),
+            "asks_at_ceiling": insert_stmt.excluded.asks_at_ceiling,
             "updated_at": func.now(),
         },
     )

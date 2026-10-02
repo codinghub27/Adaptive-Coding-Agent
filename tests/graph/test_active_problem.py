@@ -262,3 +262,33 @@ def test_retrieval_fallback_keeps_continuity() -> None:
     inherited = update.get("structured_input")
     assert inherited is not None
     assert inherited.problem == _STATEMENT
+
+
+def test_an_explicit_ask_follow_up_is_classified_as_a_solution_request() -> None:
+    """P4 / T9: "give code for that" on the active problem is DSA_SOLVE, not a
+    low-confidence concept question routed to clarify."""
+    from app.schemas.intent import Intent, IntentResult
+
+    state = AgentState(
+        input=RawInput(text="give code for that"),
+        structured_input=StructuredInput(source="text", question="give code for that"),
+        active_problem=_active(),
+        intent=IntentResult(intent=Intent.CONCEPT_EXPLANATION, confidence=0.4, source="llm"),
+    )
+    update = _retrieve_knowledge_fallback(state)
+    intent = update.get("intent")
+    assert intent is not None
+    assert intent.intent is Intent.DSA_SOLVE
+    assert not intent.low_confidence
+
+
+def test_a_plain_follow_up_keeps_its_own_intent() -> None:
+    from app.schemas.intent import Intent, IntentResult
+
+    state = AgentState(
+        input=RawInput(text="why?"),
+        structured_input=StructuredInput(source="text", question="why does that work?"),
+        active_problem=_active(),
+        intent=IntentResult(intent=Intent.APPROACH_DISCUSSION, confidence=0.9, source="llm"),
+    )
+    assert "intent" not in _retrieve_knowledge_fallback(state)

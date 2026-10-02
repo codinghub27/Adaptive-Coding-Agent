@@ -7,6 +7,7 @@ LangChain chat-model integration. Everything else depends on the
 
 import base64
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from typing import Final, TypeVar, cast
@@ -502,6 +503,11 @@ class LangChainLLMClient:
         )
 
 
+#: How long the failover cursor stays on a fallback before re-trying the first
+#: credential (Groq's limits are per minute as well as per day).
+DEFAULT_REWIND_AFTER_S: Final = 300.0
+
+
 class FailoverLLMClient:
     """`LLMClient` that moves to the next credential when one is rate-limited.
 
@@ -511,21 +517,32 @@ class FailoverLLMClient:
     any other `LLMError` propagates untouched, because retrying a malformed
     request or a bad model id on another key just repeats the failure.
 
-    The cursor is sticky for the life of the process and never rewinds. An
-    exhausted key therefore costs one failed call in total, not one per turn.
-    The cost of not rewinding is that a limit which later resets is not
-    noticed -- deliberate, since re-probing a key that just returned 429 would
-    spend a failed request on every call to find out.
+    The cursor is sticky, so an exhausted key costs one failed call, not one
+    per turn. It rewinds to the first credential once `rewind_after_s` has
+    passed since it last advanced (ADAPTIVE-upgrade P4). Never rewinding
+    meant one per-minute 429 on the primary key pinned the whole process to
+    the last fallback (a slow free model) for its lifetime: measured live,
+    every later turn then misclassified to `clarify`. Re-probing at most once
+    per window costs at most one failed call per exhausted key per window.
 
     Not a `Protocol` implementation by inheritance: it satisfies `LLMClient`
     structurally, exactly as `LangChainLLMClient` does.
     """
 
-    def __init__(self, clients: Sequence[LLMClient]) -> None:
+    def __init__(
+        self,
+        clients: Sequence[LLMClient],
+        *,
+        rewind_after_s: float = DEFAULT_REWIND_AFTER_S,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         if not clients:
             raise ValueError("FailoverLLMClient requires at least one client")
         self._clients = list(clients)
         self._index = 0
+        self._rewind_after_s = rewind_after_s
+        self._clock = clock
+        self._advanced_at: float | None = None
 
     @property
     def clients(self) -> Sequence[LLMClient]:
@@ -539,6 +556,13 @@ class FailoverLLMClient:
 
     async def _attempt(self, call: Callable[[LLMClient], Awaitable[ChatResult]]) -> ChatResult:
         last: LLMRateLimitError | None = None
+        if (
+            self._index > 0
+            and self._advanced_at is not None
+            and self._clock() - self._advanced_at >= self._rewind_after_s
+        ):
+            self._index = 0
+            self._advanced_at = None
         index = self._index
         while index < len(self._clients):
             try:
@@ -548,7 +572,12 @@ class FailoverLLMClient:
                 index += 1
                 # Stay on the last client once exhausted rather than rewinding
                 # to a key already known to be limited.
+                previous = self._index
                 self._index = min(index, len(self._clients) - 1)
+                if self._index != previous:
+                    # Only an actual move starts the window: a 429 on the last
+                    # credential must not keep pushing the rewind away.
+                    self._advanced_at = self._clock()
                 continue
             self._index = index
             return result

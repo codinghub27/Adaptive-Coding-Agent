@@ -47,10 +47,11 @@ from app.agents.planner import (
     analyze_problem,
     build_plan,
     clamp_assistance,
+    explicit_ask_phrase,
 )
 from app.agents.practice import render_practice_problem, select_practice_problem
 from app.agents.reviewer import review_code
-from app.execution.synth import synthesize_test_suite
+from app.execution.synth import synthesize_test_suite, verified_reference
 from app.execution.testgen import extract_test_suite
 from app.execution.verification import verify as verify_result
 from app.graph.routing import select_route
@@ -88,7 +89,7 @@ from app.schemas.agent_results import ExplainResult, HintLevel
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verdict
 from app.schemas.input import ActiveProblem, CodeBlock, ProblemRelation, StructuredInput
-from app.schemas.intent import Intent
+from app.schemas.intent import Intent, IntentResult
 from app.schemas.knowledge import RetrievalHit
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
@@ -327,6 +328,7 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         analysis,
         hint_progress=hint_progress,
         structured_input=state.structured_input,
+        teaching_mode=state.input.teaching_mode,
     )
     plan = clamp_assistance(plan, state.input.assistance_cap)
     return {"plan": plan, "topic_source": analysis.topic_source}
@@ -571,7 +573,29 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
         update["structured_input"] = inherit_active_problem(
             state.structured_input, state.active_problem
         )
+        question = state.structured_input.question if state.structured_input else None
+        if _needs_solution_intent(state, question):
+            # "give code for that" on the active problem is an explicit ask for
+            # ITS solution; the classifier, seeing four words and no problem,
+            # called it a low-confidence concept question and the turn went to
+            # `clarify` (P4, T9). A fixed phrase match on a follow-up with a
+            # known problem is unambiguous, so it is classified deterministically.
+            update["intent"] = IntentResult(
+                intent=Intent.DSA_SOLVE,
+                confidence=0.8,
+                source="rule",
+                rationale="explicit solution ask on the conversation's active problem",
+            )
     return update
+
+
+def _needs_solution_intent(state: AgentState, question: str | None) -> bool:
+    intent = state.intent
+    if question is None or not explicit_ask_phrase(question):
+        return False
+    # Only override a classification that is missing or unsure: a confident
+    # CODE_EXPLAIN / CONCEPT reading of the same words stands (code review P4).
+    return intent is None or intent.low_confidence
 
 
 def _normalized_statement(text: str) -> str:
@@ -1065,7 +1089,20 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     else:
         tests, suite_source = None, "none"
     ladder_topic = await _anchored_ladder_topic(state, ctx)
-    run = await run_dsa(state, runtime, progress=progress, tests=tests, ladder_topic=ladder_topic)
+    # AD-4: a granted escalation reveals ONLY a sandbox-verified reference
+    # solution. If none can be verified this turn, nothing is revealed.
+    solution = None
+    if state.plan is not None and state.plan.assistance_level == "full" and not progress.solved:
+        solution = await verified_reference(state.structured_input, ctx.llm, ctx.runner)
+    run = await run_dsa(
+        state,
+        runtime,
+        progress=progress,
+        tests=tests,
+        ladder_topic=ladder_topic,
+        solution=solution,
+        reveal_requested=state.plan is not None and state.plan.assistance_level == "full",
+    )
     update: AgentStateUpdate = {
         "agent_output": run.result.to_outcome(),
         "agent_result": run.result,
@@ -1102,6 +1139,7 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
                     level=int(run.result.hint.level),
                     solved=progress.solved,
                     has_verified_attempt=has_verified_attempt,
+                    asks_at_ceiling=progress.asks_at_ceiling + _refused_ask_at_ceiling(state),
                     # A client cap lowers THIS turn only; never let it become
                     # the ladder's permanent N (stored once, never updated).
                     ceiling=(
@@ -1114,6 +1152,20 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
             pass
 
     return update
+
+
+def _refused_ask_at_ceiling(state: AgentState) -> int:
+    """1 when this turn explicitly asked for the solution at the ceiling and the
+    plan still refused it (P4: Balanced reveals on the second such ask)."""
+    plan = state.plan
+    if plan is None or "escalated" in plan.rationale:
+        return 0
+    refused_for_effort = "escalation_denied_no_verified_attempt" in plan.rationale
+    asked_at_ceiling = (
+        "escalation_denied_ceiling_not_reached" not in plan.rationale
+        and "escalation_denied_no_explicit_ask" not in plan.rationale
+    )
+    return 1 if refused_for_effort and asked_at_ceiling else 0
 
 
 async def _record_verified_attempt(

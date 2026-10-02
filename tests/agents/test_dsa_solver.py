@@ -14,9 +14,11 @@ from typing import Final
 from langgraph.runtime import Runtime  # pyright: ignore[reportMissingTypeStubs]
 
 from app.agents.hint_engine import HintProgress
+from app.execution.synth import VerifiedSolution
 from app.graph.state import AgentState, GraphContext, RawInput
 from app.graph.subgraphs.dsa import run_dsa
 from app.schemas.agent_results import HintLevel
+from app.schemas.execution import ExecutionRequest, TestCase, TestSuite, Verdict
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import AssistanceLevel, TeachingPlan
@@ -125,21 +127,59 @@ async def test_hint_assistance_never_carries_code_or_runnable_text() -> None:
     assert len(llm.chat_calls) == 1
 
 
+def _verified(code: str = "def solve(x):\n    return x\n") -> VerifiedSolution:
+    """A stand-in for `synth.verified_reference`'s output: code + its passing run."""
+    suite = TestSuite(entrypoint="solve", cases=[TestCase(name="c1", args=[1], expected=1)])
+    request = ExecutionRequest(code=code, tests=suite)
+    verdict = Verdict(status="pass", cases_passed=1, cases_total=1, summary="ok")
+    return VerifiedSolution(code=code, request=request, verdict=verdict)
+
+
 async def test_full_assistance_can_reach_l6_and_only_then_carries_code() -> None:
-    """A `full`-level plan may reach L6, and only then carries `code`."""
+    """A `full`-level plan may reach L6, and only then carries `code`.
+
+    ADAPTIVE-upgrade P4 (AD-4): the code revealed is ONLY the sandbox-verified
+    reference handed in as `solution` -- never the solver LLM's own `code`,
+    which is discarded unconditionally. Without a verified solution, L6
+    reveals nothing (see the next test).
+    """
     plan = _plan("full")
     progress = HintProgress(last_level=HintLevel.L5_PARTIAL)
     llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
+    solution = _verified()
 
-    run = await run_dsa(_state(plan=plan, problem=_problem()), _runtime(llm), progress=progress)
+    run = await run_dsa(
+        _state(plan=plan, problem=_problem()), _runtime(llm), progress=progress, solution=solution
+    )
 
     assert run.result.hint is not None
     assert run.result.hint.level == HintLevel.L6_FULL
-    assert run.result.code is not None
-    assert "def " in run.result.code
-    assert run.execution_request is not None
-    assert run.execution_request.code == run.result.code
+    assert run.result.code == solution.code
+    assert run.result.code != _FULL_SOLUTION_CODE
+    assert run.execution_request == solution.request
     assert len(llm.chat_calls) == 1
+
+
+async def test_full_assistance_without_a_verified_solution_reveals_nothing() -> None:
+    """AD-4: no sandbox-verified reference -> no code, and the hint says so."""
+    plan = _plan("full")
+    llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
+
+    run = await run_dsa(
+        _state(plan=plan, problem=_problem()),
+        _runtime(llm),
+        progress=HintProgress(last_level=HintLevel.L5_PARTIAL),
+    )
+
+    assert run.result.hint is not None
+    # Code review P4: an unverified reveal must not COUNT as one either -- the
+    # ladder stays at its previous rung (no needed_full_solution, no L6 stored).
+    assert run.result.hint.level == HintLevel.L5_PARTIAL
+    assert run.result.hint.reveals_code is False
+    assert "couldn't verify" in run.result.hint.text
+    assert run.result.to_outcome().needed_full_solution is False
+    assert run.result.code is None
+    assert run.execution_request is None
 
 
 async def test_partial_assistance_below_l5_still_withholds_code() -> None:
@@ -173,13 +213,20 @@ async def test_full_assistance_jumps_directly_to_l6() -> None:
     plan = _plan("full")
     llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
 
+    solution = _verified()
     for prior in (None, HintLevel.L0_NUDGE, HintLevel.L3_CONCRETE_IDEA):
         progress = HintProgress(last_level=prior)
-        run = await run_dsa(_state(plan=plan, problem=_problem()), _runtime(llm), progress=progress)
+        run = await run_dsa(
+            _state(plan=plan, problem=_problem()),
+            _runtime(llm),
+            progress=progress,
+            solution=solution,
+        )
         assert run.result.hint is not None
         assert run.result.hint.level == HintLevel.L6_FULL
         assert run.result.hint.reveals_code
-        assert run.result.code == _FULL_SOLUTION_CODE
+        # P4: the verified reference, not the solver's `_FULL_SOLUTION_CODE`.
+        assert run.result.code == solution.code
         assert run.execution_request is not None
 
 
@@ -211,7 +258,9 @@ async def test_llm_failure_degrades_gracefully() -> None:
     run = await run_dsa(_state(plan=plan, problem=_problem()), _runtime(llm), progress=progress)
 
     assert run.result.hint is not None
-    assert run.result.hint.level == HintLevel.L6_FULL
+    # P4: with no verified solution the ladder holds at L5 rather than
+    # counting an L6 reveal that never happened (see the verified-reveal tests).
+    assert run.result.hint.level == HintLevel.L5_PARTIAL
     assert run.result.code is None
     assert run.execution_request is None
     assert run.result.understanding is None

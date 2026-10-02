@@ -35,7 +35,14 @@ from app.schemas.event import Difficulty, slug_tag
 from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.knowledge import RetrievalHit
-from app.schemas.plan import ASSISTANCE_ORDER, AssistanceLevel, SolutionStrategy, TeachingPlan
+from app.schemas.plan import (
+    ASSISTANCE_ORDER,
+    DEFAULT_TEACHING_MODE,
+    AssistanceLevel,
+    SolutionStrategy,
+    TeachingMode,
+    TeachingPlan,
+)
 from app.schemas.profile import LearnerProfileView
 
 __all__ = [
@@ -109,15 +116,21 @@ DSA_ROUTE_INTENTS: Final[frozenset[Intent]] = frozenset(
 _EXPLICIT_ASK_RE: Final = re.compile(
     r"\b("
     r"just (?:give|tell|show) me|"
-    r"give me the (?:full |complete |entire )?(?:solution|answer|code)|"
+    r"give (?:me )?(?:the )?(?:full |complete |entire |whole |final )?"
+    r"(?:solution|answer|code|implementation)|"
+    r"show me the (?:full |complete )?(?:solution|code|answer)|"
     r"(?:full|complete|entire) solution|"
     r"the answer|"
     r"solve (?:it|this) for me|"
-    r"show me the (?:solution|code|answer)|"
     r"i give up|"
     r"tell me the answer"
     r")\b"
 )
+
+
+def explicit_ask_phrase(text: str) -> bool:
+    """Whether `text` contains a fixed explicit-solution-ask phrase."""
+    return bool(_EXPLICIT_ASK_RE.search(text.lower()))
 
 
 def _explicit_solution_request(
@@ -129,9 +142,15 @@ def _explicit_solution_request(
     intent AND a narrow keyword match against the learner's own prose (never
     an LLM prompt over that prose -- see `_EXPLICIT_ASK_RE`'s docstring).
     """
-    if intent.intent is not Intent.DSA_SOLVE:
+    # Any DSA-route intent: "give code for that" or "give full answer" is
+    # classified DSA_SOLVE, DSA_HINT or APPROACH_DISCUSSION depending on the
+    # model's mood; the phrase match is what makes it an explicit ask (P4, F4).
+    if intent.intent not in DSA_ROUTE_INTENTS:
         return False
-    return bool(_EXPLICIT_ASK_RE.search(_prose(structured_input).lower()))
+    # The learner's own ask only -- never the problem statement, whose text
+    # ("return the answer modulo 10^9+7") is not a request (code review P4).
+    question = structured_input.question if structured_input is not None else None
+    return explicit_ask_phrase(question or "")
 
 
 class ProblemAnalysis(APIModel):
@@ -514,6 +533,7 @@ def build_plan(
     *,
     hint_progress: HintProgress | None = None,
     structured_input: StructuredInput | None = None,
+    teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE,
 ) -> TeachingPlan:
     """Apply the deterministic rule ladder to produce this turn's `TeachingPlan`.
 
@@ -588,10 +608,21 @@ def build_plan(
         ceiling_reached = progress.last_level is not None and progress.last_level >= ceiling
         explicit_ask = _explicit_solution_request(intent, structured_input)
         verified_attempt = progress.has_verified_attempt
+        # AD-4: the teaching mode decides what "enough effort" means. The
+        # ceiling + explicit ask are required in every mode; the reveal itself
+        # is always the sandbox-verified reference (see `dsa_agent`).
+        repeated_ask = progress.asks_at_ceiling >= 1
+        if teaching_mode == "guidance":
+            effort = True
+        elif teaching_mode == "balanced":
+            effort = verified_attempt or repeated_ask
+        else:
+            effort = verified_attempt
 
-        if ceiling_reached and explicit_ask and verified_attempt:
+        if ceiling_reached and explicit_ask and effort:
             assistance = "full"
             rationale.append("escalated")
+            rationale.append(f"mode_{teaching_mode}")
         else:
             # All three are evaluated and reported independently -- never a
             # short-circuiting elif chain. A single reported reason hid the
@@ -604,8 +635,10 @@ def build_plan(
                 rationale.append("escalation_denied_ceiling_not_reached")
             if not explicit_ask:
                 rationale.append("escalation_denied_no_explicit_ask")
-            if not verified_attempt:
+            if not effort:
                 rationale.append("escalation_denied_no_verified_attempt")
+                if teaching_mode == "balanced" and ceiling_reached and explicit_ask:
+                    rationale.append("escalation_needs_second_ask")
 
     if profile.learning_preferences.get("likes_step_by_step", False):
         step_by_step = True

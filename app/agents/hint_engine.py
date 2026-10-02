@@ -59,6 +59,7 @@ the ladder has reached L6 (`DSAResult` enforces that pairing).
 
 import re
 from collections.abc import Sequence
+from functools import cache
 from typing import Final
 
 from app.schemas.agent_results import MAX_HINT_LEVEL_FOR_ASSISTANCE, HintLevel, HintResult
@@ -89,6 +90,9 @@ class HintProgress(APIModel):
     #: The ladder's ceiling, fixed when the ladder started (ADAPTIVE-upgrade P1,
     #: F3), or `None` for a new ladder / a row written before it was stored.
     ceiling: HintLevel | None = None
+    #: Explicit full-solution asks made while already at the ceiling and not
+    #: granted (ADAPTIVE-upgrade P4) -- Balanced mode reveals on the second.
+    asks_at_ceiling: int = 0
 
 
 def ladder_ceiling(plan: TeachingPlan, progress: HintProgress) -> HintLevel:
@@ -195,22 +199,24 @@ def _prose(chunk: KnowledgeChunk) -> str:
 
 
 def _first_clause(text: str, max_chars: int) -> str:
-    """The first sentence of `text`, truncated at a word boundary if that
-    sentence alone still exceeds `max_chars`.
+    """The first sentence of `text` that fits in `max_chars`, whole, or "".
 
     Bounding to one sentence (never a whole section) is deliberate: it caps
     how much corpus detail can land in any single rung, which is what keeps
     a grounded low rung from creeping into "hands over the algorithm"
-    territory (see module docstring).
+    territory (see module docstring). A sentence is NEVER cut: rungs used to
+    end "binary search trees (BSTs, where..." (F5). An over-long first
+    sentence is skipped for the next one that fits; if none does, the rung
+    simply carries no quote.
     """
     stripped = text.strip()
     if not stripped:
         return ""
-    clause = _SENTENCE_SPLIT_RE.split(stripped, maxsplit=1)[0].strip()
-    if len(clause) <= max_chars:
-        return clause
-    truncated = clause[:max_chars].rsplit(" ", 1)[0].rstrip(",;: ")
-    return f"{truncated}..." if truncated else clause[:max_chars]
+    for sentence in _SENTENCE_SPLIT_RE.split(stripped)[:3]:
+        sentence = sentence.strip()
+        if sentence and len(sentence) <= max_chars and sentence[-1] in ".!?":
+            return sentence
+    return ""
 
 
 def _chunk_for_section(trusted: Sequence[RetrievalHit], section: str) -> KnowledgeChunk | None:
@@ -222,7 +228,7 @@ def _chunk_for_section(trusted: Sequence[RetrievalHit], section: str) -> Knowled
 
 
 def _grounded_clause(
-    trusted: Sequence[RetrievalHit], section: str, *, max_chars: int = 200
+    trusted: Sequence[RetrievalHit], section: str, *, max_chars: int = 320
 ) -> str | None:
     """One sentence of grounded, trusted prose from `section`, or `None` if
     no `trusted` hit carries that section this turn (fail-soft, per rung)."""
@@ -281,10 +287,46 @@ def _shape_hint(topic: str | None, context_labels: Sequence[str]) -> str:
     if not topic:
         return GENERIC_SHAPE_HINT
     topic_key = topic.replace("_", " ").replace("-", " ").strip().casefold()
+    family = _pattern_family(topic)
     for label in context_labels:
-        if _humanize(label).casefold() != topic_key:
+        if _humanize(label).casefold() == topic_key:
+            continue
+        # Only a sibling in the SAME family is evidence about this problem's
+        # shape. A label from another family spliced in produced "For a heaps
+        # problem, trees is often the right shape" (F2/F5).
+        if family is not None and _related_label(label, topic, family):
             return _humanize(label)
     return GENERIC_SHAPE_HINT
+
+
+def _related_label(label: str, topic: str, family: str) -> bool:
+    """`label` belongs with `topic`: a pattern of the same family, the family
+    itself, or the topic doc's own broader `topic` field ("arrays")."""
+    return label == family or _pattern_family(label) == family or label == _doc_topic(topic)
+
+
+def _doc_topic(pattern: str) -> str | None:
+    return _doc_topics().get(pattern)
+
+
+@cache
+def _doc_topics() -> dict[str, str]:
+    from app.knowledge.ingest import load_corpus  # noqa: PLC0415
+
+    return {doc.pattern: doc.topic for doc in load_corpus()}
+
+
+def _pattern_family(pattern: str) -> str | None:
+    """The corpus `pattern_family` of `pattern`, or `None` if unknown."""
+    return _families().get(pattern)
+
+
+@cache
+def _families() -> dict[str, str]:
+    # Imported lazily: this module sits under `app.graph.state`'s imports.
+    from app.knowledge.ingest import load_corpus  # noqa: PLC0415
+
+    return {doc.pattern: doc.pattern_family or doc.pattern for doc in load_corpus()}
 
 
 def _rung_text(
@@ -320,11 +362,21 @@ def _rung_text(
     watch = ", ".join(plan.watch_errors) if plan.watch_errors else None
 
     if level == HintLevel.L0_NUDGE:
+        recognize = _grounded_clause(trusted, "when_to_recognize_it")
+        signal = _identification_signal(trusted)
+        if topic and (recognize or signal):
+            # Specific to the problem's pattern, from the corpus (F5): what
+            # makes this a <topic> problem, not "restate the problem".
+            text = f"Before writing any code, look for what makes {this_problem} tick."
+            if recognize:
+                text += f" {recognize}"
+            if signal:
+                text += f" A cue to look for in the statement: {signal}."
+            return text
         return (
-            f"Before writing any code, restate the problem in your own words and "
-            f"identify the inputs, outputs, and constraints. This is rated "
-            f"'{plan.difficulty}' -- take a moment to make sure you understand what "
-            "is actually being asked before you start."
+            f"Before writing any code, pin down the inputs, outputs, and constraints. "
+            f"This is rated '{plan.difficulty}' -- make sure you know exactly what is "
+            "being asked before you start."
         )
 
     if level == HintLevel.L1_WHAT_TO_TRACK:

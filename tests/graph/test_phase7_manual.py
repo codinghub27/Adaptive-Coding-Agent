@@ -30,6 +30,7 @@ from app.config import Settings
 from app.execution.base import canonical
 from app.execution.runner import SandboxRunner, build_sandbox_runner
 from app.execution.sandbox import SANDBOX_LABEL, make_docker_client
+from app.execution.synth import VerifiedSolution
 from app.graph.state import AgentState, GraphContext, RawInput
 from app.graph.subgraphs.debug import run_debug
 from app.graph.subgraphs.dsa import run_dsa
@@ -42,6 +43,7 @@ from app.schemas.execution import (
     ExecutionResult,
     TestCase,
     TestSuite,
+    Verdict,
 )
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.plan import TeachingPlan
@@ -200,13 +202,32 @@ async def test_manual_1_dsa_hint_ladder_climbs_one_rung_at_a_time_never_leaking_
     full_plan = plan.model_copy(update={"assistance_level": "full"})
     full_state = state.model_copy(update={"plan": full_plan})
     full_progress = HintProgress(last_level=HintLevel.L2_DATA_STRUCTURE, solved=False)
-    full_run = await run_dsa(full_state, runtime, progress=full_progress)
+    # ADAPTIVE-upgrade P4 (AD-4): what L6 reveals is ONLY a sandbox-verified
+    # reference (`synth.verified_reference`, done by `dsa_agent`); the solver
+    # LLM's own code is discarded. With none verified, nothing is revealed.
+    unverified = await run_dsa(full_state, runtime, progress=full_progress)
+    assert unverified.result.hint is not None
+    # ...and the ladder stays where it was (code review P4).
+    assert unverified.result.hint.level == HintLevel.L2_DATA_STRUCTURE
+    assert unverified.result.hint.reveals_code is False
+    assert unverified.result.code is None
+    assert unverified.execution_request is None
+
+    verified_code = "def subarray_sum(nums, k):\n    return 0\n"
+    suite = TestSuite(
+        entrypoint="subarray_sum", cases=[TestCase(name="c", args=[[1], 1], expected=0)]
+    )
+    solution = VerifiedSolution(
+        code=verified_code,
+        request=ExecutionRequest(code=verified_code, tests=suite),
+        verdict=Verdict(status="pass", cases_passed=1, cases_total=1, summary="ok"),
+    )
+    full_run = await run_dsa(full_state, runtime, progress=full_progress, solution=solution)
     hint = full_run.result.hint
     assert hint is not None
     assert hint.level == HintLevel.L6_FULL
     assert hint.reveals_code is True
-    assert full_run.result.code is not None
-    assert "def subarray_sum" in full_run.result.code
+    assert full_run.result.code == verified_code
     assert full_run.execution_request is not None
     assert full_run.execution_request.code == full_run.result.code
 
@@ -255,8 +276,11 @@ async def test_manual_1b_bare_followup_grounds_on_anchored_ladder_topic() -> Non
         HintLevel.L4_PSEUDOCODE,
         HintLevel.L5_PARTIAL,
     }
-    # L0 never grounds (no corpus text at that rung) -- same either way.
-    assert texts[HintLevel.L0_NUDGE] == baselines[HintLevel.L0_NUDGE]
+    # ADAPTIVE-upgrade P4 (F5): L0 now grounds too -- it names what makes this
+    # a sliding window problem (a corpus recognition cue) instead of the
+    # generic "restate the problem" text every problem used to get.
+    assert "sliding window" in texts[HintLevel.L0_NUDGE]
+    assert "sliding window" not in baselines[HintLevel.L0_NUDGE]
     # L1: the topic modifier names the anchored pattern, not "this problem".
     assert "sliding window" in texts[HintLevel.L1_WHAT_TO_TRACK]
     assert "sliding window" not in baselines[HintLevel.L1_WHAT_TO_TRACK]

@@ -16,12 +16,21 @@ from app.schemas.event import Difficulty
 
 __all__ = [
     "ASSISTANCE_ORDER",
+    "DEFAULT_TEACHING_MODE",
+    "TeachingMode",
     "AssistanceLevel",
     "SolutionStrategy",
     "TeachingPlan",
 ]
 
 AssistanceLevel = Literal["hint", "concept", "pseudocode", "partial", "full"]
+
+#: The learner's chosen teaching mode (the UI's Guidance / Balanced /
+#: Challenge control). It decides only WHEN a full solution may be revealed
+#: (see `app.agents.planner.build_plan`); it never raises assistance by
+#: itself, and a client `assistance_cap` still lowers whatever it allows.
+TeachingMode = Literal["guidance", "balanced", "challenge"]
+DEFAULT_TEACHING_MODE: Final[TeachingMode] = "balanced"
 
 ASSISTANCE_ORDER: Final[tuple[AssistanceLevel, ...]] = (
     "hint",

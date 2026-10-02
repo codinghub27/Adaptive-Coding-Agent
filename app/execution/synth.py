@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import ast
 import json
+from dataclasses import dataclass
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
@@ -54,10 +55,16 @@ from app.execution.testgen import select_entrypoint, top_level_functions
 from app.execution.verification import verify
 from app.input._text import extract_json_object
 from app.llm.base import ChatMessage, LLMClient, LLMError
-from app.schemas.execution import MAX_CODE_CHARS, ExecutionRequest, TestCase, TestSuite
+from app.schemas.execution import (
+    MAX_CODE_CHARS,
+    ExecutionRequest,
+    TestCase,
+    TestSuite,
+    Verdict,
+)
 from app.schemas.input import StructuredInput
 
-__all__ = ["synthesize_test_suite"]
+__all__ = ["VerifiedSolution", "synthesize_test_suite", "verified_reference"]
 
 MAX_SYNTH_CASES: Final = 6
 
@@ -217,3 +224,78 @@ async def _synthesize(
         return None
 
     return suite
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedSolution:
+    """A reference solution that PASSED its own cases in the sandbox.
+
+    The only code the agent may ever reveal as "the solution" (ADAPTIVE-upgrade
+    P4): `request` is what was run, `verdict` is the sandbox's pass.
+    """
+
+    code: str
+    request: ExecutionRequest
+    verdict: Verdict
+
+
+async def verified_reference(
+    problem: StructuredInput | None,
+    llm: LLMClient,
+    runner: CodeRunner | None,
+) -> VerifiedSolution | None:
+    """An LLM-proposed reference solution, revealed only if the sandbox passes it.
+
+    Unlike `synthesize_test_suite` there is no learner code to take an
+    entrypoint from (the learner asked for the solution), so the entrypoint is
+    the reference's own -- it must define the function its cases call, and
+    every case must pass in the sandbox. Anything less is `None`: never
+    reveal unverified code. Needs a real problem STATEMENT, so the cases come
+    from the problem, not from a bare "give me the code". Never raises.
+    """
+    if problem is None or not problem.problem or runner is None:
+        return None
+    try:
+        return await _verified_reference(problem, llm, runner)
+    except Exception:  # noqa: BLE001 - fail-soft: no reveal beats an unverified one
+        return None
+
+
+async def _verified_reference(
+    problem: StructuredInput, llm: LLMClient, runner: CodeRunner
+) -> VerifiedSolution | None:
+    statement_only = problem.model_copy(update={"code": [], "error": None})
+    messages = [
+        ChatMessage(role="system", content=_SYNTH_SYSTEM),
+        ChatMessage(role="user", content=_user_input_block(statement_only)),
+    ]
+    try:
+        result = await llm.chat(messages, temperature=0.0, max_tokens=2000)
+    except LLMError:
+        return None
+    parsed = _parse_synth_output(result.content)
+    if parsed is None or not parsed.reference_solution:
+        return None
+    if len(parsed.reference_solution) > MAX_CODE_CHARS:
+        return None
+    cases = _build_cases(parsed)
+    if cases is None:
+        return None
+    functions = top_level_functions(parsed.reference_solution)
+    names = {func.name for func in functions}
+    entrypoint = parsed.entrypoint if parsed.entrypoint in names else None
+    if entrypoint is None:
+        entrypoint = select_entrypoint(functions, cases)
+    if entrypoint is None:
+        return None
+    try:
+        suite = TestSuite(entrypoint=entrypoint, cases=cases)
+    except ValidationError:
+        return None
+    request = ExecutionRequest(code=parsed.reference_solution, tests=suite)
+    verdict = verify(await runner.run(request), request)
+    if verdict.status != "pass" or verdict.cases_total == 0:
+        return None
+    if verdict.cases_passed != verdict.cases_total:
+        return None
+    return VerifiedSolution(code=parsed.reference_solution, request=request, verdict=verdict)
