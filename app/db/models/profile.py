@@ -30,6 +30,11 @@ class LearnerProfile(Base):
     common_errors: Mapped[dict[str, int]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    #: skill key -> ISO time of its last OBSERVED outcome (P6): drives read-time
+    #: decay and "current focus". Exposure (no outcome) never stamps it.
+    skill_seen: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

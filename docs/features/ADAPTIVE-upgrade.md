@@ -610,6 +610,64 @@ pre-review code. The review changes only narrow WHEN the retry fires (no
 retry on LLM/sandbox errors), which cannot make the validated-suite path less
 deterministic.
 
+### P6 — Pattern-family aggregation + profile sanity (B5, F10)
+
+**Target (stated first):** a measured adaptation speedup (turns until a family
+leaves the PRIOR default), recorded before and after on a fixed measurement;
+0 profile keys the conversation never touched (postgres).
+
+**AD-6: family keys and read-time decay.**
+- Each outcome event updates its topic AND `family:<pattern_family>`, the
+  corpus field that nothing read before (B5). The event's LLM-proposed
+  `pattern` is no longer a second skill key (F10).
+- `planner.skill_for(profile, topic)` uses the topic's own estimate when it
+  has evidence, else its family's, else PRIOR. Every topic source uses it,
+  including the profile-prose match.
+- Decay: `learner_profiles.skill_seen` (migration `a4b5c6d7e8f9`) stamps each
+  key's last OBSERVED outcome. `to_view` pulls levels toward PRIOR with a
+  30-day half-life. A new outcome is blended into the decayed value, never
+  the stale full-strength one.
+- View: `family_levels` split out; `suggested_focus` lists only evidence-bearing
+  keys; `current_focus` = the topic most recently backed by an outcome.
+- UI: the "Current focus" card uses `current_focus` (it showed "the weakest
+  key", e.g. an exposure key at 50% -> "Binary search, Level 3"). HINTS reads
+  "Hint ladder" / "Hint-first", since the ladder is always used (it read
+  "Direct"). `frontend/js/ui.js` carries the owner's uncommitted UI work, so
+  only these hunks were staged (patched HEAD blob via `git update-index`);
+  the working copy keeps both.
+
+**Measured speedup** — `eval/adaptation_speed.py` (new, LLM-free: replays
+events through the real `apply_event` and asks the real planner lookup what
+difficulty the NEXT graph-family problem gets; the rotation is bfs, dfs,
+union_find, topological_sort, dijkstra):
+
+| lookup | turns to leave PRIOR, all solved | all failed |
+|---|---|---|
+| before (per-pattern key) | 15 | 5 |
+| after (family-aware) | **3** | **1** |
+
+That is a 5x speedup on success. Before P6, graph evidence spread over five
+keys and a pattern needed three visits of its own.
+
+**Profile sanity (postgres):** the migration backfilled `skill_seen` from the
+event log for the 27 profiles that have outcome history, and removed stored
+keys that no event of that learner ever had as its topic. Across **all 78
+profiles: 0 untouched keys**. Playwright, fresh account: Current focus "Not set
+yet", HINTS "Hint ladder".
+
+**Code review (medium) before commit: 5 findings, all fixed.**
+1. (high) Skill deltas were computed from decayed view values but written
+   from stored values. Both now start from the decayed value.
+2. (med) A failure on old evidence could RAISE the shown skill. Outcomes now
+   blend into the decayed value (`decay_for_outcome`), which is regression
+   tested.
+3. (med) Existing learners' focus went blank (empty `skill_seen`). Backfilled
+   in the migration.
+4. (low) Old pattern keys lingered. They are removed by the migration
+   (evidence-based).
+5. (low) The profile-prose path skipped `skill_for`. Fixed.
+`pytest`: **1694 passed** (non-live).
+
 ### Session handoff (usage limit reached mid-P4)
 
 - Committed: P0 `d4bc915`, P1 `5c48d92`, P2 `cb9e558`, P3 `afcd81e`.

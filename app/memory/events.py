@@ -10,6 +10,7 @@ transaction and must `await session.commit()` (or roll back) themselves.
 
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Final, cast
 
@@ -19,7 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import LearningEvent
 from app.memory.conversation import get_owned_conversation
-from app.memory.profile import apply_event, ensure_profile, to_view
+from app.memory.profile import (
+    apply_event,
+    decay_for_outcome,
+    ensure_profile,
+    skill_keys,
+    to_view,
+)
 from app.schemas.event import (
     Difficulty,
     EvidenceSource,
@@ -145,9 +152,17 @@ async def record_event(
         view = LearningEventView.model_validate(existing)
         return RecordEventResult(event=view, applied=False)
 
-    skills, errors = apply_event(profile.skill_levels, profile.common_errors, event)
+    now = datetime.now(UTC)
+    baseline = decay_for_outcome(profile.skill_levels, profile.skill_seen or {}, event, now)
+    skills, errors = apply_event(baseline, profile.common_errors, event)
     profile.skill_levels = skills
     profile.common_errors = errors
+    if event.solved is not None:
+        stamp = now.isoformat()
+        profile.skill_seen = {
+            **(profile.skill_seen or {}),
+            **dict.fromkeys(skill_keys(event), stamp),
+        }
     await session.flush()
 
     load_stmt = (
@@ -176,11 +191,17 @@ async def rebuild_profile(session: AsyncSession, user_id: uuid.UUID) -> LearnerP
 
     skills: dict[str, float] = {}
     errors: dict[str, int] = {}
+    seen: dict[str, str] = {}
     for row in rows:
-        skills, errors = apply_event(skills, errors, _row_to_create(row))
+        event = _row_to_create(row)
+        skills = decay_for_outcome(skills, seen, event, row.created_at)
+        skills, errors = apply_event(skills, errors, event)
+        if event.solved is not None:
+            seen.update(dict.fromkeys(skill_keys(event), row.created_at.isoformat()))
 
     profile.skill_levels = skills
     profile.common_errors = errors
+    profile.skill_seen = seen
     await session.flush()
     return to_view(profile)
 

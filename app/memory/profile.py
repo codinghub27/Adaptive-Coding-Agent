@@ -33,6 +33,8 @@ transaction and must `await session.commit()` (or roll back) themselves.
 
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
+from functools import cache
 from typing import Final
 
 from sqlalchemy import select
@@ -96,12 +98,49 @@ def smooth(old: float, outcome: float, alpha: float = ALPHA) -> float:
     return round(value, 6)
 
 
+#: Skill-map keys of this prefix hold a whole pattern FAMILY's estimate
+#: (ADAPTIVE-upgrade P6, B5). They live in the same stored map so the event
+#: log stays the single source of truth, and are split out by `to_view`.
+FAMILY_PREFIX: Final = "family:"
+
+#: Stale evidence decays back toward PRIOR with this half-life: a skill last
+#: demonstrated months ago should not still set today's difficulty at full
+#: strength. Applied at READ time, so the stored EWMA is never rewritten.
+DECAY_HALF_LIFE_DAYS: Final = 30.0
+
+
+@cache
+def _families() -> dict[str, str]:
+    # Lazy: keeps this module free of the knowledge stack at import time.
+    from app.knowledge.ingest import load_corpus  # noqa: PLC0415
+
+    return {doc.pattern: doc.pattern_family or doc.pattern for doc in load_corpus()}
+
+
+def family_of(topic: str) -> str | None:
+    """The corpus `pattern_family` of `topic`, or `None` for an unknown slug."""
+    return _families().get(topic)
+
+
+def family_key(topic: str) -> str | None:
+    family = family_of(topic)
+    return f"{FAMILY_PREFIX}{family}" if family is not None else None
+
+
 def skill_keys(event: LearningEventCreate) -> list[str]:
-    """The skill dictionary keys an event should update: topic, and pattern
-    if present and distinct from topic."""
+    """The skill keys an event updates: its topic, and that topic's family.
+
+    The event's `pattern` is no longer a second key (P6, F10): it was
+    LLM-proposed (only retrieval-vouched), and it filled profiles with
+    patterns the learner never discussed ("Union find", "Hashing" on a trees
+    conversation). The family key is what makes evidence on `bfs` inform a
+    first `dfs` problem -- graph evidence used to fragment across seven keys
+    and accumulate seven times slower (B5).
+    """
     keys = [event.topic]
-    if event.pattern and event.pattern != event.topic:
-        keys.append(event.pattern)
+    family = family_key(event.topic)
+    if family is not None and family != event.topic:
+        keys.append(family)
     return keys
 
 
@@ -166,14 +205,71 @@ def suggested_focus(
     return [topic for topic, _level in ordered[:top_n]]
 
 
-def to_view(profile: LearnerProfile) -> LearnerProfileView:
-    """Convert a `LearnerProfile` ORM row to its read view."""
+def decayed(level: float, seen_at: str | None, now: datetime) -> float:
+    """`level` pulled back toward PRIOR by the age of its last evidence."""
+    if seen_at is None:
+        return level
+    try:
+        seen = datetime.fromisoformat(seen_at)
+    except ValueError:
+        return level
+    age_days = max(0.0, (now - seen).total_seconds() / 86_400)
+    weight = 0.5 ** (age_days / DECAY_HALF_LIFE_DAYS)
+    return round(PRIOR + (level - PRIOR) * weight, 6)
+
+
+def decay_for_outcome(
+    skill_levels: Mapping[str, float],
+    seen: Mapping[str, str],
+    event: LearningEventCreate,
+    now: datetime,
+) -> dict[str, float]:
+    """`skill_levels` with this outcome event's keys decayed to `now` first.
+
+    Decay is applied at read time, so the stored value of an old key is still
+    its full-strength EWMA. Blending a new outcome into THAT value (and then
+    re-stamping it as fresh) could make a failure RAISE the displayed skill
+    (stored 0.9 shown as ~0.53 after 120 days; one failure -> stored 0.63, shown
+    0.63). The outcome is blended into what the learner was actually shown.
+    Exposure events are left alone: they move nothing.
+    """
+    out = dict(skill_levels)
+    if event.solved is None:
+        return out
+    for key in skill_keys(event):
+        if key in out:
+            out[key] = decayed(out[key], seen.get(key), now)
+    return out
+
+
+def to_view(profile: LearnerProfile, now: datetime | None = None) -> LearnerProfileView:
+    """Convert a `LearnerProfile` ORM row to its read view.
+
+    Family keys are split into `family_levels`; every level is decayed by the
+    age of its last observed outcome; `suggested_focus` lists only topics with
+    real evidence (moved off PRIOR); `current_focus` is the topic most recently
+    backed by an outcome -- never merely the weakest key (F10).
+    """
+    moment = now or datetime.now(UTC)
+    seen = profile.skill_seen or {}
+    topics: dict[str, float] = {}
+    families: dict[str, float] = {}
+    for key, level in profile.skill_levels.items():
+        value = decayed(level, seen.get(key), moment)
+        if key.startswith(FAMILY_PREFIX):
+            families[key[len(FAMILY_PREFIX) :]] = value
+        else:
+            topics[key] = value
+    evidence = {k: v for k, v in topics.items() if k in seen}
+    recent = sorted((at, key) for key, at in seen.items() if key in topics)
     return LearnerProfileView(
         language=profile.language,
-        skill_levels=profile.skill_levels,
+        skill_levels=topics,
+        family_levels=families,
         learning_preferences=profile.learning_preferences,
         common_errors=common_errors_list(profile.common_errors),
-        suggested_focus=suggested_focus(profile.skill_levels),
+        suggested_focus=suggested_focus(evidence),
+        current_focus=recent[-1][1] if recent else None,
     )
 
 

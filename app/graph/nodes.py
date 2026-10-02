@@ -82,7 +82,7 @@ from app.memory.conversation import (
 )
 from app.memory.events import record_event, requested_help_for
 from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress, save_hint_progress
-from app.memory.profile import PRIOR, apply_event, get_profile
+from app.memory.profile import FAMILY_PREFIX, PRIOR, apply_event, get_profile
 from app.response.format import SAFE_FALLBACK_RESPONSE
 from app.response.generate import generate_response
 from app.schemas.agent_results import ExplainResult, HintLevel
@@ -1799,6 +1799,8 @@ def _skill_deltas(
     after, _errors = apply_event(before, {}, event)
     deltas: dict[str, float] = {}
     for key, new_value in after.items():
+        if key.startswith(FAMILY_PREFIX):
+            continue  # internal family estimate (P6), not a skill the UI shows
         # An unseen key starts from `PRIOR`, not from its own new value --
         # comparing it against itself reported no movement at all for the very
         # first outcome on a topic, which is the one a learner most wants to see.

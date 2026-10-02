@@ -23,6 +23,11 @@ class LearnerProfileView(APIModel):
     #: `app.memory.profile.suggested_focus`. The frontend renders this; it never
     #: computes the learner model itself.
     suggested_focus: list[str] = Field(default_factory=list[str])
+    #: Per pattern-FAMILY estimates (P6): what the planner falls back to for a
+    #: pattern the learner has no evidence on yet. Not shown as skills.
+    family_levels: dict[str, float] = Field(default_factory=dict[str, float])
+    #: The topic most recently backed by an observed outcome, or None.
+    current_focus: str | None = None
 
     @field_validator("skill_levels")
     @classmethod

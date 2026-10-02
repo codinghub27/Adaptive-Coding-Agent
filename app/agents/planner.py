@@ -29,7 +29,7 @@ from app.agents.hint_engine import HintProgress, base_ladder_ceiling
 # it, to decide whether this turn may escalate past `MAX_INITIAL_ASSISTANCE`.
 # `PRIOR` (the neutral starting skill for an unseen topic) is owned by the
 # profile store; the planner reuses it rather than redefining its own.
-from app.memory.profile import PRIOR
+from app.memory.profile import PRIOR, family_of
 from app.schemas.base import APIModel
 from app.schemas.event import Difficulty, slug_tag
 from app.schemas.input import StructuredInput
@@ -471,7 +471,7 @@ def analyze_problem(
         slug = slug_tag(topic_hint)
         return ProblemAnalysis(
             topic=slug,
-            skill_level=profile.skill_levels.get(slug, PRIOR),
+            skill_level=skill_for(profile, slug),
             topic_source="hint",
         )
 
@@ -483,7 +483,7 @@ def analyze_problem(
     if inherited_topic:
         return ProblemAnalysis(
             topic=inherited_topic,
-            skill_level=profile.skill_levels.get(inherited_topic, PRIOR),
+            skill_level=skill_for(profile, inherited_topic),
             topic_source="conversation",
         )
 
@@ -493,7 +493,7 @@ def analyze_problem(
         if matched is not None:
             return ProblemAnalysis(
                 topic=matched,
-                skill_level=profile.skill_levels[matched],
+                skill_level=skill_for(profile, matched),
                 topic_source="profile_match",
             )
 
@@ -501,7 +501,7 @@ def analyze_problem(
     if titled is not None:
         return ProblemAnalysis(
             topic=titled,
-            skill_level=profile.skill_levels.get(titled, PRIOR),
+            skill_level=skill_for(profile, titled),
             topic_source="title",
         )
 
@@ -510,11 +510,27 @@ def analyze_problem(
         slug = _signal_choice(prose, context, inp) or chunk.pattern or chunk.topic
         return ProblemAnalysis(
             topic=slug,
-            skill_level=profile.skill_levels.get(slug, PRIOR),
+            skill_level=skill_for(profile, slug),
             topic_source="retrieval",
         )
 
     return ProblemAnalysis(topic=None, skill_level=PRIOR, topic_source="unknown")
+
+
+def skill_for(profile: LearnerProfileView, topic: str) -> float:
+    """The skill estimate to plan `topic` with (P6, B5).
+
+    The topic's own key when it carries evidence (moved off PRIOR); otherwise
+    its pattern family's estimate, so evidence on `bfs` informs a first `dfs`
+    problem; otherwise PRIOR.
+    """
+    own = profile.skill_levels.get(topic)
+    if own is not None and own != PRIOR:
+        return own
+    family = family_of(topic)
+    if family is not None and family in profile.family_levels:
+        return profile.family_levels[family]
+    return own if own is not None else PRIOR
 
 
 def difficulty_for(skill: float) -> Difficulty:

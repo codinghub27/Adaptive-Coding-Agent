@@ -94,8 +94,16 @@ def test_outcome_score_raises_for_unobserved_outcome() -> None:
 
 
 def test_skill_keys_topic_and_distinct_pattern() -> None:
+    # ADAPTIVE-upgrade P6 (F10): the event's LLM-proposed `pattern` is no
+    # longer a second skill key -- it filled profiles with patterns the learner
+    # never discussed. ("arrays" is not a corpus pattern, so no family key.)
     event = _event(topic="arrays", pattern="sliding_window")
-    assert skill_keys(event) == ["arrays", "sliding_window"]
+    assert skill_keys(event) == ["arrays"]
+
+
+def test_skill_keys_add_the_topics_family() -> None:
+    """P6 (B5): evidence on one graph pattern also moves the graph family."""
+    assert skill_keys(_event(topic="bfs")) == ["bfs", "family:graphs"]
 
 
 def test_skill_keys_pattern_equal_to_topic_is_one_key() -> None:

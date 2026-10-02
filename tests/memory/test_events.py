@@ -44,7 +44,8 @@ async def test_manual_1_solved_sliding_window_increases_skill_and_is_idempotent(
     profile = await get_profile(db_session, user_id)
     print(f"[Manual 1] skill_levels after first record: {profile.skill_levels}")
     # ALPHA 0.3: one solved event takes an unseen key 0.5 -> 0.65.
-    assert profile.skill_levels == {"arrays": 0.65, "sliding_window": 0.65}
+    # ADAPTIVE-upgrade P6: the event pattern is no longer a second skill key.
+    assert profile.skill_levels == {"arrays": 0.65}
 
     # Resubmit the exact same event object.
     result2 = await record_event(db_session, user_id, event)
@@ -55,7 +56,7 @@ async def test_manual_1_solved_sliding_window_increases_skill_and_is_idempotent(
 
     profile_after_second = await get_profile(db_session, user_id)
     print(f"[Manual 1] skill_levels after resubmit: {profile_after_second.skill_levels}")
-    assert profile_after_second.skill_levels == {"arrays": 0.65, "sliding_window": 0.65}
+    assert profile_after_second.skill_levels == {"arrays": 0.65}
 
     events_after_second = await list_events(db_session, user_id)
     assert len(events_after_second) == 1

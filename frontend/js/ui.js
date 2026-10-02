@@ -235,7 +235,10 @@ function preferenceLabels(profile) {
   const preferences = profile?.learning_preferences || {};
   return {
     style: preferences.likes_step_by_step ? "Step-by-step" : "Balanced",
-    hints: preferences.prefers_hints ? "Guided" : "Direct",
+    // Hints are ALWAYS a server-paced ladder; the preference only decides
+    // whether answers start from the lowest rung (F10: "Direct" was shown
+    // while the ladder was in use).
+    hints: preferences.prefers_hints ? "Hint-first" : "Hint ladder",
   };
 }
 
@@ -263,7 +266,7 @@ export function renderPreferenceCards(grid, profile) {
     if (value) {
       value.textContent = spec.key === "likes_step_by_step"
         ? (spec.on ? "Step-by-step" : "Balanced")
-        : (spec.on ? "Guided" : "Direct");
+        : (spec.on ? "Hint-first" : "Hint ladder"); // the ladder is always used (F10)
     }
   });
 }
@@ -350,8 +353,13 @@ export function renderProfile(profile) {
   const topbarRing = document.querySelector(".profile-ring");
   if (topbarRing) topbarRing.textContent = String(overall);
 
-  // Current focus: the weakest tracked skill is the one being worked on.
-  const focus = skills.at(-1);
+  // Current focus: the topic most recently backed by an observed outcome,
+  // computed server-side (`current_focus`). It used to be "the weakest key",
+  // which on a fresh account was any exposure key at 50% (F10).
+  const focusKey = profile?.current_focus || null;
+  const focus = focusKey
+    ? skills.find((entry) => entry[0] === humanizeKey(focusKey)) || null
+    : null;
   const focusCard = document.querySelector(".focus-card");
   if (focusCard) {
     const name = focusCard.querySelector("strong");

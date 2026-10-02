@@ -29,9 +29,7 @@ def upgrade() -> None:
         "learning_events",
         sa.Column("evidence_source", sa.String(16), nullable=False, server_default="none"),
     )
-    op.execute(
-        "UPDATE learning_events SET evidence_source = 'unknown' WHERE solved IS NOT NULL"
-    )
+    op.execute("UPDATE learning_events SET evidence_source = 'unknown' WHERE solved IS NOT NULL")
 
 
 def downgrade() -> None:
