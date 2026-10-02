@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from typing import Final
 
 from app.llm.base import ChatMessage, ChatResult, LLMClient, LLMError
+from app.llm.pricing import estimate_cost_usd
 
 __all__ = ["DEFAULT_MAX_LLM_CALLS", "BudgetedLLMClient", "LLMBudgetExceededError"]
 
@@ -56,11 +57,41 @@ class BudgetedLLMClient:
         self._inner = inner
         self._max_calls = max_calls
         self._calls = 0
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cost_usd = 0.0
+        self._priced_calls = 0
 
     @property
     def calls(self) -> int:
         """The number of calls made through this client so far."""
         return self._calls
+
+    def usage_summary(self) -> dict[str, object]:
+        """Token + estimated cost totals for this run, for the root trace run.
+
+        Counts only calls that returned (a failed call has no usage), and
+        `cost_usd` covers only the `priced_calls` whose model is in
+        `app.llm.pricing` -- see that module for why it is an estimate.
+        """
+        return {
+            "input_tokens": self._input_tokens,
+            "output_tokens": self._output_tokens,
+            "total_tokens": self._input_tokens + self._output_tokens,
+            "cost_usd": round(self._cost_usd, 6),
+            "priced_calls": self._priced_calls,
+        }
+
+    def _record(self, result: ChatResult) -> ChatResult:
+        usage = result.usage
+        if usage is not None:
+            self._input_tokens += usage.input_tokens
+            self._output_tokens += usage.output_tokens
+            cost = estimate_cost_usd(result.model, usage)
+            if cost is not None:
+                self._cost_usd += cost
+                self._priced_calls += 1
+        return result
 
     @property
     def max_calls(self) -> int:
@@ -80,7 +111,9 @@ class BudgetedLLMClient:
         max_tokens: int | None = None,
     ) -> ChatResult:
         self._consume()
-        return await self._inner.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        return self._record(
+            await self._inner.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        )
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         self._consume()
@@ -94,4 +127,4 @@ class BudgetedLLMClient:
         mime_type: str = "image/png",
     ) -> ChatResult:
         self._consume()
-        return await self._inner.vision(image, prompt, mime_type=mime_type)
+        return self._record(await self._inner.vision(image, prompt, mime_type=mime_type))

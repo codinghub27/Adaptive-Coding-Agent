@@ -6,6 +6,7 @@ LangChain chat-model integration. Everything else depends on the
 """
 
 import base64
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from typing import Final, TypeVar, cast
@@ -32,6 +33,8 @@ from app.llm.base import (
 )
 
 _T = TypeVar("_T")
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _to_langchain_message(message: ChatMessage) -> BaseMessage:
@@ -88,6 +91,13 @@ _ALLOWED_TRACE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "error_count",
         "event_count",
         "llm_calls",
+        # `BudgetedLLMClient.usage_summary` (root run outputs + metadata)
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost_usd",
+        "priced_calls",
+        "transport",
     }
 )
 
@@ -236,6 +246,7 @@ class Tracer:
         if settings.langsmith_tracing and settings.langsmith_api_key is not None:
             client = LangSmithClient(
                 api_key=settings.langsmith_api_key.get_secret_value(),
+                api_url=settings.langsmith_endpoint,
                 hide_inputs=redact_trace_payload,
                 hide_outputs=redact_trace_payload,
             )
@@ -274,6 +285,7 @@ class Tracer:
         fn: Callable[[], Awaitable[_T]],
         *,
         outputs: Callable[[_T], Mapping[str, object]] | None = None,
+        metadata: Callable[[], Mapping[str, object]] | None = None,
     ) -> _T:
         """Run `fn` inside a real, standalone LangSmith run.
 
@@ -286,7 +298,9 @@ class Tracer:
         `inputs` must only ever be small, non-sensitive metadata (counts,
         model names) -- never raw user-supplied text, which may be large or
         untrusted. `outputs`, if given, computes the run's recorded output
-        from `fn`'s result.
+        from `fn`'s result. `metadata`, if given, is evaluated once `fn` has
+        finished -- or failed -- and attached to the run's metadata (numbers
+        such as token counts and cost; the same no-prose rule applies).
         """
         if not self._enabled:
             return await fn()
@@ -299,10 +313,28 @@ class Tracer:
                 client=self._client,
                 project_name=self._project_name,
             ) as run_tree:
-                result = await fn()
+                try:
+                    result = await fn()
+                finally:
+                    if metadata is not None:
+                        run_tree.metadata.update(metadata())
                 if outputs is not None:
                     run_tree.end(outputs=dict(outputs(result)))  # pyright: ignore[reportUnknownMemberType]
                 return result
+
+    def flush(self, timeout: float | None = None) -> None:
+        """Block until queued runs are sent (or `timeout` passes). No-op when disabled.
+
+        The LangSmith client batches runs on a background thread; without a
+        flush at shutdown the last turns before the process exits are lost.
+        Never raises: losing a trace must not break shutdown.
+        """
+        if not self._enabled or self._client is None:
+            return
+        try:
+            self._client.flush(timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - shutdown must not fail on tracing
+            _LOGGER.warning("langsmith flush failed: %s", type(exc).__name__)
 
 
 _RATE_LIMIT_MARKERS: Final = (
@@ -576,7 +608,7 @@ def _build_client(
     )
 
 
-def get_llm_client(settings: Settings) -> LLMClient:
+def get_llm_client(settings: Settings, tracer: Tracer | None = None) -> LLMClient:
     """Build the configured `LLMClient` (Groq or OpenRouter) with tracing wired in.
 
     With more than one credential configured (several `GROQ_API_KEY_*`, or a
@@ -585,7 +617,8 @@ def get_llm_client(settings: Settings) -> LLMClient:
     single `LangChainLLMClient`: there is nothing to fail over to, so there is
     no reason to wrap it.
     """
-    tracer = Tracer.from_settings(settings)
+    if tracer is None:
+        tracer = Tracer.from_settings(settings)
     chain = settings.llm_failover_chain
     if not chain:
         raise RuntimeError("no LLM provider API key is configured")

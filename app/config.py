@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "adaptive-coding-agent"
+    #: LangSmith API base URL. `None` uses the SDK default (US cloud); an EU
+    #: or self-hosted workspace MUST set this, or every run is posted to a
+    #: region that rejects the key and nothing appears in the UI.
+    langsmith_endpoint: str | None = None
 
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]

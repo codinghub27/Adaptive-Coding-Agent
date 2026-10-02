@@ -29,3 +29,6 @@ Thumbs.db
 
 # npm lockfile from a machine without pnpm; the project ships pnpm-lock.yaml
 frontend/package-lock.json
+
+# transcript-probe raw output (summaries are recorded in docs/features/ADAPTIVE-upgrade.md)
+eval/results/

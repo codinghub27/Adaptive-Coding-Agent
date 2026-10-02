@@ -17,7 +17,9 @@ specialized-agent nodes now flow through `execute_code` -> `verify` (wired via
 skips straight to `final_response` since it never runs code.
 """
 
-from collections.abc import AsyncIterator, Hashable, Mapping
+import asyncio
+import contextlib
+from collections.abc import AsyncGenerator, Hashable, Mapping
 from dataclasses import dataclass
 from functools import cache
 from types import MappingProxyType
@@ -227,6 +229,7 @@ def _trace_outputs(state: AgentState, budgeted: BudgetedLLMClient) -> dict[str, 
         "error_count": len(state.errors),
         "event_count": len(state.events),
         "llm_calls": budgeted.calls,
+        **budgeted.usage_summary(),
     }
 
 
@@ -294,6 +297,7 @@ async def run_graph(
             ),
             fn=_invoke_graph,
             outputs=lambda result: _trace_outputs(result, budgeted),
+            metadata=lambda: {"transport": "chat", **budgeted.usage_summary()},
         )
 
     return GraphRunResult(state=state, llm_calls=budgeted.calls)
@@ -329,7 +333,7 @@ async def stream_graph(
     knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K,
     runner: CodeRunner | None = None,
     tracer: Tracer | None = None,
-) -> AsyncIterator[GraphStreamEvent]:
+) -> AsyncGenerator[GraphStreamEvent]:
     """Run the teaching graph once, yielding a `GraphStageEvent` as each node
     finishes and exactly one terminal `GraphResultEvent` at the end.
 
@@ -341,17 +345,16 @@ async def stream_graph(
     state) -- see `app.graph.stages` for the fixed label lookup callers are
     expected to pair this with.
 
-    `tracer` is accepted for call-site symmetry with `run_graph` (so
-    `app.graph.api` can pass the same value to both) but is currently
-    **unused**: `Tracer.run` wraps a single `Callable[[], Awaitable[_T]]`,
-    which fits `run_graph`'s one-shot `ainvoke` but not this generator's
-    incremental yields -- buffering every `GraphStageEvent` until `fn`
-    returns would defeat the point of streaming, and reaching into `Tracer`'s
-    private tracing-context machinery from here would repeat exactly the
-    cross-module private-attribute reach this packet removed from
-    `run_graph`. Giving `Tracer` a public streaming-run API would fix this
-    cleanly but is a `Tracer` API change outside this packet's scope -- see
-    the PACKET P-LS report.
+    `tracer`, when given, wraps the run in the same single `teaching_graph`
+    LangSmith parent run `run_graph` creates. `Tracer.run` takes a coroutine,
+    and a LangSmith run tree lives in a contextvar, which an async generator
+    cannot hold open across its yields: each `__anext__` runs in whatever
+    context the consumer (Starlette's response loop) iterates from. So the
+    graph runs in its OWN task, inside `tracer.run`, and hands events to this
+    generator through a queue. The task copies the context once, at creation,
+    so every node and LLM run nests under the parent. Events are forwarded as
+    they arrive -- nothing is buffered until the end. If the consumer stops
+    early (a client disconnect closes this generator), the task is cancelled.
     """
     budgeted, context = _build_run_context(
         llm,
@@ -364,24 +367,69 @@ async def stream_graph(
         runner=runner,
     )
 
-    last_values: dict[str, object] | None = None
-    stream = get_graph().astream(  # pyright: ignore[reportUnknownMemberType]
-        AgentState(input=raw),
-        config={"recursion_limit": RECURSION_LIMIT, "run_name": "teaching_graph"},
-        context=context,
-        stream_mode=["updates", "values"],
-    )
-    async for mode, chunk in stream:
-        mode = cast("str", mode)
-        if mode == "updates":
-            update = cast("Mapping[str, object]", chunk)
-            for node in update:
-                yield GraphStageEvent(node=node, label=STAGE_LABELS.get(node, DEFAULT_STAGE_LABEL))
-        elif mode == "values":
-            last_values = cast("dict[str, object]", chunk)
+    queue: asyncio.Queue[GraphStreamEvent | BaseException | None] = asyncio.Queue()
 
-    if last_values is None:
-        raise RuntimeError("stream_graph: no 'values' chunk was ever emitted")
+    async def _drive_graph() -> AgentState:
+        last_values: dict[str, object] | None = None
+        stream = get_graph().astream(  # pyright: ignore[reportUnknownMemberType]
+            AgentState(input=raw),
+            config={"recursion_limit": RECURSION_LIMIT},
+            context=context,
+            stream_mode=["updates", "values"],
+        )
+        async for mode, chunk in stream:
+            mode = cast("str", mode)
+            if mode == "updates":
+                update = cast("Mapping[str, object]", chunk)
+                for node in update:
+                    queue.put_nowait(
+                        GraphStageEvent(
+                            node=node, label=STAGE_LABELS.get(node, DEFAULT_STAGE_LABEL)
+                        )
+                    )
+            elif mode == "values":
+                last_values = cast("dict[str, object]", chunk)
 
-    state = AgentState.model_validate(last_values)
-    yield GraphResultEvent(GraphRunResult(state=state, llm_calls=budgeted.calls))
+        if last_values is None:
+            raise RuntimeError("stream_graph: no 'values' chunk was ever emitted")
+        return AgentState.model_validate(last_values)
+
+    async def _produce() -> None:
+        try:
+            if tracer is None:
+                state = await _drive_graph()
+            else:
+                state = await tracer.run(
+                    name="teaching_graph",
+                    run_type="chain",
+                    inputs=_trace_inputs(
+                        raw,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        max_llm_calls=max_llm_calls,
+                    ),
+                    fn=_drive_graph,
+                    outputs=lambda result: _trace_outputs(result, budgeted),
+                    metadata=lambda: {"transport": "stream", **budgeted.usage_summary()},
+                )
+            queue.put_nowait(
+                GraphResultEvent(GraphRunResult(state=state, llm_calls=budgeted.calls))
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the consumer below
+            queue.put_nowait(exc)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+        finally:
+            queue.put_nowait(None)
+
+    task = asyncio.create_task(_produce())
+    try:
+        while (item := await queue.get()) is not None:
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(BaseException):
+            await task

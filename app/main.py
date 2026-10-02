@@ -85,17 +85,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.engine = engine
             app.state.session_factory = session_factory
             app.state.qdrant = qdrant
-            app.state.llm = get_llm_client(settings)
             # `Tracer.from_settings` never performs network I/O at construction
             # time (mirrors the assumption `create_retriever` below already
             # relies on), so this can't fail startup even if LangSmith itself
-            # is unreachable.
-            app.state.tracer = Tracer.from_settings(settings)
+            # is unreachable. ONE tracer (one LangSmith client) is shared by the
+            # LLM client, the retriever and the graph's root run, so a single
+            # flush at shutdown drains every queued run.
+            tracer = Tracer.from_settings(settings)
+            stack.callback(tracer.flush, 10.0)
+            app.state.tracer = tracer
+            app.state.llm = get_llm_client(settings, tracer)
 
             if settings.knowledge_enabled:
                 try:
                     app.state.retriever = await asyncio.wait_for(
-                        create_retriever(settings, qdrant, Tracer.from_settings(settings)),
+                        create_retriever(settings, qdrant, tracer),
                         timeout=settings.knowledge_startup_timeout_s,
                     )
                 except CorpusError:

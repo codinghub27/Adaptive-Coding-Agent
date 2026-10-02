@@ -16,6 +16,7 @@ surfaces here as a `NodeError` from `load_learner_profile`/
 `update_learner_model` and an empty/degraded turn, never another user's data.
 """
 
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -291,21 +292,29 @@ async def _chat_stream_events(
         async with session_factory() as session:
             try:
                 final_result: GraphRunResult | None = None
-                async for event in stream_graph(
-                    raw,
-                    llm=llm,
-                    session=session,
-                    user_id=current_user.id,
-                    conversation_id=conversation_id,
-                    retriever=_get_retriever(request),
-                    knowledge_top_k=_get_knowledge_top_k(request),
-                    runner=_get_runner(request),
-                    tracer=_get_tracer(request),
-                ):
-                    if isinstance(event, GraphStageEvent):
-                        yield _sse_frame("stage", {"node": event.node, "label": event.label})
-                    else:
-                        final_result = event.result
+                # `aclosing`: `stream_graph` runs the graph in its own task. If the
+                # client disconnects, this generator is closed at a `yield` below;
+                # the inner generator must be closed (cancelling that task) BEFORE
+                # the session's `async with` exits, or the graph keeps running on
+                # a closed session until garbage collection gets to it.
+                async with contextlib.aclosing(
+                    stream_graph(
+                        raw,
+                        llm=llm,
+                        session=session,
+                        user_id=current_user.id,
+                        conversation_id=conversation_id,
+                        retriever=_get_retriever(request),
+                        knowledge_top_k=_get_knowledge_top_k(request),
+                        runner=_get_runner(request),
+                        tracer=_get_tracer(request),
+                    )
+                ) as events:
+                    async for event in events:
+                        if isinstance(event, GraphStageEvent):
+                            yield _sse_frame("stage", {"node": event.node, "label": event.label})
+                        else:
+                            final_result = event.result
 
                 if final_result is None:
                     raise RuntimeError("stream_graph completed without a result event")
