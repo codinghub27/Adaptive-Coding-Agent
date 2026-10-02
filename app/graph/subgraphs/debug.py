@@ -44,6 +44,7 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
 )
 from langgraph.runtime import Runtime
 
+from app.agents.concept import Reference, pattern_chunks, turn_references
 from app.agents.debugger import (
     explain_bug,
     extract_learner_code,
@@ -94,6 +95,8 @@ class DebugState(TypedDict, total=False):
     problem: StructuredInput | None
     code: str | None
     tests: TestSuite | None
+    #: Trusted corpus excerpts for the explanation prompt (ADAPTIVE-upgrade P3).
+    references: list[Reference]
 
     static_findings: list[StaticFinding]
     inferred_approach: str | None
@@ -106,6 +109,7 @@ class DebugState(TypedDict, total=False):
     has_established_failure: bool
     bug_location: BugLocation | None
     bug_explanation: str | None
+    citations: list[str]
 
     patched_code: str | None
     final_request: ExecutionRequest | None
@@ -220,15 +224,16 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     if not state.get("code"):
         # Nothing to read: without code there is no bug to describe.
         return {"bug_explanation": None}
-    explanation = await explain_bug(
+    explanation, citations = await explain_bug(
         problem,
         static_findings=state.get("static_findings", []),
         failing_case=state.get("failing_case"),
         bug_location=state.get("bug_location"),
         inferred_approach=state.get("inferred_approach"),
         llm=runtime.context.llm,
+        references=state.get("references", []),
     )
-    return {"bug_explanation": explanation}
+    return {"bug_explanation": explanation, "citations": citations}
 
 
 async def _patch(state: DebugState, runtime: Runtime[GraphContext]) -> DebugState:
@@ -389,6 +394,11 @@ async def run_debug(
         "code": extract_learner_code(problem),
         "tests": available_tests,
         "attempts": 0,
+        "references": turn_references(
+            state.retrieved_context,
+            pattern_chunks(state.plan.topic if state.plan is not None else None),
+            ("common_mistakes", "when_not_to_use"),
+        ),
     }
     final_state = await get_debug_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         initial, context=runtime.context
@@ -406,6 +416,7 @@ async def run_debug(
         initial_verdict=final_state.get("initial_verdict"),
         final_verdict=final_verdict,
         fixed=_is_fixed(final_verdict),
+        citations=final_state.get("citations") or [],
     )
     execution_request = final_state.get("final_request") or final_state.get("request")
     return DebugRunResult(result=result, execution_request=execution_request)

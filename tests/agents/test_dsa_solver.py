@@ -273,6 +273,9 @@ async def test_citations_are_human_readable_labels_from_retrieved_context() -> N
 
     run = await run_dsa(_state(plan=plan, problem=_problem(), context=hits), _runtime(llm))
 
+    # ADAPTIVE-upgrade P3: only sources this turn's content used are cited. A
+    # quoted corpus section would be cited too, but none is shown here: at L0
+    # on a retrieval-guessed topic the pattern is not named yet.
     assert run.result.citations == ["Two Pointers - Overview"]
     assert "chunk-1" not in run.result.citations
 

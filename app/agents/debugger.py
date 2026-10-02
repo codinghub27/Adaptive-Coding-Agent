@@ -40,9 +40,10 @@ from collections.abc import Sequence
 from typing import Final
 
 import tree_sitter_python as tspython
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from tree_sitter import Language, Node, Parser
 
+from app.agents.concept import Reference, cited, references_block
 from app.input._text import extract_json_object
 from app.llm.base import ChatMessage, LLMClient, LLMError
 from app.schemas.agent_results import BugLocation, StaticFinding
@@ -493,6 +494,7 @@ class _BugExplanationOutput(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
     bug_explanation: str | None = None
+    used: list[int] = Field(default_factory=list[int])
 
 
 class _PatchedCodeOutput(BaseModel):
@@ -524,19 +526,20 @@ def _parse_inferred_approach(content: str) -> str | None:
     return _none_if_blank(parsed.inferred_approach)
 
 
-def _parse_bug_explanation(content: str) -> str | None:
+def _parse_bug_explanation(content: str) -> tuple[str | None, list[int]]:
     json_str = extract_json_object(content)
     if json_str is None:
-        return None
+        return None, []
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
-        return None
+        return None, []
     try:
         parsed = _BugExplanationOutput.model_validate(data)
     except ValidationError:
-        return None
-    return _none_if_blank(parsed.bug_explanation)
+        return None, []
+    explanation = _none_if_blank(parsed.bug_explanation)
+    return explanation, (list(parsed.used) if explanation is not None else [])
 
 
 def _parse_patched_code(content: str) -> str | None:
@@ -584,8 +587,10 @@ _EXPLAIN_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "FACT, not something for you to re-judge or contradict. Using the trusted <debug_context> "
     "(the already-established failure details) plus the learner's problem/code, explain in 2-4 "
     "sentences why the bug happens. Never claim the code is correct or that it passes -- the "
-    "failure is already established. Reply with ONLY a single JSON object and nothing else: "
-    '{"bug_explanation": "<your explanation>"}'
+    "failure is already established. If trusted <reference_notes> are provided, use the ones "
+    "that genuinely apply (e.g. a common mistake of this pattern) and list their numbers in "
+    '"used"; never cite a note you did not use. Reply with ONLY a single JSON object and '
+    'nothing else: {"bug_explanation": "<your explanation>", "used": [<note numbers>]}'
 )
 
 
@@ -597,10 +602,14 @@ async def explain_bug(
     bug_location: BugLocation | None,
     inferred_approach: str | None,
     llm: LLMClient,
-) -> str | None:
+    references: Sequence[Reference] = (),
+) -> tuple[str | None, list[str]]:
     """One LLM call: explain the already-established (sandbox-verified) failure.
 
-    Never raises: degrades to `None` on `LLMError` or an unparseable response.
+    Returns the explanation and the labels of the `references` (trusted corpus
+    excerpts shown in the prompt) the model reported using -- the only thing
+    the debug route may cite (ADAPTIVE-upgrade P3). Never raises: degrades to
+    `(None, [])` on `LLMError` or an unparseable response.
     """
     context = _debug_context_block(
         static_findings=static_findings,
@@ -611,15 +620,19 @@ async def explain_bug(
     parts = [_user_input_block(problem)]
     if context:
         parts.append(context)
+    notes = references_block(references)
+    if notes:
+        parts.append(notes)
     messages = [
         ChatMessage(role="system", content=_EXPLAIN_SYSTEM),
         ChatMessage(role="user", content="\n".join(parts)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=400)
+        result = await llm.chat(messages, temperature=0.2, max_tokens=500)
     except LLMError:
-        return None
-    return _parse_bug_explanation(result.content)
+        return None, []
+    explanation, used = _parse_bug_explanation(result.content)
+    return explanation, cited(references, used)
 
 
 _PATCH_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (

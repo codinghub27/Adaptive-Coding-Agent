@@ -49,6 +49,13 @@ from typing import Final, cast
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.agents.concept import (
+    Reference,
+    cited,
+    pattern_chunks,
+    references_block,
+    turn_references,
+)
 from app.agents.debugger import extract_learner_code
 from app.agents.explainer import estimate_complexity
 from app.execution.base import CodeRunner
@@ -360,10 +367,12 @@ _STYLE_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
 
 _ADVISORY_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "Suggest edge cases the code may not handle and possible improvements. These are advisory "
-    "only, never correctness claims. Reply with ONLY a single JSON object and nothing else, with "
+    "only, never correctness claims. If trusted <reference_notes> are provided, ground your "
+    'suggestions in the ones that genuinely apply and list their numbers in "used"; never '
+    "cite a note you did not use. Reply with ONLY a single JSON object and nothing else, with "
     'at most 5 findings: {"findings": [{"category": "edge_cases"|"improvements", "severity": '
     '"info"|"minor"|"major", "message": "<...>", "lineno": <int or null>, "suggestion": '
-    '"<...or null>"}]}'
+    '"<...or null>"}], "used": [<note numbers>]}'
 )
 
 _MAX_FIELD_CHARS: Final = 2_000
@@ -407,6 +416,7 @@ class _FindingItem(BaseModel):
 class _FindingsOutput(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     findings: list[_FindingItem] = Field(default_factory=list["_FindingItem"])
+    used: list[int] = Field(default_factory=list[int])
 
 
 def _parse_findings(content: str) -> _FindingsOutput | None:
@@ -488,23 +498,33 @@ async def _style_findings(
 
 
 async def _advisory_findings(
-    problem: StructuredInput | None, code: str, total_lines: int, llm: LLMClient
-) -> list[ReviewFinding]:
-    """LLM call #2 (only when there is code): advisory edge_cases/improvements findings."""
+    problem: StructuredInput | None,
+    code: str,
+    total_lines: int,
+    llm: LLMClient,
+    references: Sequence[Reference] = (),
+) -> tuple[list[ReviewFinding], list[str]]:
+    """LLM call #2 (only when there is code): advisory edge_cases/improvements
+    findings, and the labels of the trusted reference notes it reported using."""
+    user = _review_user_block(problem, code, ())
+    notes = references_block(references)
+    if notes:
+        user = f"{user}\n{notes}"
     messages = [
         ChatMessage(role="system", content=_ADVISORY_SYSTEM),
-        ChatMessage(role="user", content=_review_user_block(problem, code, ())),
+        ChatMessage(role="user", content=user),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.3, max_tokens=800)
+        result = await llm.chat(messages, temperature=0.3, max_tokens=900)
     except LLMError:
-        return []
+        return [], []
     parsed = _parse_findings(result.content)
     if parsed is None:
-        return []
-    return _to_review_findings(
+        return [], []
+    findings = _to_review_findings(
         parsed.findings, allowed_categories=_ADVISORY_CATEGORIES, total_lines=total_lines
     )
+    return findings, (cited(references, parsed.used) if findings else [])
 
 
 # --------------------------------------------------------------------------
@@ -560,11 +580,22 @@ async def review_code(
         *_long_line_findings(code),
     ]
 
+    citations: list[str] = []
     if code:
         findings.extend(
             await _style_findings(problem, code, findings, total_lines, runtime.context.llm)
         )
-        findings.extend(await _advisory_findings(problem, code, total_lines, runtime.context.llm))
+        references = turn_references(
+            state.retrieved_context,
+            pattern_chunks(state.plan.topic if state.plan is not None else None),
+            ("common_mistakes", "complexity"),
+        )
+        advisory, citations = await _advisory_findings(
+            problem, code, total_lines, runtime.context.llm, references
+        )
+        findings.extend(advisory)
 
-    result = ReviewResult(correctness_verdict=correctness_verdict, findings=findings)
+    result = ReviewResult(
+        correctness_verdict=correctness_verdict, findings=findings, citations=citations
+    )
     return ReviewRunResult(result=result, execution_request=execution_request)

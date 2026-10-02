@@ -591,10 +591,14 @@ async def test_explain_agent_dispatches_review_and_explain_intents(
     monkeypatch.setattr("app.graph.nodes.review_code", fake_review_code)
     monkeypatch.setattr("app.graph.nodes.run_explain", fake_run_explain)
 
-    cases = [
+    cases: list[tuple[Intent, str | None]] = [
         (Intent.CODE_REVIEW, "review"),
         (Intent.OPTIMIZATION, "review"),
         (Intent.CODE_EXPLAIN, "explain"),
+        # ADAPTIVE-upgrade P3: a concept question with no code is answered from
+        # the corpus first (`_concept_answer`); this state has no topic and no
+        # relevant hit, so there is nothing to ground on and it falls back to
+        # the explainer (see test_concept.py for the grounded path).
         (Intent.CONCEPT_EXPLANATION, "explain"),
     ]
     for intent_value, expected in cases:
@@ -603,7 +607,7 @@ async def test_explain_agent_dispatches_review_and_explain_intents(
 
         update = await explain_agent(state, _runtime())
 
-        assert calls == [expected]
+        assert calls == ([expected] if expected is not None else [])
         assert update.get("agent_output") is not None
 
 

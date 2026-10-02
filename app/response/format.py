@@ -58,6 +58,9 @@ SECTION_TITLES: Final[Mapping[ResponseSectionKind, str]] = {
     "code": "Solution code",
     "complexity": "Complexity",
     "common_mistakes": "Common mistakes to avoid",
+    "recognition": "How to recognize this pattern",
+    "intuition": "The intuition",
+    "explanation": "Explanation",
     # debug
     "static_findings": "What the static checks found",
     "inferred_approach": "What your code is trying to do",
@@ -77,10 +80,21 @@ SECTION_TITLES: Final[Mapping[ResponseSectionKind, str]] = {
 }
 
 DSA_SECTIONS_BY_ASSISTANCE: Final[Mapping[AssistanceLevel, tuple[ResponseSectionKind, ...]]] = {
-    "hint": ("next_hint", "next_steps"),
-    "concept": ("next_hint", "next_steps", "understanding", "key_insight", "common_mistakes"),
+    "hint": ("next_hint", "recognition", "next_steps"),
+    "concept": (
+        "next_hint",
+        "recognition",
+        "intuition",
+        "next_steps",
+        "understanding",
+        "key_insight",
+        "common_mistakes",
+        "complexity",
+    ),
     "pseudocode": (
         "next_hint",
+        "recognition",
+        "intuition",
         "next_steps",
         "understanding",
         "key_insight",
@@ -89,9 +103,12 @@ DSA_SECTIONS_BY_ASSISTANCE: Final[Mapping[AssistanceLevel, tuple[ResponseSection
         "brute_force",
         "why_slow",
         "pseudocode",
+        "complexity",
     ),
     "partial": (
         "next_hint",
+        "recognition",
+        "intuition",
         "next_steps",
         "understanding",
         "key_insight",
@@ -104,6 +121,8 @@ DSA_SECTIONS_BY_ASSISTANCE: Final[Mapping[AssistanceLevel, tuple[ResponseSection
     ),
     "full": (
         "next_hint",
+        "recognition",
+        "intuition",
         "next_steps",
         "understanding",
         "key_insight",

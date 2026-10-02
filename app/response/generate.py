@@ -18,6 +18,8 @@ assembled sections -> else `fallback_text` (when non-blank) -> else
 empty. When falling back, `sections` is empty and `reveals_code` is `False`.
 """
 
+from typing import cast
+
 from app.response.format import (
     DSA_SECTIONS_BY_ASSISTANCE,
     SAFE_FALLBACK_RESPONSE,
@@ -123,6 +125,12 @@ def _render_dsa(
     complexity_body = render_complexity(result.complexity_time, result.complexity_space)
     if complexity_body:
         bodies["complexity"] = (complexity_body, None)
+    # Pattern-level corpus sections (P3). A problem-specific complexity from the
+    # solver always wins over the pattern's typical one.
+    for kind in ("recognition", "intuition", "complexity"):
+        teaching = result.teaching_sections.get(kind)
+        if teaching and kind not in bodies:
+            bodies[cast("ResponseSectionKind", kind)] = (teaching, None)
     if result.code is not None and _may_reveal_code(plan):
         code_body = render_code_block(result.code)
         if code_body:
@@ -229,6 +237,11 @@ def _render_explain(
 ) -> tuple[list[ResponseSection], list[str]]:
     sections: list[ResponseSection] = []
 
+    if result.answer:
+        answer_section = _section("explanation", result.answer)
+        if answer_section is not None:
+            sections.append(answer_section)
+
     structure_section = _section("structure", render_structure(result.structure))
     if structure_section is not None:
         sections.append(structure_section)
@@ -319,10 +332,13 @@ def generate_response(
         ) = _render_dsa(result, assistance_level, plan)
     elif isinstance(result, DebugResult):
         sections, next_steps = _render_debug(result, plan, verification)
+        citations = list(result.citations)
     elif isinstance(result, ExplainResult):
         sections, next_steps = _render_explain(result, plan)
+        citations = list(result.citations)
     elif isinstance(result, ReviewResult):
         sections, next_steps = _render_review(result, verification)
+        citations = list(result.citations)
 
     # A code-bearing section is not the only way code reaches the learner: at
     # L5/L6 the hint's own body may be the partial/full solution, and that hint

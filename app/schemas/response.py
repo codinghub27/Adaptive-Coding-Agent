@@ -39,6 +39,10 @@ ResponseSectionKind = Literal[
     "code",
     "complexity",
     "common_mistakes",
+    # corpus teaching sections (ADAPTIVE-upgrade P3), any route
+    "recognition",
+    "intuition",
+    "explanation",
     # debug
     "static_findings",
     "inferred_approach",

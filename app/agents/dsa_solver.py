@@ -29,6 +29,7 @@ from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.agents.planner import MIN_RETRIEVAL_TOPIC_SCORE
 from app.input._text import extract_json_object
 from app.llm.base import ChatMessage, LLMClient, LLMError
 from app.schemas.agent_results import HintLevel
@@ -217,12 +218,24 @@ def _trimmed_problem(problem: StructuredInput) -> StructuredInput:
     )
 
 
+def prompt_hits(context: Sequence[RetrievalHit]) -> list[RetrievalHit]:
+    """The retrieved hits the solver prompt includes: relevant ones only, capped.
+
+    Below the calibrated floor a hit is noise (the retriever always returns
+    its top-k), and putting noise in the prompt -- then citing it -- is how
+    an answer came to "cite" sources it never used (P3, B1).
+    """
+    relevant = [hit for hit in context if hit.score >= MIN_RETRIEVAL_TOPIC_SCORE]
+    return relevant[:_MAX_CONTEXT_HITS]
+
+
 def _knowledge_block(context: Sequence[RetrievalHit]) -> str:
     """A trusted `<knowledge_context>` block from the (corpus-sourced) retrieved hits."""
-    if not context:
+    hits = prompt_hits(context)
+    if not hits:
         return ""
     lines: list[str] = []
-    for hit in context[:_MAX_CONTEXT_HITS]:
+    for hit in hits:
         chunk = hit.chunk
         excerpt = _truncate(chunk.text, _MAX_CONTEXT_CHARS)
         lines.append(f"- ({chunk.topic}/{chunk.pattern}) {chunk.title}: {excerpt}")

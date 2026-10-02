@@ -336,3 +336,76 @@ probes still resolve None; 0 non-problem requests routed to the ladder.
 After the fixes: 30-probe set still 100%; `eval.run` **routing 100%, topic
 100%, hint_safety 100%, debug_fix 100% (2/2 this run), groundedness 30%**;
 `pytest` 1644 passed, 2 skipped.
+
+### P3 — Groundedness (B1, F6)
+
+**Target (stated first):** eval groundedness >=80%; a concept question's
+citations name the corpus chunks that shaped it (checked against the prompt);
+section presence >=95% on the transcript probes.
+
+**AD-3: cite only what a prompt contained and the model reported using.**
+B1's warning taken literally: attaching retrieved ids to an answer that never
+read them is a lie. Every grounded prompt now numbers its trusted references
+and the model returns `used: [n…]`; citations are those numbers intersected
+with what was actually shown (`concept.cited`). The DSA route, which used to
+cite every retrieved chunk (even below the noise floor, even when the solver
+call never ran), now cites only the hits that were in the solver's prompt
+(`dsa_solver.prompt_hits`: relevant hits only — noise is no longer put in the
+prompt either) plus the corpus sections it quotes whole.
+
+**What changed**
+- `app/agents/concept.py` (new): `answer_concept` for `CONCEPT_EXPLANATION` /
+  `GENERAL_GUIDANCE` with no code. Concept questions are grounded in the
+  topic's own overview / core intuition / recognition / complexity sections +
+  relevant hits; guidance (a study plan) in a curriculum built from the
+  corpus's own front matter (17 families, their patterns, scheduled difficulty
+  mix, example problems) with its own prompt. Unparseable model output falls
+  back to the references themselves, cited exactly.
+- Debug (`explain_bug`) and review (`_advisory_findings`) prompts get
+  `<reference_notes>` (the topic's common mistakes / when-not-to-use /
+  complexity + relevant hits) and report `used`; `DebugResult`/`ReviewResult`
+  gained `citations`.
+- F6: `app/response/corpus_sections.py` (new) quotes the topic's corpus
+  sections WHOLE on the DSA route: `recognition` (every level), `intuition`
+  (concept+), `complexity` (concept+, when asked, unless the solver produced
+  the problem's own). Requests are read from a fixed vocabulary only.
+  `DSA_SECTIONS_BY_ASSISTANCE` gained those kinds (still cumulative).
+
+**Results**
+- `eval.run`: **groundedness 30% -> 100% (10/10)**; routing 100, topic 100,
+  hint_safety 100, debug_fix 100.
+- Prompt check (`cite_check.py`, in-process, a recording LLM wrapper):
+  "What is a trie and when would I use it?" -> citations `Trie - Overview /
+  Core Intuition / When to Recognize It / Complexity`, **every one present in
+  the prompt**. (The LangSmith trace can't show this: payloads are redacted
+  to shapes by design, so the check is done on the prompt in-process.) The
+  study plan first came back with an answer and **zero** citations — the
+  concept prompt didn't fit a plan — fixed with the guidance prompt; it now
+  cites the 16 families it used.
+- Transcript (`eval/results/P3.json`): **294/360 = 81.7%** (P2 77.5%).
+  Section checks: intuition 3/3, recognition 3/3, complexity 3/3,
+  recognition_explained (T7) 3/3, sections_present 3/3, states_reasoning 3/3
+  -> **section presence 18/18 = 100%**. `grounded` (T12) 3/3.
+
+**Known issues from P3**
+- A "run tests" request with no learner code gets no explicit note yet.
+- `topic_references` reads one chunk per section (`part 0`); a long section
+  split in two would be quoted half — none is today (max chunk 1,046 chars).
+
+**Code review (medium) before commit: 4 findings, all fixed.**
+1. (med) a concept question with nothing to ground on returned an empty
+   answer instead of falling back to the explainer — it now falls back.
+2. (med) a corpus "Complexity" citation was added when the solver supplied
+   only `complexity_space` (so the corpus section was never shown) — both
+   time and space now count as the problem's own complexity.
+3. (low) a corpus section split across chunks would have been quoted in part
+   — such a section is now skipped, never quoted half (none is split today).
+4. (med) `recognition` at L0 named the pattern before the solver itself would
+   (it masks topic/pattern below L1), and on a mere retrieval guess could
+   name the wrong one — pattern-naming sections now need L1+, a confident
+   topic source (title / conversation / hint / profile), or an explicit
+   request.
+After the fixes: `eval.run` groundedness **90% (9/10)** (one DSA hint case at
+L0 on a retrieval-guessed topic now — correctly — quotes no section), all other
+metrics 100%; single-mode transcript re-check: every section check still
+passes; `pytest` 1658 passed, 2 skipped.

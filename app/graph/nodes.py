@@ -32,6 +32,12 @@ from uuid import UUID
 
 from langgraph.runtime import Runtime
 
+from app.agents.concept import (
+    answer_concept,
+    curriculum_references,
+    pattern_chunks,
+    turn_references,
+)
 from app.agents.debugger import extract_learner_code
 from app.agents.hint_engine import HintProgress
 from app.agents.planner import (
@@ -78,7 +84,7 @@ from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress
 from app.memory.profile import PRIOR, apply_event, get_profile
 from app.response.format import SAFE_FALLBACK_RESPONSE
 from app.response.generate import generate_response
-from app.schemas.agent_results import HintLevel
+from app.schemas.agent_results import ExplainResult, HintLevel
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verdict
 from app.schemas.input import ActiveProblem, CodeBlock, ProblemRelation, StructuredInput
@@ -1266,6 +1272,9 @@ async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> A
 
 
 _REVIEW_INTENTS: Final[frozenset[Intent]] = frozenset({Intent.CODE_REVIEW, Intent.OPTIMIZATION})
+_CONCEPT_INTENTS: Final[frozenset[Intent]] = frozenset(
+    {Intent.CONCEPT_EXPLANATION, Intent.GENERAL_GUIDANCE}
+)
 
 
 async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
@@ -1292,6 +1301,19 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         )
         return update
 
+    if (
+        intent is not None
+        and intent.intent in _CONCEPT_INTENTS
+        and extract_learner_code(state.structured_input) is None
+    ):
+        # A concept question or general guidance with no code to explain:
+        # answer it FROM the corpus and cite only what the answer used (P3, B1).
+        result = await _concept_answer(state, runtime)
+        if result.answer:
+            return {"agent_output": result.to_outcome(), "agent_result": result}
+        # Nothing to ground on (no relevant hit, no known topic): fall back to
+        # the explainer rather than answering with nothing (code review P3).
+
     explain_run = await run_explain(state, runtime)
     update = {
         "agent_output": explain_run.result.to_outcome(),
@@ -1300,6 +1322,32 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     if explain_run.execution_request is not None:
         update["execution_request"] = explain_run.execution_request
     return update
+
+
+async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> ExplainResult:
+    """A corpus-grounded answer for a concept question or general guidance.
+
+    General guidance (a study plan) is grounded in the curriculum built from
+    the corpus's own front matter; a concept question in the topic's own
+    overview/intuition/recognition sections plus this turn's relevant hits.
+    """
+    intent = state.intent.intent if state.intent is not None else None
+    if intent is Intent.GENERAL_GUIDANCE:
+        references = list(curriculum_references())
+    else:
+        topic = state.plan.topic if state.plan is not None else None
+        references = turn_references(
+            state.retrieved_context,
+            pattern_chunks(topic),
+            ("overview", "core_intuition", "when_to_recognize_it", "complexity"),
+        )
+    answer = await answer_concept(
+        state.structured_input,
+        references,
+        runtime.context.llm,
+        guidance=intent is Intent.GENERAL_GUIDANCE,
+    )
+    return ExplainResult(answer=answer.answer or None, citations=answer.citations)
 
 
 # --- execute_code -------------------------------------------------------------

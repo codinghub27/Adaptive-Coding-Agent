@@ -154,8 +154,12 @@ class DSAResult(APIModel):
     complexity_space: str | None = None
     common_mistakes: list[str] = Field(default_factory=list[str])
     citations: list[str] = Field(
-        default_factory=list[str], description="Knowledge-chunk ids cited for this result."
+        default_factory=list[str],
+        description="Labels of the corpus chunks this result's prompt or sections used.",
     )
+    #: Pattern-level corpus sections quoted whole (ADAPTIVE-upgrade P3): kind ->
+    #: body. Their citations are already in `citations`.
+    teaching_sections: dict[str, str] = Field(default_factory=dict[str, str])
     initial_verdict: Verdict | None = None
 
     @model_validator(mode="after")
@@ -231,6 +235,9 @@ class DebugResult(APIModel):
     initial_verdict: Verdict | None = None
     final_verdict: Verdict | None = None
     fixed: bool = False
+    #: Labels of the corpus excerpts the explanation prompt was given AND the
+    #: model reported using (ADAPTIVE-upgrade P3) -- never "whatever was retrieved".
+    citations: list[str] = Field(default_factory=list[str])
 
     @model_validator(mode="after")
     def _fixed_requires_passing_final_verdict(self) -> "DebugResult":
@@ -300,6 +307,10 @@ class ExplainResult(APIModel):
     complexity_time: str | None = None
     complexity_space: str | None = None
     complexity_rationale: str | None = None
+    #: A corpus-grounded answer to a concept / guidance question with no code
+    #: (ADAPTIVE-upgrade P3), and the labels of the references it used.
+    answer: str | None = None
+    citations: list[str] = Field(default_factory=list[str])
 
     def to_outcome(self) -> "AgentOutcome":
         """Project this result onto the Phase 04 `AgentOutcome` shape.
@@ -346,6 +357,8 @@ class ReviewResult(APIModel):
     kind: Literal["review"] = "review"
     correctness_verdict: Verdict | None = None
     findings: list[ReviewFinding] = Field(default_factory=list[ReviewFinding])
+    #: Corpus excerpts the advisory prompt was given AND reported using (P3).
+    citations: list[str] = Field(default_factory=list[str])
 
     @property
     def claims_correct(self) -> bool:

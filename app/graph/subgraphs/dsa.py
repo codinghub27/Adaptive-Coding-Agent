@@ -50,11 +50,17 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.runtime import Runtime
 
 from app.agents.debugger import extract_learner_code
-from app.agents.dsa_solver import DSAAnalysis, analyze_dsa_problem, build_execution_request
+from app.agents.dsa_solver import (
+    DSAAnalysis,
+    analyze_dsa_problem,
+    build_execution_request,
+    prompt_hits,
+)
 from app.agents.hint_engine import HintProgress, next_hint
 from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
 from app.knowledge.ingest import chunk_corpus, load_corpus
+from app.response.corpus_sections import corpus_sections, requested_sections
 from app.schemas.agent_results import DSAResult, HintLevel, HintResult
 from app.schemas.execution import (
     ExecutionRequest,
@@ -395,6 +401,12 @@ async def _run_learner_code(
         return _sandbox_error_result(request)
 
 
+#: Topic sources confident enough to name the pattern on the first rung: an
+#: explicit hint, the conversation's stored topic, a curated title match, or
+#: the learner's own vocabulary -- not a bare retrieval guess.
+_CONFIDENT_TOPIC_SOURCES: Final = frozenset({"hint", "conversation", "title", "profile_match"})
+
+
 def _citation_labels(context: Sequence[RetrievalHit]) -> list[str]:
     """Human-readable citation labels for the chunks this turn drew on.
 
@@ -465,7 +477,38 @@ async def run_dsa(
         learner_result = await _run_learner_code(learner_request, runtime)
         initial_verdict = verify(learner_result, learner_request)
 
-    citations = _citation_labels(state.retrieved_context)
+    # Cite only what this turn's content actually drew on (P3, B1): the hits
+    # that were in the solver's prompt -- and only when that call ran -- plus
+    # the corpus sections quoted whole below. Never "whatever was retrieved".
+    analysis_ran = final_state.get("analysis") is not None
+    citations = _citation_labels(prompt_hits(state.retrieved_context)) if analysis_ran else []
+    plan = state.plan
+    question = state.structured_input.question if state.structured_input is not None else None
+    hint_now = final_state.get("hint")
+    # Naming the pattern is itself a hint: allowed past the first rung, or at
+    # L0 when the topic is confident rather than a retrieval guess (code review
+    # P3) -- the solver likewise masks topic/pattern below L1.
+    reveal_pattern = (hint_now is not None and hint_now.level >= HintLevel.L1_WHAT_TO_TRACK) or (
+        state.topic_source in _CONFIDENT_TOPIC_SOURCES
+    )
+    has_problem_complexity = (
+        final_state.get("complexity_time") is not None
+        or final_state.get("complexity_space") is not None
+    )
+    teaching = (
+        corpus_sections(
+            corpus_chunks_by_pattern().get(plan.topic, ()) if plan.topic else (),
+            plan.assistance_level,
+            requested_sections(question),
+            has_problem_complexity=has_problem_complexity,
+            reveal_pattern=reveal_pattern,
+        )
+        if plan is not None
+        else []
+    )
+    for section in teaching:
+        if section.citation not in citations:
+            citations.append(section.citation)
     result = DSAResult(
         topic=final_state.get("topic"),
         pattern=final_state.get("pattern"),
@@ -481,6 +524,7 @@ async def run_dsa(
         complexity_space=final_state.get("complexity_space"),
         common_mistakes=final_state.get("common_mistakes") or [],
         citations=citations,
+        teaching_sections={s.kind: s.body for s in teaching},
         initial_verdict=initial_verdict,
     )
     solution_request = build_execution_request(result.code) if result.code else None
