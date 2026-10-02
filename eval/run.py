@@ -37,6 +37,7 @@ import argparse
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Final
 
 from qdrant_client import AsyncQdrantClient
 
@@ -198,9 +199,32 @@ async def run_suite(cases: Sequence[Case] = DATASET) -> list[Metric]:
     return _score(cases, outcomes)
 
 
+#: Failing thresholds for `--gate` (ADAPTIVE-upgrade P7, Section 10).
+#: hint_safety and debug_fix are hard gates; the rest are scorecard floors.
+GATES: Final[dict[str, float]] = {
+    "routing": 0.95,
+    "topic": 0.95,
+    "hint_safety": 1.0,
+    "debug_fix": 1.0,
+    "groundedness": 0.80,
+}
+
+
+def gate_failures(metrics: Sequence[Metric]) -> list[str]:
+    """Metrics below their `GATES` threshold, as printable lines."""
+    return [
+        f"{m.name} {m.score:.1%} < {GATES[m.name]:.0%}"
+        for m in metrics
+        if m.name in GATES and m.score < GATES[m.name]
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the adaptive-agent evaluation suite.")
     parser.add_argument("--only", help="run just the case with this id", default=None)
+    parser.add_argument(
+        "--gate", action="store_true", help="exit 1 when a metric is below its GATES threshold"
+    )
     args = parser.parse_args(argv)
 
     cases = DATASET
@@ -222,6 +246,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"\n{metric.name} misses:")
             for miss in metric.misses:
                 print(f"  - {miss}")
+    if args.gate:
+        failures = gate_failures(metrics)
+        for line in failures:
+            print(f"GATE FAILED: {line}")
+        if failures:
+            return 1
+        print("all gates passed")
     return 0
 
 

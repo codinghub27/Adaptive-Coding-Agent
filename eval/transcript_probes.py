@@ -694,7 +694,31 @@ async def run(args: argparse.Namespace) -> int:
     print(f"\nTOTAL {passed}/{len(checks)} = {passed / max(len(checks), 1):.1%}")
 
     _write_record(Path(args.out), record)
+    if args.gate:
+        failures = transcript_gate_failures(checks)
+        for line in failures:
+            print(f"GATE FAILED: {line}")
+        return 1 if failures else 0
     return 0
+
+
+#: Section 10 hard gates on this instrument: each must pass 100%.
+HARD_GATES: Final = frozenset(
+    {"revealed_code_verified", "no_phantom_steps", "one_root_per_turn", "no_parentless_runs"}
+)
+SCORECARD_FLOOR: Final = 0.95
+
+
+def transcript_gate_failures(checks: Sequence[Check]) -> list[str]:
+    failures = [
+        f"hard gate {c.name} failed on {c.mode} {c.probe}: {c.detail}"
+        for c in checks
+        if c.name in HARD_GATES and not c.passed
+    ]
+    score = sum(c.passed for c in checks) / max(len(checks), 1)
+    if score < SCORECARD_FLOOR:
+        failures.append(f"scorecard {score:.1%} < {SCORECARD_FLOOR:.0%}")
+    return failures
 
 
 def _write_record(out: Path, record: dict[str, Any]) -> None:
@@ -837,6 +861,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=240.0)
     parser.add_argument("--langsmith", action="store_true")
     parser.add_argument("--out", default="eval/results/transcript_probes.json")
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help="exit 1 when a hard gate fails or fewer than 95%% of checks pass",
+    )
     args = parser.parse_args(argv)
     return asyncio.run(run(args))
 
