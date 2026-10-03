@@ -168,3 +168,22 @@ def test_module_never_calls_eval_or_exec() -> None:
     source = inspect.getsource(testgen)
     assert "eval(" not in source.replace("literal_eval(", "")
     assert "exec(" not in source
+
+
+def test_bare_positional_example_values_become_positional_args() -> None:
+    # "Input: [1,2,3,4,5], 2" used to yield no case at all, so the suite fell
+    # back to LLM synthesis (LLM-ollama-local: the local coder then mis-computed
+    # expected values and the debug turn ended unverified).
+    problem = StructuredInput(
+        source="text",
+        problem=(
+            "Return the max sum of any contiguous subarray of length k.\n"
+            "Example 1:\nInput: [1,2,3,4,5], 2\nOutput: 9"
+        ),
+        code=[CodeBlock(content="def max_window_sum(nums, k):\n    return 0\n")],
+    )
+    suite = extract_test_suite(problem)
+    assert suite is not None
+    assert suite.entrypoint == "max_window_sum"
+    assert suite.cases[0].args == [[1, 2, 3, 4, 5], 2]
+    assert suite.cases[0].expected == 9

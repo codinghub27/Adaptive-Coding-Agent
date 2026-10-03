@@ -1849,6 +1849,48 @@ def _practice_key(state: AgentState) -> str | None:
     return problem_key(StructuredInput(source="text", problem=practice.statement))
 
 
+#: Where a topic came from that is solid enough to TEACH it ("which technique
+#: fits?" graded against it). A retrieval guess is not: a problem missing from
+#: the corpus (Longest Palindromic Substring -> "sliding window") would be
+#: taught, and graded, as the wrong pattern.
+_TRUSTED_TOPIC_SOURCES: Final[frozenset[str]] = frozenset(
+    {"title", "conversation", "hint", "profile_match"}
+)
+
+#: Fixed phrases a learner uses to ASK for a section -> the section kinds.
+_SECTION_ASKS: Final[tuple[tuple[re.Pattern[str], frozenset[str]], ...]] = (
+    (re.compile(r"\bintuition\b", re.IGNORECASE), frozenset({"intuition", "key_insight"})),
+    (
+        re.compile(
+            r"\b(recogni[sz]e|recognition|identify the pattern|which approach)\b", re.IGNORECASE
+        ),
+        frozenset({"recognition"}),
+    ),
+    (
+        re.compile(r"\b(complexity|complexities|time and space|big[- ]?o)\b", re.IGNORECASE),
+        frozenset({"complexity"}),
+    ),
+    (re.compile(r"\bbrute[- ]?force\b", re.IGNORECASE), frozenset({"brute_force", "why_slow"})),
+    (re.compile(r"\b(common mistakes|pitfalls)\b", re.IGNORECASE), frozenset({"common_mistakes"})),
+    (re.compile(r"\bconstraints?\b to keep", re.IGNORECASE), frozenset({"constraints"})),
+    (
+        re.compile(r"\b(walk me through|explain the (problem|approach))\b", re.IGNORECASE),
+        frozenset({"understanding", "key_insight"}),
+    ),
+)
+
+
+def requested_sections(text: str | None) -> frozenset[str]:
+    """Section kinds the learner explicitly asked for (fixed phrases only)."""
+    if not text:
+        return frozenset()
+    kinds: set[str] = set()
+    for pattern, sections in _SECTION_ASKS:
+        if pattern.search(text):
+            kinds |= sections
+    return frozenset(kinds)
+
+
 #: Survey-style sections dropped from a tutoring turn that asks or reacts.
 _VERBOSE_SECTION_KINDS: Final[frozenset[str]] = frozenset(
     {
@@ -1907,6 +1949,7 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
             misconceptions=found,
             practice=state.practice,
             first_turn_on_problem=state.problem_relation == "new",
+            topic_trusted=state.topic_source in _TRUSTED_TOPIC_SOURCES,
         )
     carried: PendingCheck | None = None
     if (
@@ -1935,9 +1978,14 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
     )
     # A curated chain's first question replaces the long answer with its one-line
     # opener (spec: "teach the missing piece, not the whole topic").
+    # An explicit ask ("explain the intuition, how to recognize it, the
+    # complexity") overrides the short-answer rule for exactly those sections,
+    # the same way "don't explain yet" is respected (owner decision, T1).
+    requested = requested_sections(problem_text)
     lead: str | None = None
     if (
         grade is None
+        and not requested
         and question is not None
         and route in ("dsa", "explain")
         and question.question_id == chain_start(problem_text)
@@ -1969,7 +2017,9 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         base = [
             s
             for s in base
-            if s.kind not in _VERBOSE_SECTION_KINDS or (s.kind == "complexity" and keep_complexity)
+            if s.kind not in _VERBOSE_SECTION_KINDS
+            or s.kind in requested
+            or (s.kind == "complexity" and keep_complexity)
         ]
     after = list(extra.after)
     verification_index = next((i for i, s in enumerate(base) if s.kind == "verification"), None)

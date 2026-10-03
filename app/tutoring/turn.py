@@ -271,14 +271,17 @@ def question_for_turn(
     misconceptions: Sequence[str],
     practice: PracticeRecord | None,
     first_turn_on_problem: bool,
+    topic_trusted: bool = True,
 ) -> PendingCheck | None:
     """The guiding question a non-grading turn ends with, or `None`.
 
     Exactly one, chosen in this order: a misconception found in the learner's
     code (ask its conceptual question); a practice problem's opening question;
     the curated chain for a problem/concept the turn is about; the pattern's
-    recognition question on the first turn of a new problem. Never when this
-    turn reveals code, and never the same question twice for one problem.
+    recognition question on the first turn of a new problem -- only when the
+    topic is trusted (a retrieval guess for a problem missing from the corpus
+    would be taught and graded as the wrong pattern). Never when this turn
+    reveals code, and never the same question twice for one problem.
     """
     if reveals_code:
         return None
@@ -293,7 +296,7 @@ def question_for_turn(
         qid = chain_start(problem_text)
         if _unasked(qid, progress, problem_key) and qid is not None:
             return pending_for(qid, problem_key=problem_key, assistance=assistance)
-        if route == "dsa" and first_turn_on_problem and topic is not None:
+        if route == "dsa" and first_turn_on_problem and topic is not None and topic_trusted:
             rid = recognition_id(topic)
             if _unasked(rid, progress, problem_key) and get_question(rid) is not None:
                 return pending_for(rid, problem_key=problem_key, assistance=assistance)

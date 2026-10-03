@@ -146,7 +146,7 @@ class _Runner:
             phase="tests",
             cases=[
                 CaseResult(
-                    name="c1",
+                    name=request.tests.cases[0].name if request.tests else "c1",
                     passed=self.passed,
                     actual=actual,
                     actual_repr=str(actual),
@@ -180,6 +180,39 @@ async def test_a_failing_reference_is_never_revealed() -> None:
     runner = _Runner(passed=False)
     llm = FakeLLMClient(chat_content=_PROPOSAL)
     assert await verified_reference(_STATEMENT, llm, runner) is None
+
+
+async def test_a_failing_reference_gets_one_repair_turn_with_sandbox_feedback() -> None:
+    # ollama migration: the local coder's hand-computed `expected` values are
+    # sometimes wrong; the repair turn quotes what the sandbox returned.
+    llm = FakeLLMClient(chat_content=_PROPOSAL)
+    assert await verified_reference(_STATEMENT, llm, _Runner(passed=False)) is None
+    assert len(llm.chat_calls) == 2
+    repair = llm.chat_calls[1][-1].content
+    assert "your reference_solution returned 3" in repair
+
+
+async def test_statement_examples_outrank_the_models_own_expected_values() -> None:
+    # The proposal's own case is WRONG (1 + 1 = 5); the statement's worked
+    # example is what the sandbox is asked to check.
+    proposal = json.dumps(
+        {
+            "entrypoint": "add",
+            "reference_solution": "def add(a, b):\n    return a + b\n",
+            "cases": [{"name": "bad", "args": [1, 1], "kwargs": {}, "expected": 5}],
+        }
+    )
+    statement = StructuredInput(
+        source="text",
+        problem="Return a + b.\n\nExample 1:\nInput: a = 1, b = 1\nOutput: 2",
+        question="give full code",
+    )
+    runner = _Runner(passed=True)
+    solution = await verified_reference(statement, FakeLLMClient(chat_content=proposal), runner)
+    assert solution is not None
+    suite = runner.calls[0].tests
+    assert suite is not None
+    assert [case.expected for case in suite.cases] == [2]
 
 
 async def test_no_statement_or_no_sandbox_means_no_reveal() -> None:

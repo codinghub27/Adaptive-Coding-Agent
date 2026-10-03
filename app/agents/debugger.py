@@ -560,7 +560,8 @@ def _parse_patched_code(content: str) -> str | None:
 _INFER_APPROACH_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "Read the learner's problem statement and code and infer, in one or two sentences, what "
     "approach or algorithm the learner appears to be attempting. Do not judge correctness and do "
-    "not mention specific bugs -- just describe the intended approach. Reply with ONLY a single "
+    "not mention specific bugs -- just describe the intended approach. Write it TO the learner "
+    '("You are ..."), never about "the learner". Reply with ONLY a single '
     'JSON object and nothing else: {"inferred_approach": "<your one-to-two sentence answer>"}'
 )
 
@@ -576,7 +577,11 @@ async def infer_approach(problem: StructuredInput, llm: LLMClient) -> str | None
         ChatMessage(role="user", content=_user_input_block(problem)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=300)
+        result = await llm.chat(
+            messages,
+            temperature=0.2,
+            max_tokens=300,
+        )
     except LLMError:
         return None
     return _parse_inferred_approach(result.content)
@@ -586,7 +591,10 @@ _EXPLAIN_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "A sandbox has already run the learner's code and established that it fails; that failure is "
     "FACT, not something for you to re-judge or contradict. Using the trusted <debug_context> "
     "(the already-established failure details) plus the learner's problem/code, explain in 2-4 "
-    "sentences why the bug happens. Never claim the code is correct or that it passes -- the "
+    "sentences why the bug happens. Name the exact bug: quote the one line or expression that "
+    "is wrong, trace it on the failing case to show the value it produces, and say what it "
+    'should refer to instead. Write TO the learner ("you"), and do not rewrite their function. '
+    "Never claim the code is correct or that it passes -- the "
     "failure is already established. If trusted <reference_notes> are provided, use the ones "
     "that genuinely apply (e.g. a common mistake of this pattern) and list their numbers in "
     '"used"; never cite a note you did not use. Reply with ONLY a single JSON object and '
@@ -628,7 +636,11 @@ async def explain_bug(
         ChatMessage(role="user", content="\n".join(parts)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=500)
+        result = await llm.chat(
+            messages,
+            temperature=0.2,
+            max_tokens=500,
+        )
     except LLMError:
         return None, []
     explanation, used = _parse_bug_explanation(result.content)
@@ -676,7 +688,11 @@ async def patch_code(
         ChatMessage(role="user", content="\n".join(parts)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=1200)
+        result = await llm.chat(
+            messages,
+            temperature=0.2,
+            max_tokens=1200,
+        )
     except LLMError:
         return None
     return _parse_patched_code(result.content)

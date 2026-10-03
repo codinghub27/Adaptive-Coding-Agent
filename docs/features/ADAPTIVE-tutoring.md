@@ -311,3 +311,63 @@ anti-example and five worked conversations). Gaps closed:
 now requires "rose" (was "exactly +1") and two checks were added there
 (`verified_solution`, `execution_line` required), because the owner's spec
 says that turn reveals the verified solution. Execution wording gained ✓/✗.
+
+### Local models (qwen3.5:9b + qwen2.5-coder:7b) — verification, 2026-10-03
+Branch `experiment/local-ollama` only. Same instruments, live API, no rate
+limits. Latency, live checks and the full cloud comparison are in
+`LLM-ollama-local.md`.
+
+| | Q0 baseline | cloud best (`tutoring_Q1.json`) | local, first run | local, final (`tutoring_local.json`) |
+|---|---|---|---|---|
+| all checks | 73/129 (56.6%) | 127/129 (98.4%) | 121/130 (93.1%) | **130/130 (100%)** |
+| examples end to end | 0/5 | 3/5 | 4/5 | **5/5** |
+| hard-gate failures | 0 | 0 | 0 | **0** |
+| replies -> `grade_answer` | -- | 11/11 | -- | **11/11** |
+| new requests clear pending | -- | 3/3 | -- | **3/3** |
+| grader accuracy | 0/50 | 49/50 | -- | **49/50 (98%)** |
+| injections graded correct | -- | 0/5 | -- | **0/5** |
+| misconception detection | 0/15 | 15/15 | -- | **15/15**, 0/6 false positives, 0 free-text ids |
+| no learner text in traces | -- | not measured | probe failed (injection reply not graded) | **0 leaks / 103 runs, 3/3 grade traces** (closes the Q2 "must be re-run" item) |
+| transcript probes | -- | 341/362 (94.2%, P5) | -- | **285/294 (96.9%)**, gate passed |
+| eval.run | -- | 100 / 100 / 100 / 100 / 100 | -- | 100 / 100 / 100 / 100, groundedness **90** |
+
+(The check total is 130, not 129: the owner's spec pass added two checks on
+Ex1 #6 and changed one.)
+
+**Changes made for the local models** (re-measured on the full replay):
+- `should_grade`: a bare reply (<= 3 words, no request wording) to a pending
+  question is graded at ANY classifier confidence. AD-T4 relied on the cloud
+  classifier being unsure about "7?" (0.4); qwen3.5:9b says GENERAL_GUIDANCE
+  at 0.9. Short requests ("another problem", "Give me a problem") still bypass.
+- `should_grade`: an instruction-shaped reply goes to the grader (AD-T3 fails
+  it closed) instead of to `explain` on a confident GENERAL_GUIDANCE label.
+- `verified_reference` (Example 1's reveal): worked examples from the
+  statement outrank the model's own `expected` values; one repair turn with
+  sandbox feedback otherwise.
+- Debugger prompts: name the exact line, trace the failing case, say what it
+  should refer to, speak to the learner.
+
+**Behaviour spec acceptance:** replay >= 90% -> 100%; 5/5 conversations; hard
+gates 100%. Not met outside the replayed conversations (see "Known issues" in
+`LLM-ollama-local.md`): concept answers end without a question; a problem
+missing from the corpus gets retrieval's topic, so its recognition question
+can accept the wrong pattern; transcript T1 conflicts with the "short answer"
+rule.
+
+### Final session (2026-10-04) — owner decisions applied
+- **Explicit section asks override the short-answer rule** (owner decision on
+  transcript T1). "Explain the intuition / how to recognize / the complexity"
+  keeps exactly those sections (`app.graph.nodes.requested_sections`, fixed
+  phrases); a curated chain's one-line opener is not used on such a turn.
+  The assistance level still decides whether any code is shown.
+- **No pattern is taught from a guess.** The "which technique?" recognition
+  question is asked only when the topic is trusted (title, conversation,
+  explicit hint, profile match), never on a bare retrieval guess
+  (`question_for_turn(topic_trusted=...)`). Longest Palindromic Substring was
+  added to the two-pointers notes (expand around centre) and the index rebuilt;
+  the owner's screenshot now gets topic `two_pointers`.
+
+Final measurements (experiment branch, local models, same instruments):
+replay **130/130, 5/5 conversations**; transcript probe T (balanced)
+**86/86** incl. T1 `section_intuition`, `section_recognition`,
+`section_complexity`; pytest 1775 passed / 28 skipped; pyright 0; ruff clean.

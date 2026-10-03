@@ -51,18 +51,19 @@ from app.agents.debugger import (
     extract_learner_code,
 )
 from app.execution.base import CodeRunner
-from app.execution.testgen import select_entrypoint, top_level_functions
+from app.execution.testgen import extract_test_suite, select_entrypoint, top_level_functions
 from app.execution.verification import verify
 from app.input._text import extract_json_object
 from app.llm.base import ChatMessage, LLMClient, LLMError
 from app.schemas.execution import (
     MAX_CODE_CHARS,
     ExecutionRequest,
+    ExecutionResult,
     TestCase,
     TestSuite,
     Verdict,
 )
-from app.schemas.input import StructuredInput
+from app.schemas.input import CodeBlock, StructuredInput
 
 __all__ = ["VerifiedSolution", "synthesize_test_suite", "verified_reference"]
 
@@ -70,7 +71,15 @@ MAX_SYNTH_CASES: Final = 6
 
 
 class _Retry:
-    """Marker: this proposal failed validation; a fresh one may succeed."""
+    """Marker: this proposal failed validation; a fresh one may succeed.
+
+    `feedback` (agent-built, from SANDBOX results only) tells the next attempt
+    which of its own expected values its own reference contradicted.
+    """
+
+    def __init__(self, feedback: str | None = None, previous: str | None = None) -> None:
+        self.feedback = feedback
+        self.previous = previous
 
 
 RETRY: Final = _Retry()
@@ -182,13 +191,15 @@ async def synthesize_test_suite(
     # Only a proposal that failed VALIDATION is retried (unparseable, wrong
     # shape, or a reference failing its own cases). An LLM/budget error or a
     # sandbox error would only repeat, so it ends the attempt at once.
+    retry: _Retry | None = None
     for _ in range(SYNTH_ATTEMPTS):
         try:
-            outcome = await _synthesize(problem, functions, llm, runner)
+            outcome = await _synthesize(problem, functions, llm, runner, retry)
         except Exception:  # noqa: BLE001 - fail-soft: a wrong suite is worse than none
             return None
         if not isinstance(outcome, _Retry):
             return outcome
+        retry = outcome
     return None
 
 
@@ -197,13 +208,27 @@ async def _synthesize(
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef],
     llm: LLMClient,
     runner: CodeRunner,
+    retry: _Retry | None = None,
 ) -> TestSuite | None | _Retry:
     messages = [
         ChatMessage(role="system", content=_SYNTH_SYSTEM),
         ChatMessage(role="user", content=_user_input_block(problem)),
     ]
+    if retry is not None and retry.feedback and retry.previous:
+        # LLM-ollama-local: at temperature 0 a blind retry repeats the same
+        # proposal. Measured: the local coder's reference was right but two of
+        # its hand-computed `expected` values were wrong, so both attempts
+        # failed identically. The repair turn quotes what the SANDBOX returned.
+        messages += [
+            ChatMessage(role="assistant", content=retry.previous),
+            ChatMessage(role="user", content=retry.feedback),
+        ]
     try:
-        result = await llm.chat(messages, temperature=0.0, max_tokens=1500)
+        result = await llm.chat(
+            messages,
+            temperature=0.0,
+            max_tokens=1500,
+        )
     except LLMError:  # includes LLMBudgetExceededError
         return None
 
@@ -240,13 +265,31 @@ async def _synthesize(
     execution_result = await runner.run(request)
     verdict = verify(execution_result, request)
     if verdict.status == "fail":
-        return RETRY  # the proposal contradicted itself: a new one may not
+        # the proposal contradicted itself: tell the next attempt exactly where
+        return _Retry(_repair_feedback(execution_result), result.content)
     if verdict.status != "pass" or verdict.cases_total == 0:
         return None  # sandbox error / inconclusive: retrying repeats it
     if verdict.cases_passed != verdict.cases_total:
         return RETRY
 
     return suite
+
+
+def _repair_feedback(execution_result: ExecutionResult) -> str | None:
+    """Which proposed cases the reference contradicted, and what it returned."""
+    wrong = [case for case in execution_result.cases if not case.passed][:MAX_SYNTH_CASES]
+    if not wrong:
+        return None
+    lines = [
+        f"- {case.name}: your reference_solution returned {case.actual_repr[:80] or 'an error'}"
+        for case in wrong
+    ]
+    return (
+        "In the sandbox, your reference_solution disagreed with your own expected values:\n"
+        + "\n".join(lines)
+        + "\nRecompute those expected values step by step (or fix the solution if it is the "
+        "one that is wrong) and reply with the complete JSON object again."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,31 +335,66 @@ async def _verified_reference(
         ChatMessage(role="system", content=_SYNTH_SYSTEM),
         ChatMessage(role="user", content=_user_input_block(statement_only)),
     ]
-    try:
-        result = await llm.chat(messages, temperature=0.0, max_tokens=2000)
-    except LLMError:
-        return None
-    parsed = _parse_synth_output(result.content)
+    for _ in range(SYNTH_ATTEMPTS):
+        try:
+            result = await llm.chat(
+                messages,
+                temperature=0.0,
+                max_tokens=2000,
+            )
+        except LLMError:
+            return None
+        outcome = await _check_reference(statement_only, result.content, runner)
+        if not isinstance(outcome, _Retry):
+            return outcome
+        if not outcome.feedback or not outcome.previous:
+            return None  # at temperature 0 a blind retry repeats the proposal
+        # LLM-ollama-local: the same repair turn `_synthesize` uses. Measured:
+        # the local coder's Two Sum reference was right but one hand-computed
+        # `expected` was wrong, so the Guidance-mode reveal never happened.
+        messages += [
+            ChatMessage(role="assistant", content=outcome.previous),
+            ChatMessage(role="user", content=outcome.feedback),
+        ]
+    return None
+
+
+async def _check_reference(
+    statement_only: StructuredInput, content: str, runner: CodeRunner
+) -> VerifiedSolution | None | _Retry:
+    """Run one proposed reference in the sandbox: verified, rejected, or repairable."""
+    parsed = _parse_synth_output(content)
     if parsed is None or not parsed.reference_solution:
         return None
     if len(parsed.reference_solution) > MAX_CODE_CHARS:
         return None
-    cases = _build_cases(parsed)
-    if cases is None:
-        return None
-    functions = top_level_functions(parsed.reference_solution)
-    names = {func.name for func in functions}
-    entrypoint = parsed.entrypoint if parsed.entrypoint in names else None
-    if entrypoint is None:
-        entrypoint = select_entrypoint(functions, cases)
-    if entrypoint is None:
-        return None
-    try:
-        suite = TestSuite(entrypoint=entrypoint, cases=cases)
-    except ValidationError:
-        return None
+    # The statement's own worked examples (read deterministically, no LLM)
+    # outrank the model's hand-computed `expected` values: a small local model
+    # mis-computes those often enough to veto its own correct solution.
+    with_reference = statement_only.model_copy(
+        update={"code": [CodeBlock(content=parsed.reference_solution, language="python")]}
+    )
+    suite = extract_test_suite(with_reference)
+    if suite is None:
+        cases = _build_cases(parsed)
+        if cases is None:
+            return None
+        functions = top_level_functions(parsed.reference_solution)
+        names = {func.name for func in functions}
+        entrypoint = parsed.entrypoint if parsed.entrypoint in names else None
+        if entrypoint is None:
+            entrypoint = select_entrypoint(functions, cases)
+        if entrypoint is None:
+            return None
+        try:
+            suite = TestSuite(entrypoint=entrypoint, cases=cases)
+        except ValidationError:
+            return None
     request = ExecutionRequest(code=parsed.reference_solution, tests=suite)
-    verdict = verify(await runner.run(request), request)
+    execution_result = await runner.run(request)
+    verdict = verify(execution_result, request)
+    if verdict.status == "fail":
+        return _Retry(_repair_feedback(execution_result), content)
     if verdict.status != "pass" or verdict.cases_total == 0:
         return None
     if verdict.cases_passed != verdict.cases_total:

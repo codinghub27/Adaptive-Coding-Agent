@@ -11,7 +11,7 @@ from app.schemas.tutoring import AnswerGrade, GradeRecord, PracticeRecord, Sessi
 from app.tutoring.bank import named_pattern, pending_for
 from app.tutoring.misconceptions import detect_in_code
 from app.tutoring.progression import requested_difficulty, session_difficulty
-from app.tutoring.turn import execution_lines, raise_assistance, react
+from app.tutoring.turn import execution_lines, question_for_turn, raise_assistance, react
 
 FIXTURES = (
     Path(__file__).resolve().parents[2] / "eval" / "behavior" / "misconception_fixtures.jsonl"
@@ -241,3 +241,24 @@ def test_closing_a_chain_ends_on_the_reusable_lesson() -> None:
     reacted = _react("hashing.checked_vs_accessed", _grade("correct"))
     assert reacted.lesson is not None and "KeyError" in reacted.lesson
     assert _react("hashing.two_sum.complement", _grade("correct")).lesson is None
+
+
+def test_untrusted_topic_gets_no_recognition_question() -> None:
+    # A retrieval guess for a problem missing from the corpus must not be taught
+    # (and graded) as the pattern: Longest Palindromic Substring was asked
+    # "which technique?" with "sliding window" as the accepted answer.
+    common: dict[str, object] = {
+        "route": "dsa",
+        "progress": SessionProgress.empty(),
+        "problem_key": "_pabc",
+        "problem_text": "Given a string s, return the longest palindromic substring in s.",
+        "topic": "sliding_window",
+        "assistance": "hint",
+        "reveals_code": False,
+        "misconceptions": [],
+        "practice": None,
+        "first_turn_on_problem": True,
+    }
+    assert question_for_turn(**common, topic_trusted=False) is None  # type: ignore[arg-type]
+    asked = question_for_turn(**common, topic_trusted=True)  # type: ignore[arg-type]
+    assert asked is not None and asked.question_id == "recognition.sliding_window"

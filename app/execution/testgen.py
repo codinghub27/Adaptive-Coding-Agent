@@ -242,7 +242,18 @@ def _build_case(name: str, input_text: str, output_text: str) -> TestCase | None
         except ValidationError:
             return None
 
-    return None
+    # Several bare positional values ("Input: [1,2,3,4,5], 2"): every part must
+    # be a literal; `select_entrypoint` then checks the arity against the
+    # learner's function. Deterministic, so a statement's own examples no
+    # longer need an LLM-synthesised suite (LLM-ollama-local: the local coder
+    # mis-computed hand-written expected values).
+    values = [_parse_value(part) for part in parts]
+    if any(value is _PARSE_FAILED for value in values):
+        return None
+    try:
+        return TestCase(name=name, args=values, expected=expected)  # pyright: ignore[reportArgumentType]
+    except ValidationError:
+        return None
 
 
 def _extract_cases(statement: str) -> list[TestCase]:

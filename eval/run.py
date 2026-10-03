@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import statistics
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Final
@@ -185,9 +187,18 @@ async def run_suite(cases: Sequence[Case] = DATASET) -> list[Metric]:
         retriever = await create_retriever(settings, client, tracer)
         runner, close_runner = await build_sandbox_runner(settings)
         outcomes: list[Outcome] = []
+        seconds: list[float] = []
         for index, case in enumerate(cases, 1):
-            print(f"  [{index}/{len(cases)}] {case.id}", flush=True)
+            started = time.perf_counter()
             outcomes.append(await _run_case(case, llm=llm, retriever=retriever, runner=runner))
+            seconds.append(time.perf_counter() - started)
+            print(f"  [{index}/{len(cases)}] {case.id}  {seconds[-1]:.1f}s", flush=True)
+        if seconds:
+            print(
+                f"  latency: p50 {statistics.median(seconds):.1f}s  "
+                f"max {max(seconds):.1f}s  total {sum(seconds) / 60:.1f} min",
+                flush=True,
+            )
     finally:
         close_runner()
         await client.close()

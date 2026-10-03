@@ -25,7 +25,13 @@ from app.llm.base import ChatMessage, LLMClient, LLMError
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
 
-__all__ = ["INTENT_SYSTEM_PROMPT", "classify_intent", "fallback_intent", "rule_intent"]
+__all__ = [
+    "INTENT_SYSTEM_PROMPT",
+    "classify_intent",
+    "fallback_intent",
+    "names_a_request",
+    "rule_intent",
+]
 
 # --------------------------------------------------------------------------
 # Prompt trimming budget
@@ -72,7 +78,10 @@ to learn, motivation, a greeting or small talk.
 
 When code is shared with only a vague request ("take a look at this", "check this", \
 "is this right?") and no request to explain it, classify as CODE_DEBUG: the learner \
-usually suspects a problem.
+usually suspects a problem. Exception: when a full problem statement is given and the \
+user asks you to SOLVE it ("solve this", "help me solve"), classify as DSA_SOLVE even if \
+they also share an attempt to check -- CODE_DEBUG needs a reported error, crash or wrong \
+output.
 
 Reply with ONLY a single JSON object and nothing else, in exactly this shape:
 {"intent": "<ONE_OF_THE_INTENT_NAMES_ABOVE>", "confidence": <number between 0 and 1>, \
@@ -281,7 +290,11 @@ async def _classify_with_llm(inp: StructuredInput, client: LLMClient) -> IntentR
         ChatMessage(role="user", content=_build_user_message(inp)),
     ]
     try:
-        result = await client.chat(messages, temperature=0.0, max_tokens=1024)
+        result = await client.chat(
+            messages,
+            temperature=0.0,
+            max_tokens=1024,
+        )
     except LLMError:
         return fallback_intent(inp)
 
@@ -387,6 +400,13 @@ def _keyword_intent(text: str, *, has_code: bool, has_error_field: bool) -> Inte
     if not has_code and _any_keyword(text, _CONCEPT_KEYWORDS):
         return Intent.CONCEPT_EXPLANATION
     return None
+
+
+def names_a_request(text: str) -> bool:
+    """Does `text` carry any request wording the keyword checklist knows
+    ("give me a problem", "hint", "explain", ...)? Deterministic; used to tell
+    a bare answer ("7?") from a short request ("another problem")."""
+    return _keyword_intent(text.lower(), has_code=False, has_error_field=False) is not None
 
 
 def _default_intent(inp: StructuredInput, *, has_code: bool) -> Intent:

@@ -58,6 +58,9 @@ def _scan(client: Any, project: str, since: datetime, canary: str, wait_s: float
             if r.name == "teaching_graph"
         ]
         if len(roots) >= 6:
+            # The last root is listed before its child runs are ingested
+            # (measured: the final turn's `grade_answer` run was missing).
+            time.sleep(15)
             break
         time.sleep(5)
     leaks: list[str] = []
