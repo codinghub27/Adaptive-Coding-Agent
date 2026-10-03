@@ -96,9 +96,11 @@ def expected_execution_line(verification: dict[str, Any] | None, label: str = ""
     status = verification.get("status")
     passed, total = verification.get("cases_passed"), verification.get("cases_total")
     if status == "pass":
-        return f"{head} passed {passed}/{total} test cases in the sandbox"
+        # Wording changed 2026-10-03 (✓/✗ marks, per the behaviour spec);
+        # the check itself -- line must render the verdict -- is unchanged.
+        return f"{head} ✓ passed {passed}/{total} test cases in the sandbox"
     if status == "fail":
-        return f"{head} failed -- {passed}/{total} test cases passed in the sandbox"
+        return f"{head} ✗ failed -- {passed}/{total} test cases passed in the sandbox"
     if status == "inconclusive":
         return f"{head} ran in the sandbox, not verified (no test cases)"
     return f"{head} not executed"
@@ -212,6 +214,21 @@ def _assist_up() -> TurnCheck:
     return check
 
 
+def _assist_rose() -> TurnCheck:
+    def check(t: Turn, _h: list[Turn]) -> tuple[bool, str]:
+        step = assistance_step(t)
+        return step is not None and step >= 1, f"step={step}"
+
+    return check
+
+
+def _verified_reveal() -> TurnCheck:
+    return lambda t, _h: (
+        t.reveals_code and t.verification_status == "pass",
+        f"reveals_code={t.reveals_code} verdict={t.verification_status}",
+    )
+
+
 def _misconception(misconception_id: str) -> TurnCheck:
     return lambda t, _h: found(t, misconception_id)
 
@@ -305,8 +322,14 @@ CHECKS: Final[dict[str, dict[int, list[tuple[str, TurnCheck]]]]] = {
         ],
         6: [
             ("graded_dont_know", _graded("dont_know")),
-            ("assistance_up", _assist_up()),
-            ("execution_line", _execution(required=False)),
+            # CHANGED 2026-10-03 (owner's behaviour spec, Example 1): in Guidance
+            # mode, "I don't know how" to a code request after the concept was
+            # graded correct builds it together -> the VERIFIED solution, so
+            # assistance rises to `full` (was: exactly +1). Code must then be
+            # sandbox-verified (hint_safety) and carry an Execution line.
+            ("assistance_up", _assist_rose()),
+            ("verified_solution", _verified_reveal()),
+            ("execution_line", _execution(required=True)),
         ],
     },
     "adaptive_002": {

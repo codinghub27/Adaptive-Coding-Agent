@@ -94,6 +94,16 @@ intents.
 # LLM (or the fallback heuristic) weigh it instead.
 _PROBLEM_ASK_OVERRIDE_RE = re.compile(r"(?i)\b(hint|stuck|approach|explain|optimi\w*)\b")
 
+_PRACTICE_ASK_RE = re.compile(
+    r"(?i)(please\s+|can you\s+|could you\s+)?(give|get|show|send|find)\s+me\s+"
+    r"(a|an|another|one|some|1)\b[^.?!\n]{0,40}?\b(problem|question|challenge|exercise)s?\b"
+)
+_CONFUSED_CONCEPT_RE = re.compile(
+    r"(?i)\b(confused|confusing|don'?t understand|do not understand|difference between|"
+    r"when (to|should i|do i) use)\b"
+)
+_SOLVE_WORD_RE = re.compile(r"(?i)\b(solve|solving|problem|code|implement|start)\b")
+
 #: A whole question that only asks to solve the attached problem ("How to solve
 #: this problem", "solve this", "help me solve it?"). Anything more specific
 #: (a hint, an explanation, a review) is left to the classifier.
@@ -139,6 +149,29 @@ def rule_intent(inp: StructuredInput) -> IntentResult | None:
         return IntentResult(
             intent=Intent.CODE_DEBUG, confidence=confidence, source="rule", rationale=rationale
         )
+
+    if not has_code and not inp.problem and not inp.error and inp.question:
+        question = inp.question.strip()
+        # A request for a problem is unambiguous by its fixed opening ("Give
+        # me a hard graph problem", "Can you give me a harder problem now?").
+        # Decided here, it no longer depends on the LLM -- measured: whenever
+        # every credential was rate-limited these went to "could you confirm?".
+        if _PRACTICE_ASK_RE.match(question):
+            return IntentResult(
+                intent=Intent.PRACTICE_REQUEST,
+                confidence=0.8,
+                source="rule",
+                rationale="explicit request for a practice problem",
+            )
+        # "I keep getting confused about when to use BFS versus DFS": a concept
+        # question in fixed phrasing, never a request to solve something.
+        if _CONFUSED_CONCEPT_RE.search(question) and not _SOLVE_WORD_RE.search(question):
+            return IntentResult(
+                intent=Intent.CONCEPT_EXPLANATION,
+                confidence=0.75,
+                source="rule",
+                rationale="stated confusion about a concept, no problem to solve",
+            )
 
     if (
         inp.problem

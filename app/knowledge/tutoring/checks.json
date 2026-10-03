@@ -79,7 +79,8 @@
       "then_question": "Try writing it yourself: loop with `enumerate`, compute the complement, check the dictionary, then store the current number. Send me your implementation and I'll run it in the sandbox.",
       "on_correct": "Yes. Store each number you've seen with its index -- `{2: 0}` after the first step -- and at 7 the complement 2 is already there, giving [0, 1].",
       "on_incorrect": "That would work, but it costs O(n) per check. We want a structure that answers \"have I seen this value?\" in O(1).",
-      "scaffold": "Python has a built-in structure that maps keys to values and checks `key in it` without scanning: you write it with curly braces."
+      "scaffold": "Python has a built-in structure that maps keys to values and checks `key in it` without scanning: you write it with curly braces.",
+      "lesson": "Pattern: hash map + complement lookup turns a pair search into O(n). When you need two values that satisfy a target, ask whether a hash map helps."
     },
     "hashing.checked_vs_accessed": {
       "topic": "hashing",
@@ -113,7 +114,8 @@
       ],
       "on_correct": "Exactly: the membership test proves `complement` is a key, so `seen[complement]` is safe. `num` was never checked -- that read is the KeyError.",
       "on_incorrect": "The `in` test only proves that `complement` is present. Reading any other key is a guess.",
-      "scaffold": "Look at the two lines side by side: the `if` asks about one key, and the `return` reads a key. Are they the same key?"
+      "scaffold": "Look at the two lines side by side: the `if` asks about one key, and the `return` reads a key. Are they the same key?",
+      "lesson": "Lesson: when a dict raises KeyError, check that the key you READ is the key the condition just before it guaranteed."
     },
     "dfs.bridges.approach": {
       "topic": "dfs",
@@ -227,7 +229,8 @@
       "then_question": "Correct. Now implement Tarjan's bridge-finding algorithm and send me your implementation -- I'll review it against the problem and run it in the sandbox.",
       "on_correct": "Correct: if v's subtree cannot reach u or anything above it, removing u-v disconnects it.",
       "on_incorrect": "Close, but `>=` is the articulation-point test. For an edge to be a bridge, v's subtree must not even reach u itself.",
-      "scaffold": "If the earliest node v's subtree can reach was discovered AFTER u, nothing below v can get back to u without the edge u-v."
+      "scaffold": "If the earliest node v's subtree can reach was discovered AFTER u, nothing below v can get back to u without the edge u-v.",
+      "lesson": "Pattern: DFS discovery time + low-link finds bridges and articulation points in O(V + E); a tree edge (u, v) is a bridge when low[v] > disc[u]."
     },
     "dfs.bridges.parallel_edges": {
       "topic": "dfs",
@@ -263,7 +266,8 @@
       ],
       "on_correct": "Right: skip only the edge you arrived by (pass its index down), so a parallel edge still counts as a back edge.",
       "on_incorrect": "Skipping the parent node also throws away a legitimate second edge to it.",
-      "scaffold": "Number your edges as you build the adjacency list and pass the index of the edge you came in on."
+      "scaffold": "Number your edges as you build the adjacency list and pass the index of the edge you came in on.",
+      "lesson": "Rule: in bridge-finding, skip the EDGE you arrived by, not the parent node."
     },
     "trees.max_path.return_value": {
       "topic": "trees",
@@ -314,7 +318,8 @@
       "then_question": "Exactly. Rewrite `maxPathSum` with a helper that returns `node.val + max(left_gain, right_gain, 0)` and updates a global best with `node.val + left_gain + right_gain`. Send it when you're ready.",
       "on_correct": "Exactly. The return value is the best ONE-sided path; the best two-sided path through the node goes into a separate global maximum.",
       "on_incorrect": "A path can't fork: once the parent joins, only one of the child's branches can continue.",
-      "scaffold": "Draw 1 -> (2, 3) under a parent P. P -> 1 -> 2 is a path; P -> 1 -> 2 and 3 is not. Which sum can P use?"
+      "scaffold": "Draw 1 -> (2, 3) under a parent P. P -> 1 -> 2 is a path; P -> 1 -> 2 and 3 is not. Which sum can P use?",
+      "lesson": "Concept: in tree DP the value you RETURN (extendable by the parent) is not the value you RECORD (the best answer anywhere)."
     },
     "trees.base_case": {
       "topic": "trees",
@@ -349,7 +354,8 @@
       ],
       "on_correct": "Right: decide the empty-subtree value first, then recurse.",
       "on_incorrect": "Without a base case the recursion reaches `None.left` and crashes.",
-      "scaffold": "A leaf's children are `None`. What should `f(None)` give so the parent's arithmetic still works?"
+      "scaffold": "A leaf's children are `None`. What should `f(None)` give so the parent's arithmetic still works?",
+      "lesson": "Rule: decide what the empty subtree returns before you touch node.val."
     },
     "bfs.vs_dfs.shortest": {
       "topic": "bfs",
@@ -469,7 +475,8 @@
       ],
       "on_correct": "Correct: both visit everything reachable, so either answers reachability. The ORDER only matters when you need the shortest path -- that's when BFS wins.",
       "on_incorrect": "Reachability only asks whether B is visited at all, in any order.",
-      "scaffold": "Both traversals eventually visit every node reachable from A. Does the order matter if you only want a yes/no answer?"
+      "scaffold": "Both traversals eventually visit every node reachable from A. Does the order matter if you only want a yes/no answer?",
+      "lesson": "Rule: unweighted shortest path -> BFS. Plain reachability -> either works."
     },
     "bfs.visited_on_enqueue": {
       "topic": "bfs",
@@ -528,7 +535,8 @@
       ],
       "on_correct": "Yes: mark on enqueue and every node enters the queue exactly once.",
       "on_incorrect": "Marking on dequeue lets the same node be queued once per neighbour before it is popped.",
-      "scaffold": "Picture D with two neighbours that are both in the queue. When D is discovered from the first, should the second be able to add it again?"
+      "scaffold": "Picture D with two neighbours that are both in the queue. When D is discovered from the first, should the second be able to add it again?",
+      "lesson": "Rule: in BFS, mark a node visited when you enqueue it, never when you dequeue it."
     },
     "dfs.visited_before_push": {
       "topic": "dfs",
@@ -579,7 +587,8 @@
       ],
       "on_correct": "Right: marking on push keeps each node on the stack at most once.",
       "on_incorrect": "Marking after the pop lets every neighbour push its own copy first.",
-      "scaffold": "Count how many times a node with five unvisited neighbours can be pushed before it is popped."
+      "scaffold": "Count how many times a node with five unvisited neighbours can be pushed before it is popped.",
+      "lesson": "Rule: with an explicit stack, mark visited when you push."
     }
   },
   "chains": [
@@ -592,7 +601,8 @@
         "twosum"
       ],
       "start": "hashing.two_sum.complement",
-      "problem": "Two Sum"
+      "problem": "Two Sum",
+      "intro": "Let's go step by step instead of jumping to code. We need two numbers that add up to the target."
     },
     {
       "id": "bridges",
@@ -604,7 +614,8 @@
         "find bridges"
       ],
       "start": "dfs.bridges.approach",
-      "problem": "Critical Connections in a Network"
+      "problem": "Critical Connections in a Network",
+      "intro": "Let's derive it rather than recall it."
     },
     {
       "id": "max_path",
@@ -615,7 +626,8 @@
         "maxpathsum"
       ],
       "start": "trees.max_path.return_value",
-      "problem": "Binary Tree Maximum Path Sum"
+      "problem": "Binary Tree Maximum Path Sum",
+      "intro": "You're close to a key tree-DP idea, but the function is doing two jobs at once."
     },
     {
       "id": "bfs_vs_dfs",
@@ -630,7 +642,19 @@
           "depth"
         ]
       ],
-      "start": "bfs.vs_dfs.shortest"
+      "start": "bfs.vs_dfs.shortest",
+      "intro": "Let's fix that rather than memorize a rule. BFS explores level by level; DFS goes as deep as it can, then backtracks."
+    },
+    {
+      "id": "bfs_basics",
+      "topic": "bfs",
+      "match_any": [
+        "bfs",
+        "breadth first",
+        "breadth-first"
+      ],
+      "start": "bfs.vs_dfs.shortest",
+      "intro": "Let's find exactly what's confusing, one question at a time."
     }
   ],
   "recognition": {

@@ -314,3 +314,29 @@ def test_specific_asks_on_a_problem_are_left_to_the_classifier(question: str) ->
         source="image", problem="5. Longest Palindromic Substring", question=question
     )
     assert rule_intent(inp) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Give me a hard graph problem.",
+        "Give me a problem.",
+        "Can you give me a harder problem now?",
+    ],
+)
+def test_explicit_practice_asks_are_rule_classified(text: str) -> None:
+    result = rule_intent(normalize_text(text))
+    assert result is not None
+    assert result.intent == Intent.PRACTICE_REQUEST
+
+
+def test_stated_confusion_about_a_concept_is_a_concept_question() -> None:
+    text = "I keep getting confused about when to use BFS versus DFS."
+    result = rule_intent(normalize_text(text))
+    assert result is not None
+    assert result.intent == Intent.CONCEPT_EXPLANATION
+
+
+def test_confusion_about_solving_a_problem_is_left_to_the_classifier() -> None:
+    text = "I'm new to DSA. Can you help me solve Two Sum? I don't understand how to start."
+    assert rule_intent(normalize_text(text)) is None

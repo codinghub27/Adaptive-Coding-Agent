@@ -85,6 +85,8 @@ SECTION_TITLES: Final[Mapping[ResponseSectionKind, str]] = {
     "watch_out": "Watch out",
     "execution": "Execution",
     "check_question": "Your turn",
+    "lead": "Let's start",
+    "lesson": "Takeaway",
 }
 
 DSA_SECTIONS_BY_ASSISTANCE: Final[Mapping[AssistanceLevel, tuple[ResponseSectionKind, ...]]] = {
@@ -272,12 +274,13 @@ def render_execution_line(verdict: Verdict | None, label: str = "") -> str:
         return f"{head} not executed"
     if verdict.status == "pass":
         return (
-            f"{head} passed {verdict.cases_passed}/{verdict.cases_total} test cases in the sandbox"
+            f"{head} ✓ passed {verdict.cases_passed}/{verdict.cases_total} test cases "
+            "in the sandbox"
         )
     if verdict.status == "fail":
         return (
-            f"{head} failed -- {verdict.cases_passed}/{verdict.cases_total} test cases passed "
-            "in the sandbox"
+            f"{head} ✗ failed -- {verdict.cases_passed}/{verdict.cases_total} test cases "
+            "passed in the sandbox"
         )
     if verdict.status == "inconclusive":
         return f"{head} ran in the sandbox, not verified (no test cases)"

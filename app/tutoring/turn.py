@@ -115,6 +115,7 @@ class Reacted:
     handoff: bool
     assistance_before: AssistanceLevel
     assistance_after: AssistanceLevel
+    lesson: str | None = None
 
 
 def _after_correct(
@@ -127,7 +128,11 @@ def _after_correct(
         return pending_for(spec.next, problem_key=pending.problem_key, assistance=level)
     if spec.then == "code_submission" and spec.then_question:
         return code_submission_check(
-            spec.then_question, topic=spec.topic, problem_key=pending.problem_key, assistance=level
+            spec.then_question,
+            topic=spec.topic,
+            problem_key=pending.problem_key,
+            assistance=level,
+            lesson=spec.lesson,
         )
     return None
 
@@ -166,20 +171,52 @@ def react(
         handoff = has_active_problem and (
             pending.kind == "code_submission" or base.startswith(RECOGNITION_PREFIX)
         )
+        if (
+            handoff
+            and pending.kind == "code_submission"
+            and mode == "guidance"
+            and (cap is None or cap == "full")
+        ):
+            # Guidance mode, the concept is already graded correct, and the
+            # learner says they cannot write it: build it together. "full"
+            # reaches the DSA agent's existing P4 path, which reveals ONLY a
+            # sandbox-verified reference solution (or nothing).
+            after = "full"
         feedback = spec.scaffold if spec is not None and spec.scaffold else _GENERIC_SCAFFOLD
         next_pending = None
         if not handoff and spec is not None and attempts + 1 < MAX_ATTEMPTS:
             next_pending = pending_for(
                 pending.question_id, problem_key=pending.problem_key, assistance=after
             )
-        return Reacted("scaffold", feedback, None, next_pending, handoff, before, after)
+        return Reacted(
+            "scaffold",
+            feedback,
+            None,
+            next_pending,
+            handoff,
+            before,
+            after,
+            lesson=pending.lesson if pending.kind == "code_submission" else None,
+        )
 
     if spec is None:  # a code request answered "correct" cannot happen; be safe
         return Reacted("advance", "", None, None, False, before, before)
 
     if grade.grade == "correct":
         next_pending = _after_correct(base, pending, before)
-        return Reacted("advance", spec.on_correct, None, next_pending, False, before, before)
+        # The takeaway closes a chain; when the chain ends in a code request it
+        # waits for that code instead (shown with the reviewed / verified code).
+        closes_chain = spec.next is None and spec.then is None
+        return Reacted(
+            "advance",
+            spec.on_correct,
+            None,
+            next_pending,
+            False,
+            before,
+            before,
+            lesson=spec.lesson if closes_chain else None,
+        )
 
     if attempts + 1 >= MAX_ATTEMPTS:
         # Third miss on the same question: teach it and move on rather than loop.
@@ -308,9 +345,15 @@ def tutoring_sections(
     surfaced: Sequence[str],
     execution_lines: Sequence[str],
     question: PendingCheck | None,
+    lead: str | None = None,
+    lesson: str | None = None,
 ) -> TutoringSections:
     """Render the tutoring sections (all agent-authored text)."""
     out = TutoringSections()
+    if lead:
+        section = _section("lead", lead)
+        if section is not None:
+            out.before.append(section)
     if grade is not None:
         lead = _GRADE_LEAD[grade.grade]
         section = _section("answer_feedback", f"{lead} {feedback}".strip())
@@ -335,6 +378,10 @@ def tutoring_sections(
             out.after.append(section)
     if execution_lines:
         section = _section("execution", "\n\n".join(execution_lines))
+        if section is not None:
+            out.after.append(section)
+    if lesson:
+        section = _section("lesson", lesson)
         if section is not None:
             out.after.append(section)
     if question is not None:

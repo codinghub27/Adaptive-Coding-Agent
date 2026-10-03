@@ -293,3 +293,21 @@ New `GET /profile/activity` returns every UTC hour with a learner message (last
   exempt (1.2 s rotation, infinite). Verified in the browser with reduced
   motion emulated: working-panel spinner and send-button spinner both
   `spin 1.2s infinite`.
+
+### Owner's behaviour specification (2026-10-03) — alignment pass
+The owner supplied a behaviour spec (core-behaviour table, hard rules, an
+anti-example and five worked conversations). Gaps closed:
+
+| spec rule | change |
+|---|---|
+| "Keep answers short; teach the missing piece, not the topic"; anti-example (1000-word BFS answer) | A curated chain's first question replaces the long answer with its one-line opener (`lead`, "Let's start"); any turn that asks or reacts drops survey sections (recognition, intuition, understanding, constraints, key insight, complexity unless code is shown, common mistakes, next steps). New chain `bfs_basics` catches "I don't understand BFS". |
+| "One question at a time" | unchanged: exactly one `check_question` (replay-checked) |
+| "End with the reusable lesson" | `lesson` on the closing question of each chain and on each catalog misconception; shown as "Takeaway" when a chain closes, or -- when it closes with a code request -- with the reviewed / verified code |
+| Example 1: "I don't know how" -> build it together -> verified solution -> Execution ✓ | Guidance mode only: "don't know" on a code request (after the concept was graded correct) raises assistance to `full`, which reaches the existing P4 path that reveals ONLY a sandbox-verified reference. Balanced / Challenge stay +1 step. |
+| "Every Execution: ✓ line must come from a real execution result" | Execution lines now carry ✓ / ✗ and are still rendered only from the verdict; replay wording updated (check logic unchanged) |
+| Example 5: "Based on this session, you're comfortable with…" | practice turns that step difficulty up say so from the session's graded counts and the closed topic slugs; a struggle says it stays and adds guidance |
+
+**Instrument changes (recorded so numbers stay honest):** Ex1 #6 `assistance_up`
+now requires "rose" (was "exactly +1") and two checks were added there
+(`verified_solution`, `execution_line` required), because the owner's spec
+says that turn reveals the verified solution. Execution wording gained ✓/✗.

@@ -66,6 +66,8 @@ ResponseSectionKind = Literal[
     "watch_out",
     "execution",
     "check_question",
+    "lead",
+    "lesson",
 ]
 
 CODE_SECTION_KINDS: frozenset[ResponseSectionKind] = frozenset({"code", "patch"})

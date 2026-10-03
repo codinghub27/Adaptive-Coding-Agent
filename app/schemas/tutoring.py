@@ -96,6 +96,9 @@ class PendingCheck(APIModel):
     misconception_ids: list[str] = Field(default_factory=list[str])
     problem_key: str | None = Field(default=None, max_length=32)
     assistance_at_ask: AssistanceLevel | None = None
+    #: The reusable takeaway (bank text) to end on once this check resolves --
+    #: for a code request, shown with the reviewed or verified code.
+    lesson: str | None = Field(default=None, max_length=400)
     created_at: datetime
 
 

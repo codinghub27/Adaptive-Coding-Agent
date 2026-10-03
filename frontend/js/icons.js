@@ -120,6 +120,8 @@ const SECTION_STYLES = {
   "watch out": ["alert", "warn"],
   execution: ["terminal", ""],
   "your turn": ["help", "accent"],
+  "let's start": ["sparkle", "accent"],
+  takeaway: ["key", "success"],
 };
 
 export function sectionStyle(title) {

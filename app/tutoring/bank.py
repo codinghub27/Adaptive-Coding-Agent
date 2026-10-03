@@ -31,6 +31,7 @@ __all__ = [
     "QuestionSpec",
     "RECOGNITION_PREFIX",
     "base_question_id",
+    "chain_intro",
     "chain_start",
     "code_submission_check",
     "curated_problem",
@@ -76,6 +77,8 @@ class QuestionSpec(APIModel):
     on_correct: str = ""
     on_incorrect: str = ""
     scaffold: str = ""
+    #: The reusable takeaway shown when this question closes a chain.
+    lesson: str | None = None
 
 
 class CuratedProblem(APIModel):
@@ -96,6 +99,9 @@ class _Chain(APIModel):
     match_all: list[list[str]] = Field(default_factory=list[list[str]])
     #: The curated problem this chain teaches, when it is about one problem.
     problem: str | None = None
+    #: One or two agent-authored sentences that open the chain, replacing a
+    #: long explanation (the spec's "teach the missing piece, not the topic").
+    intro: str | None = None
 
 
 class _Recognition(APIModel):
@@ -290,6 +296,7 @@ def code_submission_check(
     topic: str | None,
     problem_key: str | None,
     assistance: AssistanceLevel | None,
+    lesson: str | None = None,
 ) -> PendingCheck:
     """A pending request for the learner's implementation (G4)."""
     return PendingCheck(
@@ -300,6 +307,7 @@ def code_submission_check(
         rubric_ref=f"corpus:{topic}#general_template" if topic else None,
         problem_key=problem_key,
         assistance_at_ask=assistance,
+        lesson=lesson,
         created_at=datetime.now(UTC),
     )
 
@@ -312,6 +320,17 @@ def _matches(text: str, chain: _Chain) -> bool:
             any(re.search(rf"\b{re.escape(t)}", text) for t in group) for group in chain.match_all
         )
     return False
+
+
+def chain_intro(text: str | None) -> str | None:
+    """The opening line of the curated chain this text is about, if any."""
+    if not text:
+        return None
+    lowered = text.lower()
+    for chain in _bank().chains:
+        if _matches(lowered, chain):
+            return chain.intro
+    return None
 
 
 def chain_start(text: str | None) -> str | None:

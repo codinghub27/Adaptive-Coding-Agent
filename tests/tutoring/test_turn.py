@@ -186,3 +186,58 @@ def test_concept_event_never_sets_solved_and_updates_with_concept_alpha() -> Non
     exposure = LearningEventCreate(topic="bfs", solved=None)
     unchanged, _ = apply_event({"bfs": PRIOR}, {}, exposure)
     assert unchanged["bfs"] == PRIOR
+
+
+def test_guidance_dont_know_on_a_code_request_unlocks_the_verified_solution() -> None:
+    # Spec Example 1: "I don't know how" after the concept is clear -> build it
+    # together. "full" reaches the DSA agent's verified-reference path only.
+    pending = pending_for("hashing.two_sum.lookup", assistance="concept")
+    assert pending is not None
+    request = react(
+        pending,
+        _grade("correct"),
+        mode="guidance",
+        cap=None,
+        progress=SessionProgress.empty(),
+        has_active_problem=True,
+    ).next_pending
+    assert request is not None and request.kind == "code_submission"
+    reacted = react(
+        request,
+        _grade("dont_know"),
+        mode="guidance",
+        cap=None,
+        progress=SessionProgress.empty(),
+        has_active_problem=True,
+    )
+    assert reacted.handoff
+    assert reacted.assistance_after == "full"
+
+
+def test_balanced_dont_know_on_a_code_request_stays_one_step() -> None:
+    pending = pending_for("hashing.two_sum.lookup", assistance="concept")
+    assert pending is not None
+    request = react(
+        pending,
+        _grade("correct"),
+        mode="balanced",
+        cap=None,
+        progress=SessionProgress.empty(),
+        has_active_problem=True,
+    ).next_pending
+    assert request is not None
+    reacted = react(
+        request,
+        _grade("dont_know"),
+        mode="balanced",
+        cap=None,
+        progress=SessionProgress.empty(),
+        has_active_problem=True,
+    )
+    assert reacted.assistance_after == "pseudocode"
+
+
+def test_closing_a_chain_ends_on_the_reusable_lesson() -> None:
+    reacted = _react("hashing.checked_vs_accessed", _grade("correct"))
+    assert reacted.lesson is not None and "KeyError" in reacted.lesson
+    assert _react("hashing.two_sum.complement", _grade("correct")).lesson is None

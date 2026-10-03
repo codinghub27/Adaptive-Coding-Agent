@@ -10,7 +10,8 @@
       "correct_model": "A membership test and the lookup that follows it must use the SAME key: once `complement in seen` is true, `seen[complement]` is the value you are allowed to read.",
       "example": "nums = [2, 7], target = 9. At i = 1, num = 7 and complement = 2. `2 in seen` is True, but `seen[7]` was never stored, so `seen[num]` raises KeyError while `seen[complement]` returns 0.",
       "question_id": "hashing.checked_vs_accessed",
-      "detector": "checked_key_vs_accessed_key"
+      "detector": "checked_key_vs_accessed_key",
+      "lesson": "Lesson: when a dict raises KeyError, check that the key you READ is the key the condition just before it guaranteed."
     },
     {
       "id": "hashing.list_scan_lookup",
@@ -21,7 +22,8 @@
       "correct_model": "`x in some_list` walks the whole list (O(n)); a dict or set answers the same question in O(1) on average, which is what makes the single pass O(n) overall.",
       "example": "For 10,000 numbers, `complement in nums[:i]` does up to 10,000 comparisons per step (about 50 million in total); `complement in seen` with a dict does one hash lookup per step.",
       "question_id": "hashing.two_sum.lookup",
-      "detector": "list_scan_lookup"
+      "detector": "list_scan_lookup",
+      "lesson": "Pattern: hash map + complement lookup turns a pair search into O(n). When you need two values that satisfy a target, ask whether a hash map helps."
     },
     {
       "id": "trees.returnable_vs_global_path",
@@ -32,7 +34,8 @@
       "correct_model": "The recursion has two jobs: RETURN the best one-sided path the parent can extend (`node + max(left, right, 0)`), and separately UPDATE a global best with the two-sided path through the node (`node + left + right`).",
       "example": "Tree 1 -> (2, 3). At node 1 the two-sided path 2 -> 1 -> 3 sums to 6, but if node 1 had a parent, that parent could only continue through ONE of 2 or 3 -- returning 6 would describe a path that forks, which is not a path.",
       "question_id": "trees.max_path.return_value",
-      "detector": "returnable_vs_global_path"
+      "detector": "returnable_vs_global_path",
+      "lesson": "Concept: in tree DP the value you RETURN (extendable by the parent) is not the value you RECORD (the best answer anywhere)."
     },
     {
       "id": "trees.missing_base_case",
@@ -43,7 +46,8 @@
       "correct_model": "Every recursive tree function must decide what an empty subtree (`None`) returns before touching `node.left` or `node.val`.",
       "example": "A leaf's children are None; calling `f(None)` without a base case evaluates `None.left` and raises AttributeError.",
       "question_id": "trees.base_case",
-      "detector": null
+      "detector": null,
+      "lesson": "Rule: decide what the empty subtree returns before you touch node.val."
     },
     {
       "id": "graphs.parent_node_vs_parent_edge",
@@ -54,7 +58,8 @@
       "correct_model": "In Tarjan's bridge-finding, the only edge to ignore is the one you arrived by. Identify it by its edge index, not by the parent's node id: a second (parallel) edge to the parent is a genuine back edge and must lower `low[u]`.",
       "example": "connections = [[0,1],[0,1]]: two separate cables between 0 and 1. Neither is critical. Skipping every edge back to node 0 ignores the second cable, keeps low[1] = 1 > disc[0] = 0, and wrongly reports [0,1] as a bridge.",
       "question_id": "dfs.bridges.parallel_edges",
-      "detector": "parent_node_vs_parent_edge"
+      "detector": "parent_node_vs_parent_edge",
+      "lesson": "Rule: in bridge-finding, skip the EDGE you arrived by, not the parent node."
     },
     {
       "id": "bfs.mark_visited_on_dequeue",
@@ -65,7 +70,8 @@
       "correct_model": "Mark a node visited at the moment you ENQUEUE it. Then each node enters the queue at most once, and the first time it is reached is already by the fewest edges.",
       "example": "A is connected to B and C, and both connect to D. Marking on dequeue: D is enqueued once from B and again from C before either copy is popped, so D (and everything after it) is processed twice.",
       "question_id": "bfs.visited_on_enqueue",
-      "detector": "mark_visited_on_dequeue"
+      "detector": "mark_visited_on_dequeue",
+      "lesson": "Rule: in BFS, mark a node visited when you enqueue it, never when you dequeue it."
     },
     {
       "id": "bfs.dfs_for_unweighted_shortest_path",
@@ -76,7 +82,8 @@
       "correct_model": "BFS visits nodes in order of distance (all nodes 1 edge away, then 2, ...), so the first time it reaches the target is along a fewest-edges path. DFS follows one branch as deep as it goes and can reach the target by a long route first.",
       "example": "Edges A-B, A-C, C-D, D-B. DFS from A that tries C first reaches B as A -> C -> D -> B (3 edges); BFS reaches B at distance 1.",
       "question_id": "bfs.vs_dfs.reachability",
-      "detector": null
+      "detector": null,
+      "lesson": "Rule: unweighted shortest path -> BFS. Plain reachability -> either works."
     },
     {
       "id": "dfs.mark_visited_after_pop",
@@ -87,7 +94,8 @@
       "correct_model": "With an explicit stack, mark a node visited when you push it, so the same node cannot pile up on the stack from many neighbours. A check-and-skip after the pop avoids reprocessing but still lets the duplicates accumulate.",
       "example": "In a dense graph every unvisited neighbour pushes the same node again before it is popped, so the stack can hold O(E) copies instead of O(V) nodes.",
       "question_id": "dfs.visited_before_push",
-      "detector": "mark_visited_after_pop"
+      "detector": "mark_visited_after_pop",
+      "lesson": "Rule: with an explicit stack, mark visited when you push."
     }
   ]
 }

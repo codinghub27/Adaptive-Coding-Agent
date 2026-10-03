@@ -49,6 +49,8 @@ class Misconception(APIModel):
     example: str
     question_id: str
     detector: str | None = None
+    #: The reusable rule to end on once the mental model is repaired.
+    lesson: str = ""
 
 
 class _Catalog(APIModel):

@@ -172,6 +172,7 @@ class AgentState(BaseModel):
     answer_grade: AnswerGrade | None = None
     reaction: Reaction | None = None
     grade_feedback: str | None = None
+    grade_lesson: str | None = None
     assistance_before: AssistanceLevel | None = None
     grade_handoff: bool = False
     practice: PracticeRecord | None = None
@@ -215,6 +216,7 @@ class AgentStateUpdate(TypedDict, total=False):
     answer_grade: AnswerGrade | None
     reaction: Reaction | None
     grade_feedback: str | None
+    grade_lesson: str | None
     assistance_before: AssistanceLevel | None
     grade_handoff: bool
     practice: PracticeRecord | None

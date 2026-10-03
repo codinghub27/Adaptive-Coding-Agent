@@ -105,6 +105,8 @@ from app.schemas.tutoring import (
     TutoringView,
 )
 from app.tutoring.bank import (
+    chain_intro,
+    chain_start,
     curated_problem,
     curated_problem_for_text,
     curated_problems,
@@ -1479,6 +1481,9 @@ async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> A
         statement=statement,
     )
     text = render_practice_problem(problem, curated.statement if curated is not None else None)
+    lead = _progression_line(progress, reason, problem.difficulty)
+    if lead:
+        text = f"{lead}\n\n{text}"
     return {
         "practice": record,
         "agent_output": AgentOutcome(
@@ -1490,6 +1495,29 @@ async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> A
             errors=[],
         ),
     }
+
+
+def _progression_line(progress: SessionProgress, reason: str, difficulty: str) -> str | None:
+    """Why this problem's level, from THIS session's graded answers (G5).
+
+    Built only from grade counts and the closed topic slugs of the questions
+    answered -- never from anything the learner wrote.
+    """
+    graded = progress.grades[progress.grades_at_practice :]
+    right = [g for g in graded if g.grade == "correct"]
+    topics = sorted({g.topic.replace("_", " ") for g in right if g.topic})
+    if reason in ("harder_after_success", "up_after_success") and right:
+        about = f" on {', '.join(topics)}" if topics else ""
+        return (
+            f"Based on this session -- {len(right)} of your last {len(graded)} answers "
+            f"correct{about} -- let's step up to **{difficulty}**."
+        )
+    if reason in ("same_after_struggle", "harder_denied_struggle"):
+        return (
+            f"The last problem was a stretch, so let's stay at **{difficulty}** and I'll "
+            "give you more guidance along the way."
+        )
+    return None
 
 
 async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
@@ -1532,6 +1560,7 @@ async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> Age
         "answer_grade": grade,
         "reaction": reacted.reaction,
         "grade_feedback": reacted.feedback,
+        "grade_lesson": reacted.lesson,
         "assistance_before": reacted.assistance_before,
         "grade_handoff": reacted.handoff,
         "next_pending": reacted.next_pending,
@@ -1820,6 +1849,23 @@ def _practice_key(state: AgentState) -> str | None:
     return problem_key(StructuredInput(source="text", problem=practice.statement))
 
 
+#: Survey-style sections dropped from a tutoring turn that asks or reacts.
+_VERBOSE_SECTION_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "recognition",
+        "intuition",
+        "understanding",
+        "constraints",
+        "brute_force",
+        "why_slow",
+        "key_insight",
+        "complexity",
+        "common_mistakes",
+        "next_steps",
+    }
+)
+
+
 def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStateUpdate:
     """Add the tutoring sections to `generated` and decide the next pending check."""
     plan = state.plan
@@ -1843,13 +1889,13 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
     problem_key_now = _practice_key(state) or state.problem_key
     assistance = plan.assistance_level if plan is not None else "hint"
 
+    inp = state.structured_input
+    problem_text = None
+    if inp is not None:
+        problem_text = "\n".join(part for part in (inp.problem, inp.question) if part)
     if grade is not None:
         question = state.next_pending
     else:
-        inp = state.structured_input
-        problem_text = None
-        if inp is not None:
-            problem_text = "\n".join(part for part in (inp.problem, inp.question) if part)
         question = question_for_turn(
             route=route,
             progress=progress,
@@ -1887,6 +1933,16 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         learner_submitted=reviewed_code,
         reveals_code=generated.reveals_code,
     )
+    # A curated chain's first question replaces the long answer with its one-line
+    # opener (spec: "teach the missing piece, not the whole topic").
+    lead: str | None = None
+    if (
+        grade is None
+        and question is not None
+        and route in ("dsa", "explain")
+        and question.question_id == chain_start(problem_text)
+    ):
+        lead = chain_intro(problem_text)
     extra = tutoring_sections(
         grade=grade,
         feedback=state.grade_feedback or "",
@@ -1894,12 +1950,27 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         surfaced=surfaced,
         execution_lines=exec_lines,
         question=question,
+        lead=lead,
+        lesson=state.grade_lesson
+        or (pending.lesson if state.submitted_code and pending is not None else None),
     )
 
     base: list[ResponseSection] = list(generated.sections)
-    if not base and grade is None and (extra.before or extra.after):
+    if not base and lead is None and grade is None and (extra.before or extra.after):
         kind: ResponseSectionKind = "practice_problem" if route == "practice" else "explanation"
         base = [ResponseSection(kind=kind, title=SECTION_TITLES[kind], body=generated.text)]
+    if lead is not None:
+        base = []
+    elif (question is not None and question.kind == "question") or grade is not None:
+        # One question at a time, short and targeted: when the turn ends by
+        # asking the learner something (or reacts to their answer), drop the
+        # survey sections and keep the hint, code and verification.
+        keep_complexity = generated.reveals_code
+        base = [
+            s
+            for s in base
+            if s.kind not in _VERBOSE_SECTION_KINDS or (s.kind == "complexity" and keep_complexity)
+        ]
     after = list(extra.after)
     verification_index = next((i for i, s in enumerate(base) if s.kind == "verification"), None)
     if verification_index is not None and exec_lines:
