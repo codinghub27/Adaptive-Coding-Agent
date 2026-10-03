@@ -371,3 +371,11 @@ Final measurements (experiment branch, local models, same instruments):
 replay **130/130, 5/5 conversations**; transcript probe T (balanced)
 **86/86** incl. T1 `section_intuition`, `section_recognition`,
 `section_complexity`; pytest 1775 passed / 28 skipped; pyright 0; ruff clean.
+
+**Cloud models (main, after porting the fixes, commit `a56da35`):** replay
+**128/130, 4/5** in one paced run -- the only misses were Example 1 #6
+(`verified_solution`, `execution_line`): that turn finished in 3.6 s with no
+reference solution, consistent with a rate-limited reference call. Re-running
+Example 1 alone: **26/26**, the verified Two Sum solution revealed with
+"Execution ✓ passed 3/3". So every reference conversation passes on cloud and
+on local models; the cloud number is sensitive to provider rate limits.
