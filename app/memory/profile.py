@@ -35,6 +35,7 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from functools import cache
+from types import MappingProxyType
 from typing import Final
 
 from sqlalchemy import select
@@ -53,7 +54,11 @@ __all__ = [
     "MIN_SOLVED_SCORE",
     "PRIOR",
     "UNSOLVED_SCORE",
+    "CONCEPT_ALPHA",
+    "CONCEPT_CEILING",
+    "CONCEPT_SCORES",
     "apply_event",
+    "concept_update",
     "common_errors_list",
     "ensure_profile",
     "get_profile",
@@ -72,6 +77,33 @@ HINT_PENALTY: Final = 0.15
 FULL_SOLUTION_SCORE: Final = 0.3
 UNSOLVED_SCORE: Final = 0.1
 COMMON_ERRORS_TOP_N: Final = 5
+
+# --- Conceptual evidence (ADAPTIVE-tutoring G2, AD-T5) -----------------------
+#: EWMA weight of one graded conceptual answer. A third of `ALPHA`: answering
+#: the agent's question shows understanding of ONE idea, not that the learner
+#: can produce working code, so three conceptual answers move a skill about as
+#: far as one sandbox-verified outcome. Large enough that a session of answers
+#: still visibly moves the estimate (0.5 -> ~0.58 after three correct ones).
+CONCEPT_ALPHA: Final = 0.1
+#: Conceptual evidence alone may never lift a skill into the HARD band
+#: (`app.agents.planner.HARD_SKILL`, 0.68): only sandbox evidence can.
+#: A test pins CONCEPT_CEILING < HARD_SKILL.
+CONCEPT_CEILING: Final = 0.67
+CONCEPT_SCORES: Final[Mapping[str, float]] = MappingProxyType(
+    {"correct": 0.85, "partial": 0.55, "incorrect": 0.2, "dont_know": 0.25}
+)
+
+
+def concept_update(old: float, grade: str) -> float:
+    """One graded conceptual answer folded into a skill estimate.
+
+    Rising is capped at `CONCEPT_CEILING` (and never above where the skill
+    already was, if sandbox evidence put it higher); falling is not capped.
+    """
+    new = smooth(old, CONCEPT_SCORES[grade], CONCEPT_ALPHA)
+    if new > old:
+        new = min(new, max(old, CONCEPT_CEILING))
+    return round(new, 6)
 
 
 def outcome_score(event: LearningEventCreate) -> float:
@@ -164,7 +196,24 @@ def apply_event(
     Returns new dicts; never mutates the inputs.
     """
     new_skills = dict(skill_levels)
-    if event.solved is None:
+    if (
+        event.solved is None
+        and event.evidence_source == "concept_check"
+        and event.concept_grade is not None
+    ):
+        # Conceptual evidence lands on the FAMILY estimate, and on the topic's
+        # own key only once that key carries real (sandbox) evidence. A single
+        # answer must not create a topic key that shadows a stronger family
+        # estimate in `skill_for` (measured: it slowed adaptation 9 -> 22 turns).
+        for key in skill_keys(event):
+            current = new_skills.get(key)
+            if key.startswith(FAMILY_PREFIX) or (current is not None and current != PRIOR):
+                new_skills[key] = concept_update(
+                    current if current is not None else PRIOR, event.concept_grade
+                )
+            elif current is None:
+                new_skills[key] = PRIOR
+    elif event.solved is None:
         for key in skill_keys(event):
             if key not in new_skills:
                 new_skills[key] = PRIOR

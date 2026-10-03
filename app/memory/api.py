@@ -16,6 +16,7 @@ from app.db.session import get_session
 from app.memory.conversation import (
     ConversationNotFoundError,
     delete_conversation,
+    learning_activity_hours,
     list_conversations,
     list_messages,
     rename_conversation,
@@ -30,7 +31,7 @@ from app.schemas.conversation import (
     ConversationSummary,
     MessageView,
 )
-from app.schemas.profile import LearnerProfileView, LearningPreferencesUpdate
+from app.schemas.profile import LearnerProfileView, LearningActivity, LearningPreferencesUpdate
 
 __all__ = ["router"]
 
@@ -65,6 +66,15 @@ async def read_profile(
 ) -> LearnerProfileView:
     """Return the authenticated user's learner profile."""
     return await get_profile(session, current_user.id)
+
+
+@router.get("/profile/activity", response_model=LearningActivity)
+async def read_activity(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> LearningActivity:
+    """The hours (UTC) in which the learner sent messages, for the learning streak."""
+    return LearningActivity(active_hours=await learning_activity_hours(session, current_user.id))
 
 
 @router.get("/conversations", response_model=list[ConversationSummary])

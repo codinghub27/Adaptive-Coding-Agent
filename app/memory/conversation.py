@@ -11,7 +11,7 @@ and returned verbatim, never truncated, and never interpreted as instructions.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 from sqlalchemy import delete, func, select
@@ -21,6 +21,7 @@ from app.db.models import Conversation, HintProgress, Message
 from app.schemas.conversation import ConversationSummary, MessageView, Role
 from app.schemas.input import ActiveProblem, StructuredInput
 from app.schemas.intent import Intent
+from app.schemas.tutoring import PendingCheck, SessionProgress
 
 __all__ = [
     "DEFAULT_CONTEXT_WINDOW",
@@ -30,10 +31,13 @@ __all__ = [
     "get_active_problem",
     "get_owned_conversation",
     "get_recent_context",
+    "learning_activity_hours",
+    "get_tutoring_state",
     "list_conversations",
     "list_messages",
     "rename_conversation",
     "set_active_problem",
+    "set_tutoring_state",
     "start_conversation",
 ]
 
@@ -307,3 +311,73 @@ async def set_active_problem(
     conversation.active_problem_key = active.key
     conversation.active_topic = active.topic
     await session.flush()
+
+
+async def get_tutoring_state(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> tuple[PendingCheck | None, SessionProgress]:
+    """This conversation's pending check and session progress (ADAPTIVE-tutoring).
+
+    A payload that no longer validates reads as "nothing pending" / an empty
+    progress record, never an error: losing tutoring state costs one turn its
+    grading, never the turn.
+    """
+    stmt = select(Conversation.pending_check, Conversation.session_progress).where(
+        Conversation.id == conversation_id, Conversation.user_id == user_id
+    )
+    row = (await session.execute(stmt)).one_or_none()
+    if row is None:
+        return None, SessionProgress.empty()
+    pending: PendingCheck | None = None
+    if row[0] is not None:
+        try:
+            pending = PendingCheck.model_validate(row[0])
+        except ValueError:
+            pending = None
+    progress = SessionProgress.empty()
+    if row[1] is not None:
+        try:
+            progress = SessionProgress.model_validate(row[1])
+        except ValueError:
+            progress = SessionProgress.empty()
+    return pending, progress
+
+
+async def set_tutoring_state(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    pending: PendingCheck | None,
+    progress: SessionProgress,
+) -> None:
+    """Store this turn's pending check (NULL clears it) and session progress."""
+    conversation = await get_owned_conversation(session, user_id, conversation_id)
+    conversation.pending_check = pending.model_dump(mode="json") if pending is not None else None
+    conversation.session_progress = progress.model_dump(mode="json")
+    await session.flush()
+
+
+#: How far back the learning-streak activity reaches.
+ACTIVITY_WINDOW_DAYS: Final = 60
+
+
+async def learning_activity_hours(
+    session: AsyncSession, user_id: uuid.UUID, *, days: int = ACTIVITY_WINDOW_DAYS
+) -> list[datetime]:
+    """Distinct UTC hours in which this learner sent a message, newest first.
+
+    The learning streak needs EVERY day the learner was active. The sidebar
+    used to derive it from each conversation's last-message time, so a learner
+    who worked in one conversation every day showed a streak of 1. Hours (not
+    dates) are returned so the client can bucket them into ITS local days.
+    """
+    since = datetime.now(UTC) - timedelta(days=days)
+    hour = func.date_trunc("hour", Message.created_at)
+    stmt = (
+        select(hour)
+        .where(Message.user_id == user_id, Message.role == "user", Message.created_at >= since)
+        .group_by(hour)
+        .order_by(hour.desc())
+        .limit(days * 24)
+    )
+    return list((await session.execute(stmt)).scalars())

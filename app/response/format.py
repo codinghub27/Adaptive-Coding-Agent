@@ -37,6 +37,7 @@ __all__ = [
     "render_line_explanations",
     "render_static_findings",
     "render_structure",
+    "render_execution_line",
     "render_verdict",
 ]
 
@@ -77,6 +78,13 @@ SECTION_TITLES: Final[Mapping[ResponseSectionKind, str]] = {
     # shared
     "next_steps": "Next steps",
     "citations": "References",
+    # tutoring loop
+    "practice_problem": "Your practice problem",
+    "answer_feedback": "Your answer",
+    "misconception": "Misconception",
+    "watch_out": "Watch out",
+    "execution": "Execution",
+    "check_question": "Your turn",
 }
 
 DSA_SECTIONS_BY_ASSISTANCE: Final[Mapping[AssistanceLevel, tuple[ResponseSectionKind, ...]]] = {
@@ -250,3 +258,27 @@ def _check_cumulative_sections() -> None:
 
 
 _check_cumulative_sections()
+
+
+def render_execution_line(verdict: Verdict | None, label: str = "") -> str:
+    """The ONE wording of an "Execution" line, rendered only from a sandbox verdict.
+
+    `label` names whose code ran: "" (the turn's authoritative verification),
+    " (your code)" (the learner's own submission) or " (suggested fix)". No
+    verdict means nothing ran, and the line says exactly that.
+    """
+    head = f"Execution{label}:"
+    if verdict is None:
+        return f"{head} not executed"
+    if verdict.status == "pass":
+        return (
+            f"{head} passed {verdict.cases_passed}/{verdict.cases_total} test cases in the sandbox"
+        )
+    if verdict.status == "fail":
+        return (
+            f"{head} failed -- {verdict.cases_passed}/{verdict.cases_total} test cases passed "
+            "in the sandbox"
+        )
+    if verdict.status == "inconclusive":
+        return f"{head} ran in the sandbox, not verified (no test cases)"
+    return f"{head} not executed"

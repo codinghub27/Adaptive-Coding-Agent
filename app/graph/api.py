@@ -65,6 +65,7 @@ from app.schemas.plan import (
     TeachingPlan,
 )
 from app.schemas.response import GeneratedResponse
+from app.schemas.tutoring import TutoringView
 
 __all__ = ["STREAM_ERROR_DETAIL", "ChatResponse", "router"]
 
@@ -100,6 +101,9 @@ class ChatResponse(APIModel):
     llm_calls: int
     generated: GeneratedResponse | None
     conversation_id: UUID | None
+    #: The tutoring loop's outcome this turn (ADAPTIVE-tutoring): grade,
+    #: reaction, the pending question, misconceptions, progression. Additive.
+    tutoring: TutoringView | None = None
 
 
 def _get_runner(request: Request) -> CodeRunner | None:
@@ -240,6 +244,7 @@ def _to_chat_response(result: GraphRunResult, conversation_id: UUID | None) -> C
         conversation_id=conversation_id,
         skill_deltas=dict(result.state.skill_deltas),
         adapted=plan_adapted(state.plan),
+        tutoring=state.tutoring,
     )
 
 

@@ -28,6 +28,7 @@ from app.memory.profile import (
     to_view,
 )
 from app.schemas.event import (
+    ConceptGrade,
     Difficulty,
     EvidenceSource,
     LearningEventCreate,
@@ -84,6 +85,7 @@ def _row_to_create(row: LearningEvent) -> LearningEventCreate:
         hints_used=row.hints_used,
         needed_full_solution=row.needed_full_solution,
         evidence_source=cast("EvidenceSource", row.evidence_source),
+        concept_grade=cast("ConceptGrade | None", row.concept_grade),
         errors=row.errors,
         solved=row.solved,
         time_spent=row.time_spent,
@@ -132,6 +134,7 @@ async def record_event(
             hints_used=event.hints_used,
             needed_full_solution=event.needed_full_solution,
             evidence_source=event.evidence_source,
+            concept_grade=event.concept_grade,
             errors=event.errors,
             solved=event.solved,
             time_spent=event.time_spent,
@@ -157,6 +160,11 @@ async def record_event(
     skills, errors = apply_event(baseline, profile.common_errors, event)
     profile.skill_levels = skills
     profile.common_errors = errors
+    if event.errors:
+        profile.common_errors_seen = {
+            **(profile.common_errors_seen or {}),
+            **dict.fromkeys(event.errors, now.isoformat()),
+        }
     if event.solved is not None:
         stamp = now.isoformat()
         profile.skill_seen = {
@@ -192,16 +200,19 @@ async def rebuild_profile(session: AsyncSession, user_id: uuid.UUID) -> LearnerP
     skills: dict[str, float] = {}
     errors: dict[str, int] = {}
     seen: dict[str, str] = {}
+    errors_seen: dict[str, str] = {}
     for row in rows:
         event = _row_to_create(row)
         skills = decay_for_outcome(skills, seen, event, row.created_at)
         skills, errors = apply_event(skills, errors, event)
         if event.solved is not None:
             seen.update(dict.fromkeys(skill_keys(event), row.created_at.isoformat()))
+        errors_seen.update(dict.fromkeys(event.errors, row.created_at.isoformat()))
 
     profile.skill_levels = skills
     profile.common_errors = errors
     profile.skill_seen = seen
+    profile.common_errors_seen = errors_seen
     await session.flush()
     return to_view(profile)
 

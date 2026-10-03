@@ -78,17 +78,20 @@ function buildHint(generated) {
  * server joins them, `app/response/generate.py`), skipping `next_hint` when a
  * hint card shows it — the same content, each part shown exactly once.
  */
-function answerBody(generated, hasHintCard) {
+function answerBody(generated, hasHintCard, hasQuestionCard = false) {
   const sections = generated?.sections || [];
   if (!sections.length) return generated?.text || "";
-  const rest = sections.filter((section) => !(hasHintCard && section.kind === "next_hint"));
+  const rest = sections.filter(
+    (section) =>
+      !(hasHintCard && section.kind === "next_hint") &&
+      !(hasQuestionCard && section.kind === "check_question"),
+  );
   if (!rest.length) return "";
   // Presentation order only: "Next steps" closes the answer instead of sitting
   // between the hint and the explanation. Same sections, same text.
-  const ordered = [
-    ...rest.filter((section) => section.kind !== "next_steps"),
-    ...rest.filter((section) => section.kind === "next_steps"),
-  ];
+  // ...and the agent's question to the learner ("Your turn") comes last of all.
+  const last = (section) => (section.kind === "check_question" ? 2 : section.kind === "next_steps" ? 1 : 0);
+  const ordered = [...rest].sort((a, b) => last(a) - last(b));
   return ordered.map((section) => `## ${section.title}\n\n${section.body}`).join("\n\n");
 }
 
@@ -104,18 +107,29 @@ function withReferences(body, citations) {
 }
 
 /** Turn a finished `ChatResponse` into the workspace's message shape. */
+/**
+ * The agent's pending closed-choice question (tutoring), as option buttons.
+ * Clicking one sends that option as the learner's reply; the server grades it.
+ */
+function buildQuestion(payload) {
+  const pending = payload.tutoring?.pending;
+  if (!pending || pending.kind !== "question" || !(pending.options || []).length) return null;
+  return { prompt: pending.question, options: pending.options };
+}
+
 function buildMessage(payload, steps) {
   const generated = payload.generated;
   const hint = buildHint(generated);
+  const question = buildQuestion(payload);
   return {
     id: `msg_${crypto.randomUUID()}`,
     role: "agent",
     createdAt: new Date().toISOString(),
-    content: withReferences(answerBody(generated, Boolean(hint)) || payload.response, generated?.citations),
+    content: withReferences(answerBody(generated, Boolean(hint), Boolean(question)) || payload.response, generated?.citations),
     concept: buildConcept(payload),
     work: steps.map(({ name, node, durationMs }) => ({ name, node, durationMs, status: "completed" })),
     hint,
-    question: null,
+    question,
     nextSteps: generated?.next_steps || [],
     citations: generated?.citations || [],
     revealsCode: Boolean(generated?.reveals_code),

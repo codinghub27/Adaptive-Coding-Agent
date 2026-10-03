@@ -35,6 +35,11 @@ class LearnerProfile(Base):
     skill_seen: Mapped[dict[str, str]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    #: error tag / misconception id -> ISO time it was last recorded
+    #: (ADAPTIVE-tutoring G3: "count + last_seen"; counts stay in `common_errors`).
+    common_errors_seen: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

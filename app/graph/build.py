@@ -43,6 +43,7 @@ from app.graph.nodes import (
     execute_code,
     explain_agent,
     final_response,
+    grade_answer,
     load_learner_profile,
     plan_teaching,
     practice_agent,
@@ -53,7 +54,14 @@ from app.graph.nodes import (
     update_learner_model,
     verify_execution,
 )
-from app.graph.routing import ROUTE_NODES, VERIFY_NODES, route_after, verify_after
+from app.graph.routing import (
+    GRADE_AFTER_NODES,
+    ROUTE_NODES,
+    VERIFY_NODES,
+    grade_after,
+    route_after,
+    verify_after,
+)
 from app.graph.stages import DEFAULT_STAGE_LABEL, STAGE_LABELS
 from app.graph.state import AgentState, GraphContext, RawInput
 from app.knowledge.base import DEFAULT_KNOWLEDGE_TOP_K, Retriever
@@ -90,6 +98,7 @@ NODE_FUNCTIONS: Final[Mapping[str, Node]] = MappingProxyType(
         "debug_agent": debug_agent,
         "explain_agent": explain_agent,
         "practice_agent": practice_agent,
+        "grade_answer": grade_answer,
         "execute_code": execute_code,
         "verify": verify_execution,
         "clarify": clarify,
@@ -137,10 +146,16 @@ def build_graph(node_overrides: Mapping[str, Node] | None = None) -> _CompiledGr
     # than hard-coded so a future route addition can't silently bypass
     # execution/verification by omission.
     clarify_node = ROUTE_NODES["clarify"]
+    grade_node = ROUTE_NODES["grade"]
     for agent_node in ROUTE_NODES.values():
-        if agent_node != clarify_node:
+        if agent_node not in (clarify_node, grade_node):
             builder.add_edge(agent_node, "execute_code")
     builder.add_edge(clarify_node, "final_response")
+    # ADAPTIVE-tutoring: a graded reply is answered directly (it runs no code),
+    # except a "don't know" on a problem, which hands the next rung to the DSA
+    # agent -- and through it to execute/verify like any other DSA turn.
+    grade_path_map: dict[Hashable, str] = {key: value for key, value in GRADE_AFTER_NODES.items()}
+    builder.add_conditional_edges(grade_node, grade_after, grade_path_map)
     builder.add_edge("execute_code", "verify")
     verify_path_map: dict[Hashable, str] = {key: value for key, value in VERIFY_NODES.items()}
     builder.add_conditional_edges("verify", verify_after, verify_path_map)

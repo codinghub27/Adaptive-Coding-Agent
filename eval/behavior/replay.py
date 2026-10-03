@@ -430,7 +430,7 @@ def load_examples(path: Path = EXAMPLES_PATH) -> list[dict[str, Any]]:
     ]
 
 
-async def replay_example(api: Api, example: dict[str, Any]) -> ExampleResult:
+async def replay_example(api: Api, example: dict[str, Any], pace: float = 0.0) -> ExampleResult:
     example_id = str(example["conversation_id"])
     mode = MODES.get(example_id, "balanced")
     await api.fresh_account(example_id.replace("adaptive_", "ad"))
@@ -442,6 +442,9 @@ async def replay_example(api: Api, example: dict[str, Any]) -> ExampleResult:
     for index, message in enumerate(example["conversation"]):
         if message["role"] != "user":
             continue
+        if pace and turns:
+            # Pacing only (free-tier LLM rate limits); never changes a check.
+            await asyncio.sleep(pace)
         turn = await api.turn(
             f"{example_id}#{index}", mode, str(message["content"]), conversation_id
         )
@@ -536,7 +539,7 @@ async def run(args: argparse.Namespace) -> int:
     results: list[ExampleResult] = []
     try:
         for example in examples:
-            result = await replay_example(api, example)
+            result = await replay_example(api, example, args.pace)
             results.append(result)
             ok = sum(c.passed for c in result.checks)
             print(f"{result.example}: {ok}/{len(result.checks)} checks", flush=True)
@@ -565,6 +568,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--only", nargs="*", default=None, help="example ids to replay")
+    parser.add_argument(
+        "--pace", type=float, default=0.0, help="seconds between turns (LLM rate limits)"
+    )
     parser.add_argument("--out", default=None, help="write the JSON record here")
     parser.add_argument(
         "--gate",

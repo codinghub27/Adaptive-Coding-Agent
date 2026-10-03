@@ -71,6 +71,9 @@ class LearningEvent(Base):
     errors: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
+    #: Grade of a conceptual answer (`concept_check` evidence, ADAPTIVE-tutoring
+    #: G2): correct | partial | incorrect | dont_know. NULL on every other event.
+    concept_grade: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # NULL means "topic encountered, outcome unknown" (e.g. a hint request)
     # -- distinct from `False` ("observed as unsolved"). See
     # `app.memory.profile.apply_event`.

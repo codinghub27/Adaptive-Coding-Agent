@@ -29,6 +29,8 @@ from app.graph.state import AgentState, AgentStateUpdate, GraphContext, RawInput
 from app.llm.budget import DEFAULT_MAX_LLM_CALLS, BudgetedLLMClient
 from app.memory.profile import ensure_profile, get_profile
 from app.schemas.intent import Intent
+from app.schemas.profile import LearnerProfileView
+from app.tutoring.bank import pending_for
 from tests.input.fakes import FakeLLMClient
 
 # --------------------------------------------------------------------------
@@ -308,9 +310,29 @@ def _node_inputs() -> dict[str, tuple[RawInput, FakeLLMClient]]:
         # nodes are always no-op skips on the straight-line path -- any input
         # that reaches them (i.e. not "clarify", which skips execute_code
         # entirely) is enough to exercise the failure sweep.
+        # Reached only with a pending check (ADAPTIVE-tutoring), which
+        # `_PENDING_OVERRIDES` injects in place of the DB-backed profile load.
+        "grade_answer": (RawInput(text="BFS"), FakeLLMClient()),
         "execute_code": (RawInput(text=_DSA_RULE_TEXT), FakeLLMClient()),
         "verify": (RawInput(text=_DSA_RULE_TEXT), FakeLLMClient()),
     }
+
+
+async def _load_with_pending(
+    state: AgentState, *, runtime: Runtime[GraphContext]
+) -> AgentStateUpdate:
+    """`load_learner_profile` stand-in: an empty profile and a pending question."""
+    del state, runtime
+    return {
+        "profile": LearnerProfileView.empty(),
+        "pending_check": pending_for("bfs.vs_dfs.shortest"),
+    }
+
+
+#: Extra overrides a node needs to be reachable at all without a database.
+_PENDING_OVERRIDES: dict[str, dict[str, Node]] = {
+    "grade_answer": {"load_learner_profile": _load_with_pending},
+}
 
 
 def _make_raiser() -> Node:
@@ -323,7 +345,8 @@ def _make_raiser() -> Node:
 
 async def _run_with_node_override(name: str, raw: RawInput, llm: FakeLLMClient) -> GraphRunResult:
     """Mirror `run_graph`'s body, on a fresh graph with node `name` forced to fail."""
-    graph = build_graph(node_overrides={name: _make_raiser()})
+    overrides: dict[str, Node] = {**_PENDING_OVERRIDES.get(name, {}), name: _make_raiser()}
+    graph = build_graph(node_overrides=overrides)
     budgeted = BudgetedLLMClient(llm, DEFAULT_MAX_LLM_CALLS)
     context = GraphContext(llm=budgeted, session=None, user_id=None, conversation_id=None)
     result = await graph.ainvoke(  # pyright: ignore[reportUnknownMemberType]

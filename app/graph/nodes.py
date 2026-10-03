@@ -49,7 +49,7 @@ from app.agents.planner import (
     clamp_assistance,
     explicit_ask_phrase,
 )
-from app.agents.practice import render_practice_problem, select_practice_problem
+from app.agents.practice import render_practice_problem, select_session_problem
 from app.agents.reviewer import review_code
 from app.execution.synth import synthesize_test_suite, verified_reference
 from app.execution.testgen import extract_test_suite
@@ -78,12 +78,14 @@ from app.memory.conversation import (
     add_turn,
     get_active_problem,
     get_recent_context,
+    get_tutoring_state,
     set_active_problem,
+    set_tutoring_state,
 )
 from app.memory.events import record_event, requested_help_for
 from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress, save_hint_progress
 from app.memory.profile import FAMILY_PREFIX, PRIOR, apply_event, get_profile
-from app.response.format import SAFE_FALLBACK_RESPONSE
+from app.response.format import SAFE_FALLBACK_RESPONSE, SECTION_TITLES
 from app.response.generate import generate_response
 from app.schemas.agent_results import ExplainResult, HintLevel
 from app.schemas.event import LearningEventCreate, slug_tag
@@ -91,8 +93,35 @@ from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verd
 from app.schemas.input import ActiveProblem, CodeBlock, ProblemRelation, StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.knowledge import RetrievalHit
-from app.schemas.plan import TeachingPlan
+from app.schemas.plan import ASSISTANCE_ORDER, TeachingPlan
 from app.schemas.profile import LearnerProfileView
+from app.schemas.response import GeneratedResponse, ResponseSection, ResponseSectionKind
+from app.schemas.tutoring import (
+    ExecutionView,
+    PendingCheck,
+    PendingView,
+    PracticeRecord,
+    SessionProgress,
+    TutoringView,
+)
+from app.tutoring.bank import (
+    curated_problem,
+    curated_problem_for_text,
+    curated_problems,
+    family_patterns,
+    named_pattern,
+)
+from app.tutoring.grader import grade_reply
+from app.tutoring.misconceptions import detect_in_code, get_misconception, is_catalog_id
+from app.tutoring.progression import requested_difficulty, session_difficulty
+from app.tutoring.turn import (
+    execution_lines,
+    next_progress,
+    question_for_turn,
+    react,
+    surfaced_misconceptions,
+    tutoring_sections,
+)
 
 __all__ = [
     "FALLBACKS",
@@ -106,6 +135,7 @@ __all__ = [
     "execute_code",
     "explain_agent",
     "final_response",
+    "grade_answer",
     "load_learner_profile",
     "plan_teaching",
     "resolve_hint_progress",
@@ -267,10 +297,28 @@ async def load_learner_profile(
             )
         )
 
+    pending: PendingCheck | None = None
+    progress = SessionProgress.empty()
+    try:
+        async with ctx.session.begin_nested():
+            pending, progress = await get_tutoring_state(
+                ctx.session, ctx.user_id, ctx.conversation_id
+            )
+    except Exception as exc:
+        errors.append(
+            NodeError(
+                node="load_learner_profile",
+                error_type=type(exc).__name__,
+                message=_RECENT_CONTEXT_FAILED_MESSAGE,
+            )
+        )
+
     update = {
         "profile": profile,
         "recent_context": recent_context,
         "active_problem": active_problem,
+        "pending_check": pending,
+        "session_progress": progress,
     }
     if errors:
         update["errors"] = errors
@@ -330,8 +378,33 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         structured_input=state.structured_input,
         teaching_mode=state.input.teaching_mode,
     )
+    plan = _apply_scaffold_floor(plan, state)
     plan = clamp_assistance(plan, state.input.assistance_cap)
     return {"plan": plan, "topic_source": analysis.topic_source}
+
+
+def _apply_scaffold_floor(plan: TeachingPlan, state: AgentState) -> TeachingPlan:
+    """Keep the extra help a "don't know" earned on this problem (ADAPTIVE-tutoring G5).
+
+    `session_progress.assistance_floor` holds the level a graded "don't know"
+    raised this problem (or topic) to. A later turn on it starts there instead
+    of dropping back to the planner's default -- never above `partial` (the
+    full solution stays governed by the P4 escalation policy), and never
+    lowering an already-higher plan.
+    """
+    progress = state.session_progress
+    if progress is None or not progress.assistance_floor:
+        return plan
+    key = state.problem_key or plan.topic
+    floor = progress.assistance_floor.get(key) if key is not None else None
+    if floor is None:
+        return plan
+    order = ASSISTANCE_ORDER
+    if order.index(floor) <= order.index(plan.assistance_level):
+        return plan
+    return plan.model_copy(
+        update={"assistance_level": floor, "rationale": [*plan.rationale, "scaffold_floor"]}
+    )
 
 
 def _plan_teaching_fallback(state: AgentState) -> AgentStateUpdate:
@@ -560,9 +633,57 @@ async def retrieve_knowledge(state: AgentState, runtime: Runtime[GraphContext]) 
     return {**update, "retrieved_context": hits}
 
 
+def _code_submission_update(state: AgentState) -> AgentStateUpdate | None:
+    """A reply to the agent's pending CODE request, attached to the active problem.
+
+    P1 never lets bare code inherit the active problem (a wrong statement must
+    not judge unrelated code). Here the agent itself asked for THIS problem's
+    implementation (ADAPTIVE-tutoring G4), so the next code-only message is
+    reviewed against it: the stored statement (whose worked examples become
+    the sandbox suite) plus this turn's code and question.
+    """
+    pending = state.pending_check
+    inp = state.structured_input
+    active = state.active_problem
+    if pending is None or pending.kind != "code_submission" or inp is None or active is None:
+        return None
+    if not inp.code or inp.problem:
+        return None
+    attached = active.problem.model_copy(
+        update={
+            "code": list(inp.code),
+            "question": inp.question,
+            "error": inp.error,
+            "language": inp.language or active.problem.language,
+        }
+    )
+    update: AgentStateUpdate = {
+        "problem_relation": "same",
+        "problem_key": active.key,
+        "structured_input": attached,
+        "submitted_code": True,
+    }
+    if state.intent is None or state.intent.intent not in (
+        Intent.CODE_DEBUG,
+        Intent.CODE_REVIEW,
+        Intent.TEST_CASE_ANALYSIS,
+        Intent.ERROR_EXPLANATION,
+    ):
+        update["intent"] = IntentResult(
+            intent=Intent.CODE_DEBUG,
+            confidence=0.8,
+            source="rule",
+            rationale="code submitted for the agent's pending implementation request",
+        )
+    return update
+
+
 def _problem_update(state: AgentState) -> AgentStateUpdate:
     """This turn's relation to the active problem, its ladder key, and -- for a
     follow-up -- the structured input re-anchored on the active statement."""
+    submission = _code_submission_update(state)
+    if submission is not None:
+        return submission
     relation, key = resolve_problem_relation(
         state.structured_input,
         state.active_problem,
@@ -1303,23 +1424,126 @@ async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> A
     evidence about whether the learner can do it. The rendered problem is
     display data and nothing else -- see `app.agents.practice`'s module
     docstring for how that is preserved.
+
+    ADAPTIVE-tutoring (G5, and the P1 gap the owner found live):
+    - the difficulty honours an explicit ask ("an easy problem", "something
+      harder") and this conversation's graded results
+      (`app.tutoring.progression.session_difficulty`), on top of the
+      skill-based `plan.difficulty`;
+    - a request that names no subject stays on the conversation's last topic;
+    - a family-level ask ("a hard graph problem") draws from the whole family,
+      preferring problems with a curated, sandbox-testable statement;
+    - the chosen problem is recorded on `state.practice`, and
+      `update_learner_model` makes it the conversation's ACTIVE problem, so a
+      follow-up "hint?" is about THIS problem.
     """
     del runtime
     plan = state.plan
+    progress = state.session_progress or SessionProgress.empty()
+    request_text = state.structured_input.question if state.structured_input is not None else None
+    named = names_corpus_subject(request_text)
     topic = plan.topic if plan is not None else None
-    difficulty = plan.difficulty if plan is not None else "medium"
-    chunks = corpus_chunks_by_pattern().get(topic or "", ())
-    problem = select_practice_problem(topic, difficulty, chunks)
-    text = render_practice_problem(problem) if problem is not None else _NO_PRACTICE_TOPIC_TEXT
+    if named:
+        # The request's own words decide ("a hard graph problem" -> graphs);
+        # the planner may not have inferred a topic from a request alone.
+        topic = named_pattern(request_text) or topic
+    elif progress.last_topic is not None:
+        topic = progress.last_topic
+    if topic is None:
+        return {"agent_output": AgentOutcome(text=_NO_PRACTICE_TOPIC_TEXT, topic=None, solved=None)}
+    base = plan.difficulty if plan is not None else "medium"
+    difficulty, reason = session_difficulty(base, progress, requested_difficulty(request_text))
+    practised = frozenset({progress.last_practice.title} if progress.last_practice else set[str]())
+    problem = select_session_problem(
+        topic,
+        difficulty,
+        corpus_chunks_by_pattern(),
+        patterns=family_patterns(topic),
+        preferred_titles=frozenset(p.title for p in curated_problems()),
+        exclude_titles=practised,
+    )
+    if problem is None:
+        return {
+            "agent_output": AgentOutcome(text=_NO_PRACTICE_TOPIC_TEXT, topic=topic, solved=None)
+        }
+    curated = curated_problem(problem.title)
+    statement = (
+        curated.statement if curated is not None else f"Problem: {problem.title}\n\n{problem.url}"
+    )
+    record = PracticeRecord(
+        title=problem.title,
+        topic=problem.topic,
+        difficulty=problem.difficulty,
+        curated=curated is not None,
+        reason=reason,
+        statement=statement,
+    )
+    text = render_practice_problem(problem, curated.statement if curated is not None else None)
     return {
+        "practice": record,
         "agent_output": AgentOutcome(
             text=text,
-            topic=topic,
+            topic=problem.topic,
             solved=None,
             hints_used=0,
             needed_full_solution=False,
             errors=[],
-        )
+        ),
+    }
+
+
+async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
+    """Grade the learner's reply to the agent's pending question (ADAPTIVE-tutoring G1).
+
+    The reply (`structured_input.question`, untrusted) is graded against the
+    pending check (agent-authored, from the bank) by `app.tutoring.grader`:
+    deterministic rules first, then the LLM judge with the reply as delimited
+    data. The grade decides the move (`app.tutoring.turn.react`): advance,
+    narrow, reframe, or -- on "don't know" -- raise assistance one step and,
+    on a problem, hand the next rung to `dsa_agent` (`grade_after`).
+
+    Never judges code and never sets `solved`: a conceptual grade is recorded
+    as `concept_check` evidence by `update_learner_model` (G2).
+    """
+    pending = state.pending_check
+    if pending is None or state.plan is None:
+        return {"agent_output": AgentOutcome(text=_GENERIC_CLARIFY, topic=None, solved=None)}
+    reply = state.structured_input.question if state.structured_input is not None else ""
+    grade = await grade_reply(pending, reply or "", runtime.context.llm)
+    progress = state.session_progress or SessionProgress.empty()
+    reacted = react(
+        pending,
+        grade,
+        mode=state.input.teaching_mode,
+        cap=state.input.assistance_cap,
+        progress=progress,
+        has_active_problem=state.active_problem is not None,
+    )
+    topic = pending.topic or state.plan.topic
+    plan = state.plan.model_copy(
+        update={
+            "topic": topic,
+            "assistance_level": reacted.assistance_after,
+            "rationale": [*state.plan.rationale, f"graded_{grade.grade}"],
+        }
+    )
+    errors = [grade.misconception_id] if is_catalog_id(grade.misconception_id) else []
+    return {
+        "answer_grade": grade,
+        "reaction": reacted.reaction,
+        "grade_feedback": reacted.feedback,
+        "assistance_before": reacted.assistance_before,
+        "grade_handoff": reacted.handoff,
+        "next_pending": reacted.next_pending,
+        "plan": plan,
+        "agent_output": AgentOutcome(
+            text=reacted.feedback or "Thanks -- let's keep going.",
+            topic=topic,
+            solved=None,
+            hints_used=0,
+            needed_full_solution=False,
+            errors=[e for e in errors if e is not None],
+        ),
     }
 
 
@@ -1543,15 +1767,187 @@ async def final_response(state: AgentState, runtime: Runtime[GraphContext]) -> A
     which selects and arranges the prose already produced by the Phase 07
     agent according to this turn's `TeachingPlan` -- it never generates new
     content and never reveals code above the turn's assistance level.
+
+    The tutoring layer (`_with_tutoring`, also LLM-free) then adds this turn's
+    grade feedback, misconception teaching, "Execution" lines and the ONE
+    guiding question it ends with, and decides what is pending next.
     """
     del runtime
+    graded_only = state.answer_grade is not None and not state.grade_handoff
     generated = generate_response(
-        result=state.agent_result,
+        result=None if graded_only else state.agent_result,
         plan=state.plan,
         verification=state.verification,
         fallback_text=state.agent_output.text if state.agent_output is not None else None,
     )
-    return {"response": generated.text, "generated_response": generated}
+    return _with_tutoring(state, generated)
+
+
+def _learner_code(state: AgentState) -> str | None:
+    """This turn's own submitted code (never a stored attempt)."""
+    inp = state.structured_input
+    if inp is None or not inp.code:
+        return None
+    return "\n\n".join(block.content for block in inp.code)
+
+
+def _learner_verdict(state: AgentState) -> Verdict | None:
+    """The sandbox verdict on the learner's OWN code this turn (`initial_verdict`)."""
+    result = state.agent_result
+    initial = getattr(result, "initial_verdict", None)
+    if isinstance(initial, Verdict):
+        return initial
+    correctness = getattr(result, "correctness_verdict", None)
+    return correctness if isinstance(correctness, Verdict) else None
+
+
+def _practice_key(state: AgentState) -> str | None:
+    practice = state.practice
+    if practice is None or not practice.statement:
+        return None
+    return problem_key(StructuredInput(source="text", problem=practice.statement))
+
+
+def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStateUpdate:
+    """Add the tutoring sections to `generated` and decide the next pending check."""
+    plan = state.plan
+    route = state.route
+    progress = state.session_progress or SessionProgress.empty()
+    grade = state.answer_grade
+    pending = state.pending_check
+    learner_code = _learner_code(state)
+    reviewed_code = route in ("debug", "explain") and learner_code is not None
+
+    found: list[str] = []
+    if grade is not None and is_catalog_id(grade.misconception_id) and grade.misconception_id:
+        found.append(grade.misconception_id)
+    if learner_code is not None:
+        topic_hint = plan.topic if plan is not None else None
+        found += [m for m in detect_in_code(learner_code, topic_hint) if m not in found]
+
+    topic = (plan.topic if plan is not None else None) or (pending.topic if pending else None)
+    if state.practice is not None:
+        topic = state.practice.topic
+    problem_key_now = _practice_key(state) or state.problem_key
+    assistance = plan.assistance_level if plan is not None else "hint"
+
+    if grade is not None:
+        question = state.next_pending
+    else:
+        inp = state.structured_input
+        problem_text = None
+        if inp is not None:
+            problem_text = "\n".join(part for part in (inp.problem, inp.question) if part)
+        question = question_for_turn(
+            route=route,
+            progress=progress,
+            problem_key=problem_key_now,
+            problem_text=problem_text,
+            topic=topic,
+            assistance=assistance,
+            reveals_code=generated.reveals_code,
+            misconceptions=found,
+            practice=state.practice,
+            first_turn_on_problem=state.problem_relation == "new",
+        )
+    carried: PendingCheck | None = None
+    if (
+        question is None
+        and grade is None
+        and pending is not None
+        and pending.kind == "code_submission"
+        and not state.submitted_code
+        and state.problem_relation != "new"
+        and route not in ("practice", "grade")
+    ):
+        carried = pending  # still waiting for the code; not re-asked
+
+    surfaced: list[str] = []
+    if plan is not None and (
+        route == "practice" or (route == "dsa" and state.problem_relation == "new")
+    ):
+        surfaced = surfaced_misconceptions(plan.watch_errors, topic, found)
+
+    learner_verdict = _learner_verdict(state) if reviewed_code else None
+    exec_lines = execution_lines(
+        learner=learner_verdict,
+        final=state.verification,
+        learner_submitted=reviewed_code,
+        reveals_code=generated.reveals_code,
+    )
+    extra = tutoring_sections(
+        grade=grade,
+        feedback=state.grade_feedback or "",
+        misconceptions=found,
+        surfaced=surfaced,
+        execution_lines=exec_lines,
+        question=question,
+    )
+
+    base: list[ResponseSection] = list(generated.sections)
+    if not base and grade is None and (extra.before or extra.after):
+        kind: ResponseSectionKind = "practice_problem" if route == "practice" else "explanation"
+        base = [ResponseSection(kind=kind, title=SECTION_TITLES[kind], body=generated.text)]
+    after = list(extra.after)
+    verification_index = next((i for i, s in enumerate(base) if s.kind == "verification"), None)
+    if verification_index is not None and exec_lines:
+        section = base[verification_index]
+        base[verification_index] = section.model_copy(
+            update={"body": "\n\n".join([*exec_lines, section.body])}
+        )
+        after = [s for s in after if s.kind != "execution"]
+    sections = [*extra.before, *base, *after]
+    if sections and (extra.before or extra.after):
+        text = "\n\n".join(f"## {s.title}\n\n{s.body}" for s in sections)
+        generated = generated.model_copy(update={"sections": sections, "text": text})
+
+    floor_key: str | None = None
+    if state.reaction == "scaffold" and pending is not None:
+        floor_key = pending.problem_key or pending.topic
+    view = TutoringView(
+        grade=grade,
+        reaction=state.reaction,
+        pending=(
+            PendingView(
+                kind=question.kind,
+                question_id=question.question_id,
+                question=question.question,
+                options=[o.label for o in question.options],
+            )
+            if question is not None
+            else None
+        ),
+        misconceptions=found,
+        surfaced_misconceptions=surfaced,
+        assistance_before=state.assistance_before
+        or (pending.assistance_at_ask if pending else None),
+        assistance_after=assistance,
+        practice=state.practice,
+        submission_reviewed=state.submitted_code
+        and route == "debug"
+        and learner_verdict is not None,
+        execution=ExecutionView(learner=learner_verdict, final=state.verification)
+        if exec_lines
+        else None,
+    )
+    progress_after = next_progress(
+        progress,
+        topic=topic,
+        grade=grade,
+        graded=pending if grade is not None else None,
+        asked=question,
+        practice=state.practice,
+        misconceptions=found,
+        floor_key=floor_key,
+        floor=assistance if floor_key is not None else None,
+    )
+    return {
+        "response": generated.text,
+        "generated_response": generated,
+        "tutoring": view,
+        "next_pending": question or carried,
+        "next_progress": progress_after,
+    }
 
 
 def _final_response_fallback(state: AgentState) -> AgentStateUpdate:
@@ -1581,6 +1977,22 @@ def _trusted_labels(retrieved_context: Sequence[RetrievalHit]) -> frozenset[str]
         for label in (hit.chunk.pattern, hit.chunk.topic)
         if label
     )
+
+
+def _misconception_topic(state: AgentState) -> str | None:
+    """The corpus pattern of a catalog misconception found this turn, if any.
+
+    A debug turn on unnamed code ("I'm getting a KeyError") often has no
+    plan topic, but a detected misconception names its pattern from the
+    closed catalog -- a trusted key -- so the misconception is still counted.
+    """
+    if state.tutoring is None:
+        return None
+    for misconception_id in state.tutoring.misconceptions:
+        item = get_misconception(misconception_id)
+        if item is not None:
+            return item.pattern
+    return None
 
 
 def _event_topic(plan: TeachingPlan | None) -> str | None:
@@ -1645,6 +2057,22 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
         else None
     )
 
+    # Misconceptions this turn found (catalog ids only -- `tutoring` is built
+    # from the closed catalog) are counted in `common_errors` (G3).
+    errors = list(agent_output.errors)
+    if state.tutoring is not None:
+        errors += [m for m in state.tutoring.misconceptions if is_catalog_id(m) and m not in errors]
+    # A graded conceptual answer is `concept_check` evidence (G2): weighted by
+    # CONCEPT_ALPHA in `apply_event`, and it never sets `solved` -- code
+    # correctness only ever comes from a sandbox verdict.
+    grade = state.answer_grade
+    concept_grade = grade.grade if grade is not None else None
+    if concept_grade is not None:
+        solved = None
+    evidence_source = state.suite_source if solved is not None else "none"
+    if concept_grade is not None:
+        evidence_source = "concept_check"
+
     return LearningEventCreate(
         conversation_id=ctx.conversation_id,
         intent=intent_result.intent,
@@ -1655,11 +2083,12 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
         requested_help=requested_help_for(intent_result.intent),
         hints_used=agent_output.hints_used,
         needed_full_solution=agent_output.needed_full_solution,
-        errors=agent_output.errors,
+        errors=errors,
         solved=solved,
         # Provenance of the OUTCOME: when the gate above dropped it, the
         # event is exposure only and its source is honestly "none".
-        evidence_source=state.suite_source if solved is not None else "none",
+        evidence_source=evidence_source,
+        concept_grade=concept_grade,
     )
 
 
@@ -1732,6 +2161,26 @@ async def _persist_turns(state: AgentState, ctx: GraphContext) -> NodeError | No
 _SAVE_ACTIVE_PROBLEM_FAILED_MESSAGE: Final = "failed to remember this conversation's problem"
 
 
+def _named_curated_problem(state: AgentState) -> ActiveProblem | None:
+    """A DSA turn that only NAMES a curated problem ("help me solve Two Sum")
+    and carries no statement of its own: its curated statement becomes the
+    active problem (ADAPTIVE-tutoring G4), so later replies, hints and the
+    learner's code are about it. Only when nothing is active yet, or a
+    different problem was."""
+    if state.route != "dsa" or state.problem_relation in ("new", "same", "followup"):
+        return None
+    inp = state.structured_input
+    text = "\n".join(part for part in (inp.problem, inp.question) if part) if inp else None
+    curated = curated_problem_for_text(text)
+    if curated is None:
+        return None
+    problem = StructuredInput(source="text", problem=curated.statement)
+    key = problem_key(problem)
+    if key is None or (state.active_problem is not None and state.active_problem.key == key):
+        return None
+    return ActiveProblem(problem=problem, key=key, topic=curated.topic)
+
+
 def active_problem_update(state: AgentState) -> ActiveProblem | None:
     """The active problem to store after this turn, or `None` to leave it as is.
 
@@ -1742,6 +2191,18 @@ def active_problem_update(state: AgentState) -> ActiveProblem | None:
       client `topic` hint, which describes the request, not the problem.
     - Anything else (no problem in play) leaves the stored one untouched.
     """
+    if state.route == "practice" and state.practice is not None and state.practice.statement:
+        # An agent-chosen practice problem becomes the active problem, so the
+        # learner's follow-ups ("hint?", their code) are about IT (tutoring Q1).
+        practice_input = StructuredInput(source="text", problem=state.practice.statement)
+        practice_key = problem_key(practice_input)
+        if practice_key is not None:
+            return ActiveProblem(
+                problem=practice_input, key=practice_key, topic=state.practice.topic
+            )
+    named = _named_curated_problem(state)
+    if named is not None:
+        return named
     plan_topic = state.plan.topic if state.plan is not None else None
     trusted_topic = (
         plan_topic if state.topic_source in ("title", "retrieval", "profile_match") else None
@@ -1759,6 +2220,29 @@ def active_problem_update(state: AgentState) -> ActiveProblem | None:
         and trusted_topic is not None
     ):
         return active.model_copy(update={"topic": trusted_topic})
+    return None
+
+
+_SAVE_TUTORING_FAILED_MESSAGE: Final = "failed to remember this conversation's pending question"
+
+
+async def _persist_tutoring_state(state: AgentState, ctx: GraphContext) -> NodeError | None:
+    """Store the pending check this turn ends with (NULL clears it) and the
+    session progress (ADAPTIVE-tutoring), in a savepoint."""
+    if ctx.session is None or ctx.user_id is None or ctx.conversation_id is None:
+        return None
+    progress = state.next_progress or state.session_progress or SessionProgress.empty()
+    try:
+        async with ctx.session.begin_nested():
+            await set_tutoring_state(
+                ctx.session, ctx.user_id, ctx.conversation_id, state.next_pending, progress
+            )
+    except Exception as exc:
+        return NodeError(
+            node="update_learner_model",
+            error_type=type(exc).__name__,
+            message=_SAVE_TUTORING_FAILED_MESSAGE,
+        )
     return None
 
 
@@ -1840,7 +2324,7 @@ async def update_learner_model(
     ):
         event: LearningEventCreate | None = None
         try:
-            topic = _event_topic(state.plan)
+            topic = _event_topic(state.plan) or _misconception_topic(state)
             if topic is not None:
                 event = _build_learning_event(state, ctx, topic)
         except Exception as exc:
@@ -1871,6 +2355,9 @@ async def update_learner_model(
         active_error = await _persist_active_problem(state, ctx)
         if active_error is not None:
             errors.append(active_error)
+        tutoring_error = await _persist_tutoring_state(state, ctx)
+        if tutoring_error is not None:
+            errors.append(tutoring_error)
 
     update: AgentStateUpdate = {}
     if events:
@@ -1938,6 +2425,7 @@ FALLBACKS: Final[MappingProxyType[str, Callable[[AgentState], AgentStateUpdate]]
             "debug_agent": _agent_outcome_fallback,
             "explain_agent": _agent_outcome_fallback,
             "practice_agent": _agent_outcome_fallback,
+            "grade_answer": _agent_outcome_fallback,
             "execute_code": _execute_code_fallback,
             "verify": _verify_execution_fallback,
             "clarify": _agent_outcome_fallback,

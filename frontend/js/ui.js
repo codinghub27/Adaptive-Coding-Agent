@@ -363,7 +363,7 @@ function hintMarkup(hint, messageId, topic) {
 
 function questionMarkup(question) {
   if (!question) return "";
-  return `<div class="question-card"><span>${icon("help")}Quick clarification</span><strong>${escapeHtml(question.prompt)}</strong><div class="question-options">${question.options.map((option) => `<button>${escapeHtml(option)}</button>`).join("")}</div></div>`;
+  return `<div class="question-card"><span>${icon("help")}Your turn</span><strong>${escapeHtml(question.prompt)}</strong><div class="question-options">${question.options.map((option) => `<button>${escapeHtml(option)}</button>`).join("")}</div></div>`;
 }
 
 function actionsMarkup() {
@@ -576,15 +576,18 @@ export function renderPreferenceCards(grid, profile) {
 
 /**
  * The learning streak: consecutive days, ending today or yesterday, on which
- * at least one conversation saw activity. Derived from the conversation list
- * the sidebar already holds — nothing here is invented.
+ * the learner sent at least one message (`GET /profile/activity`, every
+ * message, not just each conversation's latest one -- that showed a learner
+ * working in one conversation every day a streak of 1). Nothing is invented.
  */
-export function renderStreak(conversations = []) {
+export function renderStreak(timestamps = []) {
   const host = document.querySelector(".usage");
   if (!host) return;
 
+  // Each timestamp is an activity time from the server; it is bucketed into
+  // the viewer's LOCAL day here, so "today" means the learner's today.
   const dayKey = (date) => new Date(date).toDateString();
-  const active = new Set(conversations.map((item) => dayKey(item.updatedAt)));
+  const active = new Set(timestamps.filter(Boolean).map((value) => dayKey(value)));
 
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
@@ -603,11 +606,16 @@ export function renderStreak(conversations = []) {
 
   // Seven bars, oldest on the left, lit on the days that saw activity.
   const bars = host.querySelectorAll(".mini-bars i");
+  let activeThisWeek = 0;
   bars.forEach((bar, index) => {
     const day = new Date(startOfToday);
     day.setDate(day.getDate() - (bars.length - 1 - index));
-    bar.classList.toggle("off", !active.has(dayKey(day)));
+    const on = active.has(dayKey(day));
+    if (on) activeThisWeek += 1;
+    bar.classList.toggle("off", !on);
+    bar.title = `${day.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}: ${on ? "active" : "no activity"}`;
   });
+  host.title = `${streak === 1 ? "1 day" : `${streak} days`} in a row with at least one message · active ${activeThisWeek} of the last ${bars.length} days`;
 }
 
 function growthItems(profile) {

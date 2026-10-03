@@ -59,6 +59,13 @@ ResponseSectionKind = Literal[
     # shared
     "next_steps",
     "citations",
+    # tutoring loop (ADAPTIVE-tutoring)
+    "practice_problem",
+    "answer_feedback",
+    "misconception",
+    "watch_out",
+    "execution",
+    "check_question",
 ]
 
 CODE_SECTION_KINDS: frozenset[ResponseSectionKind] = frozenset({"code", "patch"})

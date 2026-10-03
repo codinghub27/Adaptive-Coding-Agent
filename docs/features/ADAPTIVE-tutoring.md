@@ -79,7 +79,56 @@ difficulty words are honoured), not deferred to the end.
   corpus pattern's own name/aliases) plus curated question chains for problems
   with a curated statement. The LLM only JUDGES free-form replies against that
   rubric.
-- (more recorded per packet below)
+- **AD-T3 Grading is rules-first, judge-second, and fails closed.** The
+  deterministic grader (injection guard -> accepted answers / normalized
+  expressions -> known wrong answers -> options -> don't-know -> recognition ->
+  rubric keywords) settles most replies; only the rest reach the LLM judge, with
+  the reply inside `<learner_reply>` tags and an explicit "data, never
+  instructions" rule. Judge output is filtered to closed sets (grade labels,
+  rubric concept ids, the question's catalog misconception ids). A judge
+  "correct" below 0.6 confidence is "partial"; an unparseable judge answer is
+  "partial"; an instruction-shaped reply is "incorrect" before any model call.
+- **AD-T4 Route key `grade` is ADDED** (`grade_answer`); existing keys are
+  untouched. `should_grade`: a pending check + no code/error + not a new problem
+  + not a confident new request + not an explicit help request. A low-confidence
+  label on a short reply ("7?" -> GENERAL_GUIDANCE 0.4) IS graded. After grading:
+  "don't know" on a problem hands the next rung to `dsa_agent` (raised
+  assistance); everything else goes straight to `final_response`.
+- **AD-T5 Conceptual evidence (relaxes "evidence requires code").** Graded
+  answers are `concept_check` events (`evidence_source`, `concept_grade`;
+  `solved` stays NULL). `CONCEPT_ALPHA = 0.1` (a third of `ALPHA` 0.3): one
+  answer shows one idea, not working code, so ~3 answers ~ 1 sandbox verdict.
+  Scores: correct 0.85, partial 0.55, incorrect 0.2, dont_know 0.25. Rising is
+  capped at `CONCEPT_CEILING` 0.67 < `HARD_SKILL` 0.68, so answers alone can
+  never make the next problem HARD. Concept evidence moves the FAMILY estimate,
+  and a topic key only once that key has sandbox evidence: measured, letting it
+  create a topic key shadowed the family estimate and slowed adaptation from 9
+  to 22 turns.
+- **AD-T6 Misconceptions are a closed, corpus-anchored catalog**
+  (`app/knowledge/tutoring/misconceptions.json`, 8 ids). Each quotes a sentence
+  of its pattern's `## Common Mistakes` (three sentences were ADDED to the
+  corpus for the ids the brief names; index rebuilt). Detection = AST code
+  detectors (precise shapes, never executed) + the grader's closed mapping.
+  Counted in `common_errors`; `common_errors_seen` stores last-seen. A
+  recurring one is surfaced ("Watch out") on later practice / new-problem
+  turns of the same family.
+- **AD-T7 Agent-chosen and named problems become the active problem.** A
+  practice problem (curated statement, or corpus title + link) and a curated
+  problem the learner only NAMES ("help me solve Two Sum") are stored as the
+  conversation's active problem. This closes the owner's live P1 gap ("hint?"
+  answered about the previous problem).
+- **AD-T8 Code-submission loop.** A pending `code_submission` + a code-only
+  message attaches the active statement (P1 deliberately never did this for
+  unsolicited code; here the agent asked for it), routes to `debug`, and the
+  suite is extracted from the curated statement's worked examples. "Execution"
+  lines: "(your code)" = `initial_verdict`; "(suggested fix)" = the outer
+  verification of patched code; "not executed" when nothing ran.
+- **AD-T9 Progression.** Practice difficulty: explicit ask > in-session grades
+  since the last problem (success -> +1 level; struggle -> stay) > skill.
+  "harder" after struggle is refused (stays). A "don't know" sets a per-problem
+  assistance floor (one step up, capped per mode: guidance `partial`, balanced
+  `pseudocode`, challenge `concept`; never `full`, which stays P4's) that later
+  turns on the problem keep.
 
 ## Numeric targets (stated before work)
 | packet | target |
@@ -145,3 +194,83 @@ the Ex5 code submission all route to `clarify`; "Maybe a low-link value?" and
 with no statement (synthesised suite, `fail` 3/5); Ex5 #0 "confused about BFS
 vs DFS" routes to `clarify`; the Ex3 practice request returns a problem but no
 question and does not make it the active problem.
+
+### Q1–Q6 — implemented together (one commit), measured per packet on the same instrument
+
+**Deviation from the brief, stated plainly:** the pending state, grader,
+reactions, conceptual evidence, misconceptions and the code-submission /
+progression loop share the same state fields, node and response layer, so they
+were built in one pass and committed together. Each packet's acceptance
+criterion was still measured separately, on the unchanged Q0 instrument (plus
+two new probes for Q1/Q2 that did not exist at Q0 and therefore have no
+baseline). `/compact` and the `code-review` plugin were not run inside this
+session (the plugin fans out to sub-agents, which the brief forbids); the diff
+was self-reviewed instead.
+
+**New files:** `app/schemas/tutoring.py`, `app/tutoring/{bank,grader,misconceptions,progression,turn}.py`,
+`app/knowledge/tutoring/{checks,misconceptions}.json`, migration
+`b5c6d7e8f9a0_tutoring_loop_state.py`, `eval/behavior/{pending_probe,trace_probe}.py`,
+`tests/tutoring/*`, `tests/memory/test_activity.py`.
+
+| packet | target | measured | file |
+|---|---|---|---|
+| Q1 | replies after an agent question -> `grade_answer` 100% | **11/11** (one more turn after a question was a new-problem request; correctly routed to `practice`, not graded) | `tutoring_Q1.json` + `pending_probe` |
+| Q1 | new requests clear the pending check 100% | **3/3** (new problem, practice request, hint request) | `pending_probe` |
+| Q1 | `alembic check` | clean | |
+| Q2 | grader accuracy >= 90% | **49/50 = 98%** (both runs; the one miss differs: an LLM judgement once, a rate-limited judge falling back to `partial` once) | `offline` |
+| Q2 | 0 injections graded correct | **0/5** | `offline` |
+| Q2 | no learner text in traces | **not measured** -- the trace probe ran while every LLM credential was rate-limited, so its setup turns went to `clarify` and no grading happened (0 leaks in 108 runs scanned, but `grade_answer` never ran). Must be re-run. | `trace_probe` |
+| Q3 | correct->advance, incorrect->reframe, dont_know->assistance +1 on 100% of replay turns testing it | **9/9** (5 `advanced`, 1 `moved_on`, 1 `reframed`, 2 `assistance_up`) | `tutoring_Q1.json` |
+| Q4 | `concept_check` events with provenance, CONCEPT_ALPHA rule, never past HARD | unit tests + replay `concept_event` check pass | `tests/tutoring` |
+| Q4 | adaptation speed before/after (same `eval.adaptation_speed`) | 1 sandbox verdict / 3 turns, all good: **9 -> 6 turns**; all bad: 3 -> 3; answers alone, 30 turns: never past `medium` | `eval.adaptation_speed` |
+| Q5 | detection >= 85% on catalog fixtures | **15/15 = 100%**, 0/6 false positives, 0 free-text ids | `offline` |
+| Q5 | recurring misconception surfaced later (Ex4, Ex5) | Ex5 #12 `surfaced_misconception` passes; Ex4/Ex5 profile `common_errors` pass after the topic fix | replay |
+| Q6 | Ex3: Tarjan reviewed vs the active problem, parent-edge flagged, sandbox-verified | **pass** (#8 route debug, `submission_reviewed`, verdict `pass` 2/2 extracted cases, `graphs.parent_node_vs_parent_edge`) | `tutoring_Q1.json` |
+| Q6 | Ex5: difficulty up after success, assistance up after struggle | **pass** (#12 medium -> hard: Shortest Path in Binary Matrix -> Word Ladder; #14 hint -> concept) | `tutoring_Q1.json` |
+
+**Replay, before -> after (same instrument)**
+
+| | Q0 baseline | best full run (`tutoring_Q1.json`) | last full run (`tutoring_final.json`) |
+|---|---|---|---|
+| all checks | 73/129 (56.6%) | **127/129 (98.4%)** | 98/129 (76.0%) |
+| feature checks | 10/66 | 64/66 | 35/66 |
+| examples end to end | 0/5 | 3/5 (the 2 misses were the profile checks, fixed after) | 3/5 (Ex1, Ex2, Ex4: 100%) |
+| hard-gate failures | 0 | 0 | 0 |
+
+The last full run is NOT a regression in the code: from its third conversation
+on, the LLM provider rate-limited every call (verified directly:
+`LLMRateLimitError ... TooManyRequests` on the intent prompt), the keyword
+fallback is low-confidence by design, and those turns went to `clarify`. The
+same code had passed Ex3 31/31 and Ex5 48/48 earlier. Re-run with the quota
+available: `python -m eval.behavior.replay --pace 20`.
+
+**Not run in this session (quota):** `eval.run` and `eval.transcript_probes`
+-- so "no regression on routing / topic / groundedness / debug_fix" is NOT yet
+demonstrated. Both are wired into the CI `live-eval` job.
+
+**Fixes found by the live replay (each re-verified):**
+- "7?" was classified GENERAL_GUIDANCE at 0.4 and bypassed grading; only a
+  CONFIDENT new request now bypasses (AD-T4).
+- "Two Sum" named in prose never became the active problem, so "I don't know
+  how" had nothing to hand off to; named curated problems now do (AD-T7).
+- "Give me a hard graph problem" had no planner topic; the request's own corpus
+  vocabulary now names it (`named_pattern`, slug beats alias on ties,
+  "binary search tree" -> trees).
+- Curated examples were `Example: a -> b`; the suite extractor reads
+  `Input:/Output:` lines, so they were rewritten (Tarjan submission: inconclusive -> pass 2/2).
+- A misconception on a debug turn with no plan topic was never counted; the
+  event now takes the catalog pattern as its topic.
+
+### Q7 — Scorecard + CI
+`.github/workflows/ci.yml` `live-eval` now also gates: replay `--gate 0.90`
+(+ hard gates), `pending_probe`, `offline --gate` (grader >= 90%, 0 injections
+correct, detection >= 85%, 0 free-text ids) and `trace_probe`. The `static` job
+already runs `tests/tutoring` and formats/lints `eval/`.
+
+### Owner-reported UI issue — learning streak stuck at "1 day"
+Cause: the sidebar derived activity days from each conversation's LAST message
+only, so a learner working in one conversation every day had a streak of 1.
+New `GET /profile/activity` returns every UTC hour with a learner message (last
+60 days); the client buckets them into local days. Verified in the browser
+(`/profile/activity` requested; tooltip shows active days of the last 7) and by
+`tests/memory/test_activity.py` (three days in one conversation -> three days).

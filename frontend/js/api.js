@@ -291,6 +291,12 @@ export const api = {
     return request("/profile", { fallbackError: "Unable to load your learning profile" });
   },
 
+  /** UTC hours with learner activity (server-side, from every message sent). */
+  async getActivity() {
+    const body = await request("/profile/activity", { fallbackError: "Unable to load your activity" });
+    return body?.active_hours || [];
+  },
+
   /** Merge declared learning preferences; returns the full updated profile. */
   async setPreferences(preferences) {
     return request("/profile/preferences", {

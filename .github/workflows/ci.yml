@@ -109,8 +109,20 @@ jobs:
           uvicorn app.main:app --host 127.0.0.1 --port 8000 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8000/health && break; sleep 3; done
           python -m eval.transcript_probes --langsmith --gate --out eval/results/ci.json
+      # ADAPTIVE-tutoring Q7: the tutoring instrument as failing gates.
+      - name: tutoring replay (5 reference conversations; >=90% checks + hard gates)
+        run: python -m eval.behavior.replay --pace 10 --gate 0.90 --out eval/results/ci-tutoring.json
+      - name: pending state (replies graded 100%, new requests clear 100%)
+        run: python -m eval.behavior.pending_probe --replay eval/results/ci-tutoring.json
+      - name: grader >=90%, 0 injections correct, misconception detection >=85%, closed ids
+        run: python -m eval.behavior.offline --gate --out eval/results/ci-offline.json
+      - name: no learner text in LangSmith traces (grade_answer included)
+        run: python -m eval.behavior.trace_probe
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: transcript-probes
-          path: eval/results/ci.json
+          path: |
+            eval/results/ci.json
+            eval/results/ci-tutoring.json
+            eval/results/ci-offline.json

@@ -1,0 +1,702 @@
+{
+  "_doc": "Curated guiding-question bank (ADAPTIVE-tutoring AD-T2). Agent-authored text only: questions, rubrics and accepted answers are written here, anchored to a corpus section by `rubric_ref`, and never derived from learner text. `recognition.<pattern>` questions are generated for every corpus pattern by app/tutoring/bank.py from the corpus front matter; the entries below are the curated chains.",
+  "questions": {
+    "hashing.two_sum.complement": {
+      "topic": "hashing",
+      "rubric_ref": "corpus:hashing#key_insight",
+      "question": "Start with the first number, 2. Which number would you need to pair with it so the two add up to the target 9?",
+      "accepted_answers": [
+        "7",
+        "9-2",
+        "9 - 2",
+        "target-2",
+        "target - 2",
+        "target minus 2"
+      ],
+      "expected_concepts": [
+        {
+          "id": "complement",
+          "keywords": [
+            "7",
+            "seven",
+            "target - num",
+            "9 - 2",
+            "complement"
+          ],
+          "follow_up": "The pair has to add up to 9. If one number is 2, what must the other one be?"
+        }
+      ],
+      "wrong_answers": {},
+      "next": "hashing.two_sum.lookup",
+      "on_correct": "Exactly. For every number, the partner you need is `target - num` -- its *complement*.",
+      "on_incorrect": "Not quite: the pair must add up to the target. With 2 and a target of 9, the other number is 9 - 2.",
+      "scaffold": "The two numbers must add up to 9. You already have 2, so the missing amount is 9 minus 2."
+    },
+    "hashing.two_sum.lookup": {
+      "topic": "hashing",
+      "rubric_ref": "corpus:hashing#key_insight",
+      "question": "As you walk the array, how could you check in O(1) whether you've already seen the complement (say, 7)? Which Python data structure gives that fast lookup?",
+      "accepted_answers": [
+        "dict",
+        "dictionary",
+        "a dictionary",
+        "a dict",
+        "hash map",
+        "hashmap",
+        "a hash map",
+        "set",
+        "a set",
+        "hash set",
+        "hash table"
+      ],
+      "expected_concepts": [
+        {
+          "id": "hash_lookup",
+          "keywords": [
+            "dict",
+            "dictionary",
+            "hash map",
+            "hashmap",
+            "hash table",
+            "set",
+            "hash set",
+            "map"
+          ],
+          "follow_up": "Which built-in Python structure answers `x in ...` without scanning every element?"
+        }
+      ],
+      "wrong_answers": {
+        "list": "hashing.list_scan_lookup",
+        "array": "hashing.list_scan_lookup",
+        "sort": "",
+        "nested loop": "",
+        "two loops": ""
+      },
+      "misconception_ids": [
+        "hashing.list_scan_lookup"
+      ],
+      "then": "code_submission",
+      "then_question": "Try writing it yourself: loop with `enumerate`, compute the complement, check the dictionary, then store the current number. Send me your implementation and I'll run it in the sandbox.",
+      "on_correct": "Yes. Store each number you've seen with its index -- `{2: 0}` after the first step -- and at 7 the complement 2 is already there, giving [0, 1].",
+      "on_incorrect": "That would work, but it costs O(n) per check. We want a structure that answers \"have I seen this value?\" in O(1).",
+      "scaffold": "Python has a built-in structure that maps keys to values and checks `key in it` without scanning: you write it with curly braces."
+    },
+    "hashing.checked_vs_accessed": {
+      "topic": "hashing",
+      "rubric_ref": "corpus:hashing#common_mistakes",
+      "question": "On the line after `if complement in seen:`, which key are you allowed to read from `seen`, and why?",
+      "accepted_answers": [
+        "complement",
+        "seen[complement]",
+        "the complement"
+      ],
+      "expected_concepts": [
+        {
+          "id": "same_key",
+          "keywords": [
+            "complement",
+            "same key",
+            "the key i checked",
+            "key you checked",
+            "checked"
+          ],
+          "follow_up": "Which key does `if complement in seen` actually prove is present?"
+        }
+      ],
+      "wrong_answers": {
+        "num": "hashing.checked_key_vs_accessed_key",
+        "seen[num]": "hashing.checked_key_vs_accessed_key",
+        "i": ""
+      },
+      "misconception_ids": [
+        "hashing.checked_key_vs_accessed_key"
+      ],
+      "on_correct": "Exactly: the membership test proves `complement` is a key, so `seen[complement]` is safe. `num` was never checked -- that read is the KeyError.",
+      "on_incorrect": "The `in` test only proves that `complement` is present. Reading any other key is a guess.",
+      "scaffold": "Look at the two lines side by side: the `if` asks about one key, and the `return` reads a key. Are they the same key?"
+    },
+    "dfs.bridges.approach": {
+      "topic": "dfs",
+      "rubric_ref": "corpus:dfs#key_insight",
+      "question": "Before writing code: which traversal would you use, and what would you record about each node the moment you first reach it?",
+      "accepted_answers": [],
+      "expected_concepts": [
+        {
+          "id": "dfs",
+          "keywords": [
+            "dfs",
+            "depth first",
+            "depth-first"
+          ],
+          "follow_up": "Which traversal builds a tree of edges where every other edge must point back to an ancestor?"
+        },
+        {
+          "id": "discovery_time",
+          "keywords": [
+            "first visited",
+            "visit time",
+            "visited time",
+            "discovery",
+            "discover",
+            "timestamp",
+            "entry time",
+            "order",
+            "when each node",
+            "time"
+          ],
+          "follow_up": "What number would you stamp on each node the moment DFS first reaches it?"
+        }
+      ],
+      "wrong_answers": {
+        "remove each edge": "",
+        "brute force": "",
+        "bfs": ""
+      },
+      "next": "dfs.bridges.low_link",
+      "on_correct": "Good direction: a DFS gives every node a discovery time, and a bridge is a tree edge that nothing below it can bypass.",
+      "on_incorrect": "Removing each edge and re-checking connectivity is O(E * (V + E)). One DFS can find every bridge in O(V + E).",
+      "scaffold": "Think about one DFS from any node: it splits edges into tree edges and back edges. Stamp each node with the time you first reach it."
+    },
+    "dfs.bridges.low_link": {
+      "topic": "dfs",
+      "rubric_ref": "corpus:dfs#key_insight",
+      "question": "You're at node u and look at a DFS child v. What single value, computed for v's subtree, would tell you whether that subtree can reach u or an ancestor of u without using the edge u-v?",
+      "accepted_answers": [
+        "low link",
+        "low-link",
+        "lowlink",
+        "low value",
+        "low[v]"
+      ],
+      "expected_concepts": [
+        {
+          "id": "low_link",
+          "keywords": [
+            "low link",
+            "low-link",
+            "lowlink",
+            "low value",
+            "low[",
+            "lowest",
+            "earliest",
+            "smallest discovery",
+            "minimum discovery",
+            "back edge",
+            "back-edge"
+          ],
+          "follow_up": "Over all back edges leaving v's subtree, which discovery time would you keep?"
+        }
+      ],
+      "wrong_answers": {},
+      "next": "dfs.bridges.condition",
+      "on_correct": "Yes. Define `disc[u]` (when u was discovered) and `low[u]` (the earliest discovery time reachable from u's subtree using tree edges plus at most one back edge).",
+      "on_incorrect": "Being visited earlier isn't enough -- what matters is how high up the tree v's subtree can climb through a back edge.",
+      "scaffold": "For each node keep the smallest discovery time it can reach through its subtree plus one back edge. People call it the low-link value."
+    },
+    "dfs.bridges.condition": {
+      "topic": "dfs",
+      "rubric_ref": "corpus:dfs#key_insight",
+      "question": "Using `disc[]` and `low[]`, when exactly is the tree edge (u, v) a bridge? Write the condition.",
+      "accepted_answers": [
+        "low[v] > disc[u]",
+        "low[v]>disc[u]",
+        "disc[u] < low[v]",
+        "disc[u]<low[v]"
+      ],
+      "expected_concepts": [
+        {
+          "id": "strict_greater",
+          "keywords": [
+            "greater than",
+            "strictly greater",
+            "more than",
+            "larger than",
+            "bigger than"
+          ],
+          "follow_up": "Is the bridge condition strict (>) or non-strict (>=)?"
+        }
+      ],
+      "wrong_answers": {
+        "low[v] >= disc[u]": "",
+        "low[v]>=disc[u]": "",
+        "disc[u] <= low[v]": "",
+        "low[v] < disc[u]": "",
+        "low[v] == disc[u]": ""
+      },
+      "then": "code_submission",
+      "then_question": "Correct. Now implement Tarjan's bridge-finding algorithm and send me your implementation -- I'll review it against the problem and run it in the sandbox.",
+      "on_correct": "Correct: if v's subtree cannot reach u or anything above it, removing u-v disconnects it.",
+      "on_incorrect": "Close, but `>=` is the articulation-point test. For an edge to be a bridge, v's subtree must not even reach u itself.",
+      "scaffold": "If the earliest node v's subtree can reach was discovered AFTER u, nothing below v can get back to u without the edge u-v."
+    },
+    "dfs.bridges.parallel_edges": {
+      "topic": "dfs",
+      "rubric_ref": "corpus:dfs#common_mistakes",
+      "question": "If there are two separate cables between u and its parent p, should the second cable count as a back edge? So what exactly should your DFS skip -- the parent node, or something else?",
+      "accepted_answers": [
+        "the parent edge",
+        "the edge",
+        "edge index",
+        "the edge i came from",
+        "skip the edge"
+      ],
+      "expected_concepts": [
+        {
+          "id": "skip_edge",
+          "keywords": [
+            "edge",
+            "edge index",
+            "edge id",
+            "index of the edge",
+            "the cable"
+          ],
+          "follow_up": "How would you tell the edge you arrived by apart from another edge to the same parent?"
+        }
+      ],
+      "wrong_answers": {
+        "the parent node": "graphs.parent_node_vs_parent_edge",
+        "parent node": "graphs.parent_node_vs_parent_edge",
+        "the parent": "graphs.parent_node_vs_parent_edge"
+      },
+      "misconception_ids": [
+        "graphs.parent_node_vs_parent_edge"
+      ],
+      "on_correct": "Right: skip only the edge you arrived by (pass its index down), so a parallel edge still counts as a back edge.",
+      "on_incorrect": "Skipping the parent node also throws away a legitimate second edge to it.",
+      "scaffold": "Number your edges as you build the adjacency list and pass the index of the edge you came in on."
+    },
+    "trees.max_path.return_value": {
+      "topic": "trees",
+      "rubric_ref": "corpus:trees#common_mistakes",
+      "question": "In `maxPathSum`, what should the recursive call return to its parent: the best complete path through the node, or the best path that the parent can still extend upward?",
+      "accepted_answers": [
+        "one-sided",
+        "one sided",
+        "the best one-sided path",
+        "one side",
+        "single branch",
+        "one branch",
+        "extendable",
+        "the one the parent can extend",
+        "node.val + max(left, right)"
+      ],
+      "expected_concepts": [
+        {
+          "id": "one_sided",
+          "keywords": [
+            "one-sided",
+            "one sided",
+            "one side",
+            "single branch",
+            "one branch",
+            "max(left, right)",
+            "max(left,right)",
+            "extend",
+            "upward",
+            "single path",
+            "one direction"
+          ],
+          "follow_up": "A parent can join a path through only one of its child's subtrees. So which of the child's sums can it use?"
+        }
+      ],
+      "wrong_answers": {
+        "complete path": "trees.returnable_vs_global_path",
+        "full path": "trees.returnable_vs_global_path",
+        "left + node + right": "trees.returnable_vs_global_path",
+        "left + right": "trees.returnable_vs_global_path",
+        "both sides": "trees.returnable_vs_global_path",
+        "both branches": "trees.returnable_vs_global_path"
+      },
+      "misconception_ids": [
+        "trees.returnable_vs_global_path"
+      ],
+      "then": "code_submission",
+      "then_question": "Exactly. Rewrite `maxPathSum` with a helper that returns `node.val + max(left_gain, right_gain, 0)` and updates a global best with `node.val + left_gain + right_gain`. Send it when you're ready.",
+      "on_correct": "Exactly. The return value is the best ONE-sided path; the best two-sided path through the node goes into a separate global maximum.",
+      "on_incorrect": "A path can't fork: once the parent joins, only one of the child's branches can continue.",
+      "scaffold": "Draw 1 -> (2, 3) under a parent P. P -> 1 -> 2 is a path; P -> 1 -> 2 and 3 is not. Which sum can P use?"
+    },
+    "trees.base_case": {
+      "topic": "trees",
+      "rubric_ref": "corpus:trees#common_mistakes",
+      "question": "What should your recursive function return when it is called on a missing child (`None`), before touching `node.val`?",
+      "accepted_answers": [
+        "0",
+        "return 0",
+        "none",
+        "return none",
+        "a base case"
+      ],
+      "expected_concepts": [
+        {
+          "id": "base_case",
+          "keywords": [
+            "base case",
+            "none",
+            "null",
+            "return 0",
+            "empty",
+            "if not node",
+            "if root is none",
+            "0"
+          ],
+          "follow_up": "What happens if you evaluate `node.left` when `node` is None?"
+        }
+      ],
+      "wrong_answers": {},
+      "misconception_ids": [
+        "trees.missing_base_case"
+      ],
+      "on_correct": "Right: decide the empty-subtree value first, then recurse.",
+      "on_incorrect": "Without a base case the recursion reaches `None.left` and crashes.",
+      "scaffold": "A leaf's children are `None`. What should `f(None)` give so the parent's arithmetic still works?"
+    },
+    "bfs.vs_dfs.shortest": {
+      "topic": "bfs",
+      "rubric_ref": "corpus:bfs#key_insight",
+      "question": "Suppose you need the fewest number of edges to get from A to B in an unweighted graph. Which traversal would you choose: BFS or DFS?",
+      "accepted_answers": [
+        "bfs",
+        "breadth first search",
+        "breadth-first search",
+        "breadth first"
+      ],
+      "options": [
+        {
+          "label": "BFS",
+          "keywords": [
+            "bfs",
+            "breadth"
+          ],
+          "grade": "correct"
+        },
+        {
+          "label": "DFS",
+          "keywords": [
+            "dfs",
+            "depth"
+          ],
+          "grade": "incorrect",
+          "misconception": "bfs.dfs_for_unweighted_shortest_path"
+        },
+        {
+          "label": "Either",
+          "keywords": [
+            "either",
+            "both",
+            "any of them",
+            "doesn't matter",
+            "does not matter"
+          ],
+          "grade": "incorrect",
+          "misconception": "bfs.dfs_for_unweighted_shortest_path"
+        }
+      ],
+      "expected_concepts": [
+        {
+          "id": "bfs",
+          "keywords": [
+            "bfs",
+            "breadth"
+          ],
+          "follow_up": "Which traversal visits every node 1 edge away before any node 2 edges away?"
+        }
+      ],
+      "misconception_ids": [
+        "bfs.dfs_for_unweighted_shortest_path"
+      ],
+      "next": "bfs.vs_dfs.reachability",
+      "reframe": "bfs.vs_dfs.reachability",
+      "on_correct": "Right: BFS explores level by level, so the first time it reaches B is along a fewest-edges path.",
+      "on_incorrect": "Think about what BFS guarantees in an unweighted graph: it visits nodes by distance -- 0, then 1, then 2 -- so the first time it reaches B is the shortest path. DFS may reach B through a long detour first.",
+      "scaffold": "BFS explores level by level; DFS goes as deep as it can before backtracking. Which one meets B at the smallest distance first?"
+    },
+    "bfs.vs_dfs.reachability": {
+      "topic": "bfs",
+      "rubric_ref": "corpus:bfs#when_not_to_use",
+      "question": "Now you only need to know whether B can be reached from A at all, not the shortest route. Which traversal works: BFS, DFS, or either?",
+      "accepted_answers": [
+        "either",
+        "both",
+        "either bfs or dfs",
+        "either one",
+        "both work",
+        "bfs or dfs",
+        "dfs or bfs",
+        "any"
+      ],
+      "options": [
+        {
+          "label": "Either",
+          "keywords": [
+            "either",
+            "both",
+            "any",
+            "bfs or dfs",
+            "dfs or bfs"
+          ],
+          "grade": "correct"
+        },
+        {
+          "label": "BFS",
+          "keywords": [
+            "bfs",
+            "breadth"
+          ],
+          "grade": "partial"
+        },
+        {
+          "label": "DFS",
+          "keywords": [
+            "dfs",
+            "depth"
+          ],
+          "grade": "partial"
+        }
+      ],
+      "expected_concepts": [
+        {
+          "id": "either",
+          "keywords": [
+            "either",
+            "both",
+            "any",
+            "bfs or dfs",
+            "dfs or bfs"
+          ],
+          "follow_up": "That one works. Would the other traversal also tell you whether B is reachable?"
+        }
+      ],
+      "on_correct": "Correct: both visit everything reachable, so either answers reachability. The ORDER only matters when you need the shortest path -- that's when BFS wins.",
+      "on_incorrect": "Reachability only asks whether B is visited at all, in any order.",
+      "scaffold": "Both traversals eventually visit every node reachable from A. Does the order matter if you only want a yes/no answer?"
+    },
+    "bfs.visited_on_enqueue": {
+      "topic": "bfs",
+      "rubric_ref": "corpus:bfs#common_mistakes",
+      "question": "In BFS, when should a node be marked visited: when you add it to the queue, or when you take it out? Why?",
+      "accepted_answers": [
+        "when you add it",
+        "when adding",
+        "on enqueue",
+        "enqueue",
+        "when it is added to the queue"
+      ],
+      "options": [
+        {
+          "label": "On enqueue",
+          "keywords": [
+            "enqueue",
+            "add",
+            "adding",
+            "push",
+            "append",
+            "put it in",
+            "insert"
+          ],
+          "grade": "correct"
+        },
+        {
+          "label": "On dequeue",
+          "keywords": [
+            "dequeue",
+            "pop",
+            "take it out",
+            "remove",
+            "when it comes out"
+          ],
+          "grade": "incorrect",
+          "misconception": "bfs.mark_visited_on_dequeue"
+        }
+      ],
+      "expected_concepts": [
+        {
+          "id": "on_enqueue",
+          "keywords": [
+            "enqueue",
+            "add",
+            "adding",
+            "push",
+            "append",
+            "insert"
+          ],
+          "follow_up": "If two neighbours both see D before D is popped, how many copies of D end up in the queue?"
+        }
+      ],
+      "misconception_ids": [
+        "bfs.mark_visited_on_dequeue"
+      ],
+      "on_correct": "Yes: mark on enqueue and every node enters the queue exactly once.",
+      "on_incorrect": "Marking on dequeue lets the same node be queued once per neighbour before it is popped.",
+      "scaffold": "Picture D with two neighbours that are both in the queue. When D is discovered from the first, should the second be able to add it again?"
+    },
+    "dfs.visited_before_push": {
+      "topic": "dfs",
+      "rubric_ref": "corpus:dfs#common_mistakes",
+      "question": "With an explicit stack, when should a node be marked visited so it can't pile up on the stack: when you push it, or after you pop it?",
+      "accepted_answers": [
+        "when you push it",
+        "on push",
+        "push",
+        "before pushing"
+      ],
+      "options": [
+        {
+          "label": "On push",
+          "keywords": [
+            "push",
+            "before pushing",
+            "when adding",
+            "add",
+            "append"
+          ],
+          "grade": "correct"
+        },
+        {
+          "label": "After pop",
+          "keywords": [
+            "pop",
+            "after popping",
+            "take it out"
+          ],
+          "grade": "incorrect",
+          "misconception": "dfs.mark_visited_after_pop"
+        }
+      ],
+      "expected_concepts": [
+        {
+          "id": "on_push",
+          "keywords": [
+            "push",
+            "add",
+            "append"
+          ],
+          "follow_up": "How many copies of a node can sit on the stack if it is only marked after the pop?"
+        }
+      ],
+      "misconception_ids": [
+        "dfs.mark_visited_after_pop"
+      ],
+      "on_correct": "Right: marking on push keeps each node on the stack at most once.",
+      "on_incorrect": "Marking after the pop lets every neighbour push its own copy first.",
+      "scaffold": "Count how many times a node with five unvisited neighbours can be pushed before it is popped."
+    }
+  },
+  "chains": [
+    {
+      "id": "two_sum",
+      "topic": "hashing",
+      "match_any": [
+        "two sum",
+        "two_sum",
+        "twosum"
+      ],
+      "start": "hashing.two_sum.complement",
+      "problem": "Two Sum"
+    },
+    {
+      "id": "bridges",
+      "topic": "dfs",
+      "match_any": [
+        "critical connection",
+        "bridges in a graph",
+        "bridge-finding",
+        "find bridges"
+      ],
+      "start": "dfs.bridges.approach",
+      "problem": "Critical Connections in a Network"
+    },
+    {
+      "id": "max_path",
+      "topic": "trees",
+      "match_any": [
+        "maximum path sum",
+        "max path sum",
+        "maxpathsum"
+      ],
+      "start": "trees.max_path.return_value",
+      "problem": "Binary Tree Maximum Path Sum"
+    },
+    {
+      "id": "bfs_vs_dfs",
+      "topic": "bfs",
+      "match_all": [
+        [
+          "bfs",
+          "breadth"
+        ],
+        [
+          "dfs",
+          "depth"
+        ]
+      ],
+      "start": "bfs.vs_dfs.shortest"
+    }
+  ],
+  "recognition": {
+    "question": "Before you write any code: which technique would you use for this problem, and what about the problem tells you so?",
+    "then_question": "Good. Now implement it and send me your code -- I'll review it against the problem and run it in the sandbox.",
+    "reason_keywords": [
+      "because",
+      "since",
+      "as ",
+      "so that",
+      "so ",
+      "to keep",
+      "to find",
+      "to track",
+      "which",
+      "level",
+      "sorted",
+      "fewest",
+      "shortest",
+      "window",
+      "pairs",
+      "halve",
+      "half",
+      "overlapping",
+      "subproblem",
+      "order",
+      "explores",
+      "guarantee"
+    ],
+    "wrong_by_pattern": {
+      "bfs": {
+        "dfs": "bfs.dfs_for_unweighted_shortest_path",
+        "depth first": "bfs.dfs_for_unweighted_shortest_path"
+      }
+    }
+  },
+  "problems": [
+    {
+      "title": "Two Sum",
+      "topic": "hashing",
+      "difficulty": "easy",
+      "statement": "Problem: Two Sum\n\nGiven an array of integers nums and an integer target, return the indices of the two numbers that add up to target. Exactly one solution exists, and you may not use the same element twice.\n\nExample 1:\nInput: nums = [2,7,11,15], target = 9\nOutput: [0,1]\nExample 2:\nInput: nums = [3,2,4], target = 6\nOutput: [1,2]\nExample 3:\nInput: nums = [3,3], target = 6\nOutput: [0,1]"
+    },
+    {
+      "title": "Critical Connections in a Network",
+      "topic": "dfs",
+      "difficulty": "hard",
+      "statement": "Problem: Critical Connections in a Network\n\nThere are n servers numbered from 0 to n - 1 connected by undirected server-to-server connections forming a network, where connections[i] = [ai, bi] represents a connection between servers ai and bi. A critical connection is a connection that, if removed, will make some servers unable to reach some other server. Return all critical connections in the network in any order. Expected: O(V + E); do not remove each edge and recompute connectivity.\n\nExample 1:\nInput: n = 4, connections = [[0,1],[1,2],[2,0],[1,3]]\nOutput: [[1,3]]\nExample 2:\nInput: n = 2, connections = [[0,1]]\nOutput: [[0,1]]"
+    },
+    {
+      "title": "Shortest Path in Binary Matrix",
+      "topic": "bfs",
+      "difficulty": "medium",
+      "statement": "Problem: Shortest Path in Binary Matrix\n\nGiven an n x n binary matrix grid, return the length of the shortest clear path from the top-left cell to the bottom-right cell, or -1 if there is none. A clear path visits only 0-cells, moves in any of the 8 directions, and its length is the number of cells visited.\n\nExample 1:\nInput: grid = [[0,1],[1,0]]\nOutput: 2\nExample 2:\nInput: grid = [[0,0,0],[1,1,0],[1,1,0]]\nOutput: 4\nExample 3:\nInput: grid = [[1,0,0],[1,1,0],[1,1,0]]\nOutput: -1"
+    },
+    {
+      "title": "Word Ladder",
+      "topic": "bfs",
+      "difficulty": "hard",
+      "statement": "Problem: Word Ladder\n\nA transformation sequence from beginWord to endWord using a dictionary wordList is a sequence of words where every adjacent pair differs by a single letter and every word after beginWord is in wordList. Return the number of words in the shortest transformation sequence, or 0 if none exists.\n\nExample 1:\nInput: beginWord = \"hit\", endWord = \"cog\", wordList = [\"hot\",\"dot\",\"dog\",\"lot\",\"log\",\"cog\"]\nOutput: 5\nExample 2:\nInput: beginWord = \"hit\", endWord = \"cog\", wordList = [\"hot\",\"dot\",\"dog\",\"lot\",\"log\"]\nOutput: 0"
+    },
+    {
+      "title": "Binary Tree Maximum Path Sum",
+      "topic": "trees",
+      "difficulty": "hard",
+      "statement": "Problem: Binary Tree Maximum Path Sum\n\nA path in a binary tree is a sequence of nodes where each pair of adjacent nodes has an edge connecting them; a node appears at most once and the path need not pass through the root. Given the root of a binary tree, return the maximum path sum of any non-empty path.\n\nExample 1:\nInput: root = [1,2,3]\nOutput: 6\nExample 2:\nInput: root = [-10,9,20,null,null,15,7]\nOutput: 42"
+    }
+  ]
+}

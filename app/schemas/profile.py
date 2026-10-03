@@ -5,11 +5,13 @@ The store assembles this view from the `LearnerProfile` row (converting the
 module only defines the shape and validates it.
 """
 
+from datetime import datetime
+
 from pydantic import Field, field_validator
 
 from app.schemas.base import APIModel
 
-__all__ = ["LearnerProfileView", "LearningPreferencesUpdate"]
+__all__ = ["LearnerProfileView", "LearningActivity", "LearningPreferencesUpdate"]
 
 
 class LearnerProfileView(APIModel):
@@ -60,3 +62,9 @@ class LearningPreferencesUpdate(APIModel):
     def as_mapping(self) -> dict[str, bool]:
         """The supplied flags only, ready to merge."""
         return {key: value for key, value in self.model_dump().items() if value is not None}
+
+
+class LearningActivity(APIModel):
+    """When the learner was active, for the learning streak (UTC hours, newest first)."""
+
+    active_hours: list[datetime] = Field(default_factory=list[datetime])

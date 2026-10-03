@@ -69,6 +69,7 @@ const STAGE_ICONS = {
   debug_agent: "bug",
   explain_agent: "bulb",
   practice_agent: "target",
+  grade_answer: "checkCircle",
   clarify: "help",
   execute_code: "terminal",
   verify: "shield",
@@ -112,6 +113,13 @@ const SECTION_STYLES = {
   correctness: ["checkCircle", ""],
   "next steps": ["arrowRight", "accent"],
   references: ["link", ""],
+  // tutoring loop
+  "your practice problem": ["target", "accent"],
+  "your answer": ["checkCircle", "accent"],
+  misconception: ["alert", "warn"],
+  "watch out": ["alert", "warn"],
+  execution: ["terminal", ""],
+  "your turn": ["help", "accent"],
 };
 
 export function sectionStyle(title) {

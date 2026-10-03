@@ -148,7 +148,7 @@ async function refreshAfterTurn(firstTurnText) {
       document.querySelector("#chat-title").textContent = updated.title;
     }
     sessionManager.render();
-    renderStreak(conversations);
+    await refreshStreak(conversations);
     state.profile = profile;
     renderProfile(profile);
   } catch {
@@ -365,6 +365,19 @@ function bindMessageInteractions() {
   });
 }
 
+/**
+ * The learning streak from the server's record of EVERY day the learner sent a
+ * message. Falls back to the conversation list (one day per conversation) only
+ * if that request fails.
+ */
+async function refreshStreak(conversations) {
+  try {
+    renderStreak(await api.getActivity());
+  } catch {
+    renderStreak(conversations.map((item) => item.updatedAt));
+  }
+}
+
 /** Toggle one declared preference and persist it. */
 async function togglePreference(card) {
   const key = card?.dataset.preference;
@@ -455,7 +468,7 @@ async function initialize() {
     const [conversations, profile] = await Promise.all([sessionManager.load(), api.getProfile()]);
     state.profile = profile;
     renderProfile(profile);
-    renderStreak(conversations);
+    await refreshStreak(conversations);
     const preferred = localStorage.getItem("adaptive_active_conversation");
     const initial = conversations.find((item) => item.id === preferred) || conversations[0];
     if (initial) await selectConversation(initial);

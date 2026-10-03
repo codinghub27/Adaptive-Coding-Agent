@@ -17,6 +17,7 @@ from app.schemas.intent import Intent
 
 __all__ = [
     "Difficulty",
+    "ConceptGrade",
     "EvidenceSource",
     "LearningEventCreate",
     "LearningEventView",
@@ -26,7 +27,11 @@ __all__ = [
 ]
 
 Difficulty = Literal["easy", "medium", "hard"]
-EvidenceSource = Literal["extracted", "synthesised", "none", "unknown"]
+EvidenceSource = Literal["extracted", "synthesised", "none", "unknown", "concept_check"]
+
+#: A graded conceptual answer (ADAPTIVE-tutoring G2); mirrors
+#: `app.schemas.tutoring.Grade` (kept here to avoid an import cycle).
+ConceptGrade = Literal["correct", "partial", "incorrect", "dont_know"]
 
 RequestedHelp = Literal[
     "hint", "solution", "debug", "explanation", "review", "test_analysis", "approach"
@@ -60,6 +65,9 @@ class LearningEventCreate(APIModel):
     #: or none at all (exposure only). "unknown" only on rows written before
     #: provenance was recorded.
     evidence_source: EvidenceSource = "none"
+    #: Set only on `concept_check` evidence: the grade of the learner's answer
+    #: to the agent's own guiding question. Never sets `solved` (G2).
+    concept_grade: ConceptGrade | None = None
     errors: list[str] = Field(default_factory=list[str])
     # `True`/`False` are observed outcomes. `None` means the topic was
     # encountered this turn (e.g. a hint request) but no outcome was
@@ -152,6 +160,7 @@ class LearningEventView(APIModel):
     hints_used: int
     needed_full_solution: bool
     errors: list[str]
+    concept_grade: str | None = None
     solved: bool | None
     time_spent: int | None
     concepts: list[str]

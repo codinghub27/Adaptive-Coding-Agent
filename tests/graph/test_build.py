@@ -25,6 +25,11 @@ _EXPECTED_EDGES: frozenset[tuple[str, str]] = frozenset(
         ("route", "explain_agent"),
         ("route", "practice_agent"),
         ("route", "clarify"),
+        # ADAPTIVE-tutoring Q1: a reply to the agent's pending question is graded,
+        # then answered directly or (on "don't know") handed to the DSA agent.
+        ("route", "grade_answer"),
+        ("grade_answer", "final_response"),
+        ("grade_answer", "dsa_agent"),
         ("dsa_agent", "execute_code"),
         ("debug_agent", "execute_code"),
         ("explain_agent", "execute_code"),

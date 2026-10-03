@@ -18,14 +18,19 @@ from typing import Final, Literal
 
 from app.graph.state import AgentState, RouteKey
 from app.schemas.intent import Intent
+from app.tutoring.grader import asks_for_help, is_dont_know
+from app.tutoring.misconceptions import detect_in_code
 
 __all__ = [
     "INTENT_ROUTES",
     "ROUTE_NODES",
     "VERIFY_NODES",
     "VerifyKey",
+    "GRADE_AFTER_NODES",
+    "grade_after",
     "route_after",
     "select_route",
+    "should_grade",
     "verify_after",
 ]
 
@@ -56,8 +61,58 @@ ROUTE_NODES: Final[Mapping[RouteKey, str]] = MappingProxyType(
         "explain": "explain_agent",
         "practice": "practice_agent",
         "clarify": "clarify",
+        # ADAPTIVE-tutoring Q1: a reply to the agent's own pending question.
+        "grade": "grade_answer",
     }
 )
+
+#: Intents that are a request for something NEW, never an answer.
+_NEW_REQUEST_INTENTS: Final = frozenset({Intent.PRACTICE_REQUEST, Intent.GENERAL_GUIDANCE})
+
+
+def _code_with_known_misconception(state: AgentState) -> bool:
+    """Code whose shape matches a catalog misconception is worth a debug pass
+    even when the classifier was unsure what the learner wanted (G3): e.g.
+    "I wrote this; I think it returns the maximum path" + code."""
+    inp = state.structured_input
+    if inp is None or not inp.code:
+        return False
+    if state.intent is not None and not state.intent.low_confidence:
+        return False
+    code = "\n\n".join(block.content for block in inp.code)
+    return bool(detect_in_code(code))
+
+
+def should_grade(state: AgentState) -> bool:
+    """Is this turn the learner's reply to the agent's pending check?
+
+    Yes when a check is pending, this turn is not a new problem, carries no
+    code or error of its own, and is not an explicit request for something
+    else (a new problem, a study plan, a hint or the solution). A pending CODE
+    request is graded only on an explicit "I don't know how" -- anything else
+    there is either the code itself (the review path) or a new request.
+    """
+    pending = state.pending_check
+    inp = state.structured_input
+    if pending is None or inp is None or inp.is_empty:
+        return False
+    if state.problem_relation == "new" or inp.code or inp.error or state.submitted_code:
+        return False
+    reply = inp.question or ""
+    if not reply.strip():
+        return False
+    if pending.kind == "code_submission":
+        return is_dont_know(reply)
+    # A CONFIDENT request for something new ("give me a problem", a study
+    # plan) is not an answer; a low-confidence label on a two-word reply
+    # ("7?" -> GENERAL_GUIDANCE at 0.4) is exactly what an answer looks like.
+    if (
+        state.intent is not None
+        and state.intent.intent in _NEW_REQUEST_INTENTS
+        and not state.intent.low_confidence
+    ):
+        return False
+    return not asks_for_help(reply)
 
 
 def select_route(state: AgentState) -> RouteKey:
@@ -69,13 +124,33 @@ def select_route(state: AgentState) -> RouteKey:
     3. the teaching plan itself already decided to clarify,
     4. otherwise, the fixed intent -> route mapping.
     """
+    if should_grade(state):
+        return "grade"
     if state.structured_input is None or state.structured_input.is_empty:
         return "clarify"
+    if state.submitted_code:
+        return "debug"
+    if _code_with_known_misconception(state):
+        return "debug"
     if state.intent is None or state.intent.low_confidence:
         return "clarify"
     if state.plan is not None and state.plan.solution_strategy == "clarify":
         return "clarify"
     return INTENT_ROUTES[state.intent.intent]
+
+
+GradeAfterKey = Literal["dsa", "final"]
+
+#: After grading: a "don't know" on a problem hands the next rung to the DSA
+#: agent at the raised assistance level; everything else is answered directly.
+GRADE_AFTER_NODES: Final[Mapping[GradeAfterKey, str]] = MappingProxyType(
+    {"dsa": "dsa_agent", "final": "final_response"}
+)
+
+
+def grade_after(state: AgentState) -> GradeAfterKey:
+    """LangGraph conditional-edge function out of `grade_answer`."""
+    return "dsa" if state.grade_handoff else "final"
 
 
 def route_after(state: AgentState) -> RouteKey:

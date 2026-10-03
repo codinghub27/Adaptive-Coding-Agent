@@ -37,3 +37,12 @@ class Conversation(Base):
     active_problem: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     active_problem_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
     active_topic: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # --- Tutoring loop (ADAPTIVE-tutoring Q1/Q6) -----------------------------
+    # `pending_check`: the agent's own open question / code request this
+    # conversation is waiting on (a `PendingCheck` dump -- AGENT-authored bank
+    # text, never learner text). Rewritten every turn; NULL when nothing is
+    # pending. `session_progress`: this conversation's graded answers, last
+    # practice problem and scaffolding floors (`SessionProgress` dump).
+    pending_check: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    session_progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

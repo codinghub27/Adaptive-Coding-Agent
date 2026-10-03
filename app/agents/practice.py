@@ -25,14 +25,19 @@ Two properties matter here:
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
 
 from app.schemas.base import APIModel
 from app.schemas.knowledge import KnowledgeChunk
 from app.schemas.plan import Difficulty
 
-__all__ = ["PracticeProblem", "render_practice_problem", "select_practice_problem"]
+__all__ = [
+    "PracticeProblem",
+    "render_practice_problem",
+    "select_practice_problem",
+    "select_session_problem",
+]
 
 _SECTION_KEY: Final = "section"
 _PROBLEMS_SECTION: Final = "representative_problems"
@@ -136,18 +141,71 @@ def select_practice_problem(
     return chosen.model_copy(update={"cue": _cue(chunks)})
 
 
-def render_practice_problem(problem: PracticeProblem) -> str:
-    """Render `problem` as the learner-facing text of a practice turn."""
+def select_session_problem(
+    topic: str,
+    difficulty: Difficulty,
+    chunks_by_pattern: Mapping[str, Sequence[KnowledgeChunk]],
+    *,
+    patterns: Sequence[str],
+    preferred_titles: frozenset[str] = frozenset(),
+    exclude_titles: frozenset[str] = frozenset(),
+) -> PracticeProblem | None:
+    """A corpus problem across `patterns` (the topic, or a whole family) for a session.
+
+    Like `select_practice_problem`, but (ADAPTIVE-tutoring G5) it draws from
+    every pattern in `patterns` -- "a hard graph problem" is any hard problem of
+    the graphs family -- skips problems this conversation already practised,
+    and, at equal distance from `difficulty`, prefers a problem in
+    `preferred_titles` (those with a curated statement the sandbox can test).
+    Ties then break on the title, so the choice is deterministic. Each problem
+    keeps its OWN pattern as its topic.
+    """
+    candidates: list[PracticeProblem] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        for problem in _candidates(chunks_by_pattern.get(pattern, ()), pattern):
+            if problem.title in exclude_titles or problem.title in seen:
+                continue
+            seen.add(problem.title)
+            candidates.append(problem)
+    if not candidates:
+        return None
+    target = _DIFFICULTY_ORDER.index(difficulty)
+    chosen = min(
+        candidates,
+        key=lambda p: (
+            abs(_DIFFICULTY_ORDER.index(p.difficulty) - target),
+            p.title not in preferred_titles,
+            _DIFFICULTY_ORDER.index(p.difficulty),
+            p.topic != topic,
+            p.title,
+        ),
+    )
+    return chosen.model_copy(update={"cue": _cue(chunks_by_pattern.get(chosen.topic, ()))})
+
+
+def render_practice_problem(problem: PracticeProblem, statement: str | None = None) -> str:
+    """Render `problem` as the learner-facing text of a practice turn.
+
+    `statement` is a curated problem statement (trusted bank text) when one
+    exists. The corpus cue is a signal of the PATTERN and is worded that way:
+    it used to read as if it described this specific problem.
+    """
     lines = [
         f"Here is a **{problem.difficulty}** problem to practise `{problem.topic}`:",
         "",
         f"**{problem.title}** — {problem.url}",
     ]
+    if statement:
+        body = (
+            statement.split("\n", 1)[1].strip() if statement.startswith("Problem:") else statement
+        )
+        lines += ["", body]
     if problem.cue:
-        lines += ["", f"What makes it this pattern: {problem.cue}"]
+        lines += ["", f"A general signal of this pattern: {problem.cue}"]
     lines += [
         "",
-        "Work it through yourself first. Paste your attempt when you want it "
-        "checked, or ask for a hint if you get stuck.",
+        "Work it through yourself first -- don't write code yet. Answer the question "
+        "below, paste your attempt when you want it checked, or ask for a hint if you get stuck.",
     ]
     return "\n".join(lines)

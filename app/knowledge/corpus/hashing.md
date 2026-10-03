@@ -44,7 +44,7 @@ def two_sum(nums: list[int], target: int) -> tuple[int, int] | None:
 Average-case O(1) time per insert/lookup/delete, so a single pass over n elements is O(n) overall, versus O(n^2) for the nested-loop brute force. Space is O(n) to store the map/set in the worst case. Worst-case per-operation time degrades to O(n) under pathological hash collisions, not a practical concern for Python's dict/set on typical inputs.
 
 ## Common Mistakes
-Using a mutable/unhashable type (a `list`) as a dict key or set element, which raises `TypeError` — convert to `tuple` first. Relying on dict/set iteration order as if it were sorted order. Checking `if complement in nums` (O(n) list scan) instead of a set/dict built alongside the scan. Double-counting: for two-sum-style problems, check the map *before* inserting the current element.
+Using a mutable/unhashable type (a `list`) as a dict key or set element, which raises `TypeError` — convert to `tuple` first. Relying on dict/set iteration order as if it were sorted order. Checking `if complement in nums` (O(n) list scan) instead of a set/dict built alongside the scan. Double-counting: for two-sum-style problems, check the map *before* inserting the current element. Checking one key but reading another: after `if complement in seen:` the lookup must be `seen[complement]` — reading `seen[num]` asks for a key that was never checked and raises `KeyError`.
 
 ## When NOT to Use
 If the problem needs the keys or elements in sorted order (finding a range, the kth smallest), a heap (`heaps`) or a sorted structure is the right tool — a hash map gives no ordering. If the "lookup" is actually a range-sum query over a static array, `prefix_sum` answers it in O(1) without any hashing at all.

@@ -37,6 +37,14 @@ from app.schemas.plan import (
 )
 from app.schemas.profile import LearnerProfileView
 from app.schemas.response import GeneratedResponse
+from app.schemas.tutoring import (
+    AnswerGrade,
+    PendingCheck,
+    PracticeRecord,
+    Reaction,
+    SessionProgress,
+    TutoringView,
+)
 
 __all__ = [
     "AgentOutcome",
@@ -49,7 +57,7 @@ __all__ = [
     "SuiteSource",
 ]
 
-RouteKey = Literal["dsa", "debug", "explain", "practice", "clarify"]
+RouteKey = Literal["dsa", "debug", "explain", "practice", "clarify", "grade"]
 
 # Where this turn's `TestSuite` (if any) came from -- see `debug_agent` and the
 # review branch of `explain_agent` in `app.graph.nodes`, and the gating this
@@ -154,6 +162,23 @@ class AgentState(BaseModel):
     active_problem: ActiveProblem | None = None
     problem_relation: ProblemRelation = "none"
     problem_key: str | None = None
+    #: Tutoring loop (ADAPTIVE-tutoring). `pending_check`/`session_progress`
+    #: are loaded with the profile; `answer_grade` is set by `grade_answer`;
+    #: `next_pending`/`tutoring` are decided in `final_response` and persisted
+    #: by `update_learner_model`. `practice` is the problem `practice_agent`
+    #: handed out; `submitted_code` marks a reply to a pending code request.
+    pending_check: PendingCheck | None = None
+    session_progress: SessionProgress | None = None
+    answer_grade: AnswerGrade | None = None
+    reaction: Reaction | None = None
+    grade_feedback: str | None = None
+    assistance_before: AssistanceLevel | None = None
+    grade_handoff: bool = False
+    practice: PracticeRecord | None = None
+    submitted_code: bool = False
+    next_pending: PendingCheck | None = None
+    next_progress: SessionProgress | None = None
+    tutoring: TutoringView | None = None
     response: str | None = None
     generated_response: GeneratedResponse | None = None
     events: Annotated[list[LearningEventCreate], operator.add] = Field(
@@ -185,6 +210,18 @@ class AgentStateUpdate(TypedDict, total=False):
     active_problem: ActiveProblem | None
     problem_relation: ProblemRelation
     problem_key: str | None
+    pending_check: PendingCheck | None
+    session_progress: SessionProgress | None
+    answer_grade: AnswerGrade | None
+    reaction: Reaction | None
+    grade_feedback: str | None
+    assistance_before: AssistanceLevel | None
+    grade_handoff: bool
+    practice: PracticeRecord | None
+    submitted_code: bool
+    next_pending: PendingCheck | None
+    next_progress: SessionProgress | None
+    tutoring: TutoringView | None
     response: str | None
     generated_response: GeneratedResponse | None
     events: list[LearningEventCreate]

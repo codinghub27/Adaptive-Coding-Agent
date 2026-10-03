@@ -32,6 +32,7 @@ STAGE_LABELS: Final[Mapping[str, str]] = MappingProxyType(
         # (P3), so the label must not claim code was read (F9).
         "explain_agent": "Working through your question",
         "practice_agent": "Picking a problem for you",
+        "grade_answer": "Checking your answer",
         "clarify": "Asking for a bit more",
         "execute_code": "Running your code in the sandbox",
         "verify": "Checking the results",
