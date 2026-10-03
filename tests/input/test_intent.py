@@ -340,3 +340,18 @@ def test_stated_confusion_about_a_concept_is_a_concept_question() -> None:
 def test_confusion_about_solving_a_problem_is_left_to_the_classifier() -> None:
     text = "I'm new to DSA. Can you help me solve Two Sum? I don't understand how to start."
     assert rule_intent(normalize_text(text)) is None
+
+
+@pytest.mark.parametrize(
+    "text", ["hi agent", "hello there", "hey bot!", "thanks a lot", "ok thanks"]
+)
+def test_addressed_greetings_are_small_talk(text: str) -> None:
+    # Measured live: "hi agent" missed the small-talk rule and got a study plan.
+    result = rule_intent(normalize_text(text))
+    assert result is not None
+    assert result.intent == Intent.GENERAL_GUIDANCE
+    assert result.low_confidence  # -> clarify with the greeting reply
+
+
+def test_a_greeting_with_a_real_ask_is_left_to_the_classifier() -> None:
+    assert rule_intent(normalize_text("hi agent, explain bfs")) is None

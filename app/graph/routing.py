@@ -12,6 +12,7 @@ post-execution branch: in Phase 06 every verdict status routes straight to
 retarget "fail" to the debugger loop instead.
 """
 
+import re
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Final, Literal
@@ -67,6 +68,12 @@ ROUTE_NODES: Final[Mapping[RouteKey, str]] = MappingProxyType(
     }
 )
 
+_GUIDANCE_ASK_RE: Final = re.compile(
+    r"(?i)\b(plan|roadmap|road map|prepar\w*|placement\w*|interview\w*|career|schedule|"
+    r"study|learn\w*|start\w*|advice|advise|guide|guidance|topics?|what should|how should|"
+    r"where (do|should) i|tips?)\b"
+)
+
 #: Intents that are a request for something NEW, never an answer.
 _NEW_REQUEST_INTENTS: Final = frozenset({Intent.PRACTICE_REQUEST, Intent.GENERAL_GUIDANCE})
 
@@ -97,6 +104,19 @@ def _code_with_known_misconception(state: AgentState) -> bool:
         return False
     code = "\n\n".join(block.content for block in inp.code)
     return bool(detect_in_code(code))
+
+
+def _guidance_without_ask(state: AgentState) -> bool:
+    """A short message the classifier called GENERAL_GUIDANCE that asks for no
+    plan or advice ("hi agent", "good to see you") is small talk, not a request
+    for a study plan -- answer it with the greeting, never with a 4-week plan."""
+    if state.intent is None or state.intent.intent is not Intent.GENERAL_GUIDANCE:
+        return False
+    inp = state.structured_input
+    text = (inp.question or "") if inp is not None else ""
+    if inp is not None and (inp.problem or inp.code or inp.error):
+        return False
+    return len(text.split()) <= 4 and _GUIDANCE_ASK_RE.search(text) is None
 
 
 def should_grade(state: AgentState) -> bool:
@@ -157,6 +177,8 @@ def select_route(state: AgentState) -> RouteKey:
     if _code_with_known_misconception(state):
         return "debug"
     if state.intent is None or state.intent.low_confidence:
+        return "clarify"
+    if _guidance_without_ask(state):
         return "clarify"
     if state.plan is not None and state.plan.solution_strategy == "clarify":
         return "clarify"

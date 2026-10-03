@@ -44,6 +44,10 @@ function humanizeTopic(topic) {
 
 function buildConcept(payload) {
   const route = payload.route || "clarify";
+  // A greeting, clarification or study plan is not ABOUT one pattern: a
+  // "Mental model: Binary search" card on a study plan (the profile's topic)
+  // read as if the agent misunderstood the message.
+  if (route === "clarify" || payload.intent?.intent === "GENERAL_GUIDANCE") return null;
   const title = humanizeTopic(payload.plan?.topic);
   if (!title) return null;
   return { label: CONCEPT_LABELS[route] || "In focus", title };

@@ -129,8 +129,17 @@ _SMALL_TALK_WORDS = (
     r"(?:hi|hello|hey|hiya|yo|thanks|thank you|thx|ty|ok|okay|cool|great|nice|got it|"
     r"good (?:morning|afternoon|evening)|bye)"
 )
+#: Who a greeting is addressed to ("hi agent", "hello there", "thanks a lot").
+#: Measured live: "hi agent" missed the rule, the classifier called it
+#: GENERAL_GUIDANCE with high confidence, and the learner got a 4-week study
+#: plan in reply to a greeting.
+_SMALL_TALK_ADDRESS = (
+    r"(?:agent|bot|there|everyone|all|team|buddy|friend|sir|madam|mate|tutor|adaptive|"
+    r"claude|a lot|so much|again|man|bro|guys)"
+)
 _SMALL_TALK_RE = re.compile(
-    rf"(?i)^\s*{_SMALL_TALK_WORDS}(?:[\s!.,:)]+{_SMALL_TALK_WORDS})*[\s!.,:)]*$"
+    rf"(?i)^\s*{_SMALL_TALK_WORDS}(?:[\s!.,:)]+(?:{_SMALL_TALK_WORDS}|{_SMALL_TALK_ADDRESS}))*"
+    r"[\s!.,:)]*$"
 )
 
 
