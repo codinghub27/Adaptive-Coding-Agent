@@ -1707,6 +1707,10 @@ _ASK_FOR_INPUT: Final = (
     "your code, and/or the error message you're seeing?"
 )
 
+_IMAGE_UNREADABLE_REPLY: Final = (
+    "I couldn't read the image you attached -- the image reader didn't respond this time. "
+    "Could you try sending it again, or paste the problem statement as text?"
+)
 _GENERIC_CLARIFY: Final = (
     "Could you tell me a bit more about what you'd like help with -- a hint, "
     "a debugging walkthrough, an explanation, or a code review?"
@@ -1741,7 +1745,15 @@ _GREETING_REPLY: Final = (
 async def clarify(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
     """Ask a deterministic clarifying question; never echoes user input."""
     del runtime
-    if state.structured_input is None or state.structured_input.is_empty:
+    image_failed = any(
+        err.node == "understand_input" and err.message == _IMAGE_EXTRACTION_FAILED_MESSAGE
+        for err in state.errors
+    )
+    if image_failed:
+        # Say WHY instead of a generic "could you confirm?": the learner sent a
+        # screenshot and nothing in the reply admitted it was never read.
+        text = _IMAGE_UNREADABLE_REPLY
+    elif state.structured_input is None or state.structured_input.is_empty:
         text = _ASK_FOR_INPUT
     elif state.intent is not None and state.intent.intent not in _INTENT_PHRASES:
         text = _GREETING_REPLY

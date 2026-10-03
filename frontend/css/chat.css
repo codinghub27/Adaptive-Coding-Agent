@@ -178,3 +178,18 @@ li.task.no .task-box { border:0; color:var(--danger); }
 .message-actions button { display:grid; place-items:center; }
 .message-actions .ico { width:14px; height:14px; }
 @media (max-width:760px) { .resp-body { padding-left:0; } }
+
+/* Loading indicators stay animated even with "reduce motion" on (base.css stops
+   every animation there): a frozen spinner reads as a hung app, and a slow,
+   small rotation is the essential progress feedback the setting allows. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .send-button.loading::before {
+    animation-duration: 1.2s !important;
+    animation-iteration-count: infinite !important;
+  }
+  .streaming-cursor::after {
+    animation-duration: 1s !important;
+    animation-iteration-count: infinite !important;
+  }
+}

@@ -11,7 +11,14 @@ from langgraph.runtime import Runtime
 
 from app.graph.nodes import clarify, debug_agent, dsa_agent, explain_agent
 from app.graph.routing import INTENT_ROUTES, ROUTE_NODES, route_after, select_route
-from app.graph.state import AgentState, AgentStateUpdate, GraphContext, RawInput, RouteKey
+from app.graph.state import (
+    AgentState,
+    AgentStateUpdate,
+    GraphContext,
+    NodeError,
+    RawInput,
+    RouteKey,
+)
 from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.plan import TeachingPlan
@@ -317,3 +324,26 @@ async def test_clarify_generic_variant_when_no_intent_but_has_input() -> None:
     assert outcome is not None
     assert MARKER not in outcome.text
     assert "hint" in outcome.text
+
+
+async def test_clarify_says_the_image_could_not_be_read() -> None:
+    # A screenshot whose extraction failed used to get the generic "could you
+    # confirm?", with nothing telling the learner the image was never read.
+    state = _state(structured_input=_input(), intent=_intent(Intent.DSA_SOLVE, 0.2)).model_copy(
+        update={
+            "errors": [
+                NodeError(
+                    node="understand_input",
+                    error_type="LLMRateLimitError",
+                    message="could not read the image; continuing with text only",
+                )
+            ]
+        }
+    )
+
+    update = await clarify(state, _runtime())
+
+    outcome = update.get("agent_output")
+    assert outcome is not None
+    assert "couldn't read the image" in outcome.text
+    assert MARKER not in outcome.text

@@ -274,3 +274,22 @@ New `GET /profile/activity` returns every UTC hour with a learner message (last
 60 days); the client buckets them into local days. Verified in the browser
 (`/profile/activity` requested; tooltip shows active days of the last 7) and by
 `tests/memory/test_activity.py` (three days in one conversation -> three days).
+
+### Owner-reported — screenshot not processed, spinner not animating
+- **Image:** reproduced on the live API with the owner's LeetCode screenshot.
+  The vision model DID read it (problem extracted); the turn then went to
+  "could you confirm?" because the chat-model intent call was rate-limited and
+  the keyword fallback scored 0.2. Fix: a deterministic rule -- a problem
+  statement plus a plain "how do I solve this" ask is `DSA_SOLVE` (0.75); more
+  specific asks still go to the classifier. The vision prompt now keeps the
+  worked examples (Input/Output lines) inside `problem`, and when extraction
+  itself fails the reply says the image could not be read instead of the
+  generic clarify. Live: same screenshot + "How to solve this problem" -> `dsa`,
+  intent `rule` 0.75, sections understanding / hint / "Your turn".
+  Known limitation: Longest Palindromic Substring is in no corpus file, so its
+  topic is inferred by retrieval (it picked `sliding_window` / `two_pointers`).
+- **Spinner:** `base.css` stops every animation under `prefers-reduced-motion`
+  (Windows "Show animations" off), freezing the loading spinners. They are now
+  exempt (1.2 s rotation, infinite). Verified in the browser with reduced
+  motion emulated: working-panel spinner and send-button spinner both
+  `spin 1.2s infinite`.

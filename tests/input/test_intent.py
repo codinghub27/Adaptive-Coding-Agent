@@ -290,3 +290,27 @@ async def test_user_message_uses_delimiters_and_injection_stays_in_user_message(
     assert "</user_input>" in user_messages[0].content
     assert injection in user_messages[0].content
     assert all(injection not in m.content for m in system_messages)
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["How to solve this problem", "solve this", "Can you help me solve this problem?"],
+)
+def test_screenshot_problem_with_a_plain_solve_ask_is_dsa_solve_rule(question: str) -> None:
+    # Measured live: a LeetCode screenshot + "How to solve this problem" went to
+    # "could you confirm?" whenever the LLM classifier was rate-limited.
+    inp = StructuredInput(
+        source="image", problem="5. Longest Palindromic Substring", question=question
+    )
+    result = rule_intent(inp)
+    assert result is not None
+    assert result.intent == Intent.DSA_SOLVE
+    assert not result.low_confidence
+
+
+@pytest.mark.parametrize("question", ["give me a hint", "explain this problem", "solve in O(n)"])
+def test_specific_asks_on_a_problem_are_left_to_the_classifier(question: str) -> None:
+    inp = StructuredInput(
+        source="image", problem="5. Longest Palindromic Substring", question=question
+    )
+    assert rule_intent(inp) is None

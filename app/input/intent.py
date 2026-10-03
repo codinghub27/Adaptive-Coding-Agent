@@ -94,6 +94,15 @@ intents.
 # LLM (or the fallback heuristic) weigh it instead.
 _PROBLEM_ASK_OVERRIDE_RE = re.compile(r"(?i)\b(hint|stuck|approach|explain|optimi\w*)\b")
 
+#: A whole question that only asks to solve the attached problem ("How to solve
+#: this problem", "solve this", "help me solve it?"). Anything more specific
+#: (a hint, an explanation, a review) is left to the classifier.
+_SOLVE_ASK_RE = re.compile(
+    r"(?i)(please\s+)?(can you\s+|could you\s+)?(help( me)?\s+)?(how (do i|to|can i|should i)\s+)?"
+    r"(solve|do|crack|tackle|work out)\s+(this|it|the|that)(\s+(problem|question|one))?"
+    r"(\s+please)?\s*[?.!]*"
+)
+
 
 #: A whole message that is only a greeting / acknowledgement. Classified
 #: GENERAL_GUIDANCE at low confidence, which routes to `clarify`.
@@ -129,6 +138,24 @@ def rule_intent(inp: StructuredInput) -> IntentResult | None:
         rationale = "error without a question" + (" and with code present" if has_code else "")
         return IntentResult(
             intent=Intent.CODE_DEBUG, confidence=confidence, source="rule", rationale=rationale
+        )
+
+    if (
+        inp.problem
+        and not inp.code
+        and not inp.error
+        and inp.question
+        and _SOLVE_ASK_RE.fullmatch(inp.question.strip())
+    ):
+        # A screenshot of a problem + "how to solve this problem" is not
+        # ambiguous: measured live, the LLM classifier was rate-limited and the
+        # keyword fallback (0.2) sent the turn to "could you confirm?" even
+        # though the image had been read correctly.
+        return IntentResult(
+            intent=Intent.DSA_SOLVE,
+            confidence=0.75,
+            source="rule",
+            rationale="problem statement with a plain 'how do I solve this' ask",
         )
 
     if (
