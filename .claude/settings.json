@@ -1,18 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "token-savior",
-    "context7",
-    "github",
-    "playwright",
-    "postgres"
-  ],
-  "enabledPlugins": {
-    "claude-plugins-official": ["pyright-lsp", "code-review"]
-  },
   "permissions": {
-    "defaultMode": "default",
     "allow": [
       "mcp__token-savior",
       "mcp__context7",
@@ -42,13 +30,6 @@
       "Bash(uv:*)",
       "Bash(uvicorn app.main:app)"
     ],
-    "ask": [
-      "mcp__playwright",
-      "Bash(docker:*)",
-      "Bash(docker compose:*)",
-      "Bash(docker-compose:*)"
-
-    ],
     "deny": [
       "Read(./.env)",
       "Read(./.env.*)",
@@ -58,6 +39,22 @@
       "Bash(rm -rf:*)",
       "Bash(git push --force:*)",
       "Bash(git push -f:*)"
+    ],
+    "ask": [],
+    "defaultMode": "default"
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "token-savior",
+    "context7",
+    "github",
+    "playwright",
+    "postgres"
+  ],
+  "enabledPlugins": {
+    "claude-plugins-official": [
+      "pyright-lsp",
+      "code-review"
     ]
   }
 }

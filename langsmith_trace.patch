@@ -1,0 +1,76 @@
+--- a/app/graph/build.py
++++ b/app/graph/build.py
+@@ -179,6 +179,23 @@ def _build_run_context(
+     return budgeted, context
+ 
+ 
++def _get_tracer(llm: LLMClient):
++    """Extract the Tracer from an LLMClient for manual trace wrapping."""
++    from app.llm.budget import BudgetedLLMClient
++    from app.llm.client import LangChainLLMClient, Tracer
++    
++    client = llm
++    if isinstance(llm, BudgetedLLMClient):
++        client = llm._client
++    
++    if isinstance(client, LangChainLLMClient):
++        return client._tracer
++    
++    # Fallback for test clients
++    return Tracer.disabled()
++
++
+ async def run_graph(
+     raw: RawInput,
+     *,
+@@ -205,11 +222,44 @@ async def run_graph(
+         knowledge_top_k=knowledge_top_k,
+         runner=runner,
+     )
+-    result = await get_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
+-        AgentState(input=raw),
+-        config={"recursion_limit": RECURSION_LIMIT, "run_name": "teaching_graph"},
+-        context=context,
+-    )
+-    state = AgentState.model_validate(result)
+-    return GraphRunResult(state=state, llm_calls=budgeted.calls)
++    
++    # Wrap graph execution in LangSmith trace for full workflow visibility
++    tracer = _get_tracer(llm)
++    
++    async def _invoke_graph() -> AgentState:
++        result = await get_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
++            AgentState(input=raw),
++            config={"recursion_limit": RECURSION_LIMIT},
++            context=context,
++        )
++        return AgentState.model_validate(result)
++    
++    # Trace inputs: only metadata, never raw user text
++    trace_inputs = {
++        "has_text": bool(raw.get("text")),
++        "has_image": bool(raw.get("image")),
++        "user_id": str(user_id) if user_id else None,
++        "conversation_id": str(conversation_id) if conversation_id else None,
++        "max_llm_calls": max_llm_calls,
++    }
++    
++    # Trace outputs: only counts and status, never response text
++    def _trace_outputs(state: AgentState) -> dict[str, object]:
++        return {
++            "route": state.route,
++            "intent": state.intent.intent if state.intent else None,
++            "errors": len(state.errors),
++            "events": len(state.events),
++            "llm_calls": budgeted.calls,
++        }
++    
++    state = await tracer.run(
++        name="teaching_graph",
++        run_type="chain",
++        inputs=trace_inputs,
++        fn=_invoke_graph,
++        outputs=_trace_outputs,
++    )
++    
++    return GraphRunResult(state=state, llm_calls=budgeted.calls)

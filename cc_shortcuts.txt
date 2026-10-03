@@ -1,0 +1,455 @@
+Great—now that Token Savior + MCPs are in place, here’s a repeatable, step‑by‑step playbook for using Claude Code **properly every time** in your FastAPI + RAG agent workflow.
+
+C:\tools\token-savior-venv\Scripts\Activate.ps1
+
+I’ll break it into:
+
+1. A standard session flow (what to do every time)
+2. How to use **plan mode** correctly
+3. How to create and use **subagents** for different tasks
+4. How to use **Token Savior** and other MCPs effectively
+5. A compact checklist you can reuse
+
+***
+
+## 1. Standard session flow (repeatable pattern)
+
+Use this structure for every meaningful task.
+
+### Step 1 – Start a fresh session per task
+
+In your project folder:
+
+```powershell
+cd C:\Users\srava\onedrive\documents\desktop\deep_research_agent_upgrade_plan
+claude
+```
+
+Then, at the start of each *new* task:
+
+```text
+/clear
+```
+
+This resets the context window so you don’t pay for unrelated old conversation. [code.claude](https://code.claude.com/docs/en/best-practices)
+
+If you want to keep a label for later search:
+
+```text
+/rename rag-retrieval-refactor
+/clear
+```
+
+***
+
+### Step 2 – Set effort level
+
+Before describing the task, set effort based on complexity:
+
+- Small fix / rename / formatting:
+
+  ```text
+  /effort none
+  ```
+
+- Moderate feature / bugfix:
+
+  ```text
+  /effort low
+  ```
+
+- New feature / refactor / architecture work:
+
+  (no override; let it think normally)
+
+This caps reasoning tokens for simple tasks.
+
+***
+
+### Step 3 – Decide: plan mode or direct mode
+
+**Use plan mode** when:
+
+- Multiple files will change
+- You’re adding a feature or refactoring
+- You’re unsure of the best approach
+
+**Use direct mode** when:
+
+- The change is small and well‑specified
+- You already know the design
+
+#### Plan mode in the UI
+
+- Press **Shift+Tab** in the chat input (or select “Plan” if your UI shows it). [code.claude](https://code.claude.com/docs/en/best-practices)
+- Then type your request, explicitly asking for a plan first:
+
+  ```text
+  (in plan mode)
+  Add JWT auth to this FastAPI app using python-jose and passlib.
+  - Endpoints: /auth/login, /auth/register
+  - Protect /items with get_current_user dependency
+  Propose a plan first; don’t implement yet.
+  ```
+
+Claude will output a step‑by‑step plan (files to create/modify, order, tests).
+Then:
+
+- If the plan looks good: “Proceed with this plan.”
+- If not: “Change X and Y, then restate the plan.”
+
+#### Plan mode via CLI
+
+If you use the CLI directly:
+
+```bash
+claude --permission-mode plan
+```
+
+Then give the same kind of prompt: “Propose a plan first; don’t implement yet.”
+
+***
+
+### Step 4 – Give verification criteria
+
+Always tell Claude **how to check its work**. For FastAPI, that usually means tests + commands.
+
+Example for a new utility function:
+
+```text
+Implement validate_email(email: str) -> bool in app/utils.py.
+
+Behavior:
+- "user@example.com" → True
+- "invalid" → False
+- None or non-string → False
+
+Tests:
+- Create tests/test_utils.py if needed.
+- Add tests for:
+  - "user@example.com" → True
+  - "invalid" → False
+  - None → False
+  - 123 → False
+
+After implementing:
+1. Run: pytest tests/test_utils.py -v
+2. If any test fails, fix and re-run until all pass.
+3. Show me the final function and the test output.
+```
+
+This pattern (spec + tests + commands + “fix until green”) dramatically improves accuracy and reduces wasted turns. [code.claude](https://code.claude.com/docs/en/best-practices)
+
+***
+
+## 2. Creating and using subagents
+
+You already have the pattern for a `researcher` agent. Extend this to multiple roles.
+
+### Step 1 – Ensure `.claude/agents` exists
+
+In your project root:
+
+```text
+deep_research_agent_upgrade_plan/
+  .claude/
+    agents/
+```
+
+If not:
+
+```bash
+mkdir .claude\agents
+```
+
+### Step 2 – Define subagents by role
+
+Create one YAML per agent. Examples tailored to your stack:
+
+#### 2.1 `researcher.yaml` – codebase exploration (Haiku)
+
+`.claude/agents/researcher.yaml`:
+
+```yaml
+name: researcher
+description: Investigate codebase and return short summary
+model: haiku
+tools: [Read, Grep, Glob]
+instructions: |
+  - Focus on understanding structure, not implementing.
+  - When asked about a feature (auth, RAG pipeline, etc.):
+    - List relevant files and key functions.
+    - Explain data flow in 5–10 bullets.
+  - Do not rewrite code unless explicitly asked.
+  - Keep answers concise.
+```
+
+#### 2.2 `fastapi_reviewer.yaml` – API design & consistency
+
+`.claude/agents/fastapi_reviewer.yaml`:
+
+```yaml
+name: fastapi_reviewer
+description: Review FastAPI endpoints for consistency and correctness
+model: haiku
+tools: [Read, Grep]
+instructions: |
+  - Check endpoints for:
+    - Consistent response shapes
+    - Proper use of Pydantic schemas
+    - Correct status codes
+  - Summarize issues in ≤10 bullets.
+  - Suggest minimal, concrete fixes.
+```
+
+#### 2.3 `test_writer.yaml` – generate tests
+
+`.claude/agents/test_writer.yaml`:
+
+```yaml
+name: test_writer
+description: Generate pytest tests for FastAPI code
+model: haiku
+tools: [Read, Grep]
+instructions: |
+  - Given a function or endpoint:
+    - Identify edge cases and typical inputs.
+    - Generate pytest tests using TestClient where relevant.
+  - Keep tests small, focused, and readable.
+```
+
+You can add more later (e.g., `security_reviewer`, `rag_specialist`).
+
+### Step 3 – Use subagents in a session
+
+Start Claude Code:
+
+```bash
+claude
+```
+
+Then delegate:
+
+```text
+Use the researcher agent to map our RAG pipeline.
+- Show main components: ingestion, indexing, retrieval, generation.
+- List files and key functions for each.
+```
+
+```text
+Use the fastapi_reviewer agent to review all /items endpoints.
+- Check request/response schemas, status codes, error handling.
+- Summarize issues in ≤10 bullets.
+```
+
+```text
+Use the test_writer agent to create tests for app/routers/items.py.
+- Cover valid/invalid payloads and auth errors.
+```
+
+This keeps your main session focused on high‑level decisions while cheap agents handle exploration, review, and test generation. [code.claude](https://code.claude.com/docs/en/best-practices)
+
+***
+
+## 3. Using Token Savior and other MCPs effectively
+
+You now have:
+
+- `token-savior` MCP (symbol search, impact analysis, memory index)
+- `github` MCP (repo, issues, PRs)
+- Possibly others (`context7`, `exa`, etc.)
+
+### 3.1 When to use Token Savior
+
+Use Token Savior when you need:
+
+- “Where is X defined?”
+- “Who calls this function?”
+- “What will break if I change this?”
+- “Summarize this feature without reading every file.”
+
+Example prompts:
+
+```text
+Use token-savior to find the definition of the function that builds the RAG query (embedding + retrieval + generation).
+- Show file path, function signature.
+- Summarize its flow in ≤10 bullets.
+```
+
+```text
+Use token-savior to analyze impact of changing the `get_current_user` dependency.
+- Which endpoints depend on it directly or indirectly?
+- Summarize in ≤10 bullets.
+```
+
+```text
+Use token-savior’s symbol search to list all routers included in the main FastAPI app.
+- For each router, show path operations (path + method).
+```
+
+These avoid full-file reads and keep token usage low. [mcpgee](https://www.mcpgee.com/servers/token-savior)
+
+### 3.2 When to use GitHub MCP
+
+Use GitHub MCP for:
+
+- “What’s the status of issue #X?”
+- “Show me recent PRs related to auth.”
+- “Search code for usages of `create_access_token`.”
+
+Example:
+
+```text
+Use the github MCP to:
+- Find open issues mentioning “RAG” or “retrieval”.
+- Summarize their titles and main points in ≤10 bullets.
+```
+
+```text
+Use github code search to find all files that import `get_current_user`.
+List file paths and one-line context for each.
+```
+
+### 3.3 Combining Token Savior + subagents
+
+You can chain them:
+
+```text
+1. Use the researcher agent + token-savior to map our RAG pipeline:
+   - Identify main components and key functions.
+2. Then, propose a plan to optimize retrieval latency.
+```
+
+Or:
+
+```text
+Use token-savior to find all callers of `get_current_user`.
+Then use the fastapi_reviewer agent to check if all those endpoints handle auth errors consistently.
+```
+
+This gives you structured, low-token workflows.
+
+***
+
+## 4. Putting it all together: a reusable session template
+
+For any non‑trivial task, follow this template:
+
+1. **Start fresh**
+
+   ```text
+   /clear
+   /effort low   # or none / (nothing) depending on task
+   ```
+
+2. **Choose mode**
+
+   - Plan mode (Shift+Tab or `--permission-mode plan`) for multi‑file work.
+   - Direct mode for small, well‑specified changes.
+
+3. **Delegate exploration (if needed)**
+
+   ```text
+   Use the researcher agent + token-savior to map X.
+   - Summarize in ≤10 bullets.
+   ```
+
+4. **Ask for a plan (if in plan mode)**
+
+   ```text
+   Based on that, propose a plan to implement Y.
+   - List files to create/modify.
+   - Order of changes.
+   - Tests to add.
+   Don’t implement yet.
+   ```
+
+5. **Approve/adjust plan**
+
+   - “Proceed with this plan.”
+   - Or: “Change A and B, then restate the plan.”
+
+6. **Implementation + verification**
+
+   ```text
+   Implement according to the plan.
+   - After each major step, run: pytest ...
+   - Fix failures until tests pass.
+   - Show diffs and final test output.
+   ```
+
+7. **Optional review**
+
+   ```text
+   Use the fastapi_reviewer agent to review the new/changed endpoints.
+   - Summarize issues and suggest minimal fixes.
+   ```
+
+Reuse this pattern every time; only the details change.
+
+***
+
+## 5. Compact checklist (copy‑paste for yourself)
+
+You can save this as `CLAUDE_WORKFLOW.md` in your project:
+
+```md
+# Claude Code workflow (FastAPI + RAG)
+
+## Every session
+- cd into project
+- claude
+- /clear (and /rename if useful)
+- Set /effort: none | low | (default)
+
+## For non-trivial tasks
+- Use plan mode (Shift+Tab or --permission-mode plan)
+- Ask for a plan first; don’t implement yet
+- Approve/adjust plan, then say “Proceed”
+
+## Subagents
+- researcher: map codebase, summarize features
+- fastapi_reviewer: review endpoints for consistency
+- test_writer: generate pytest tests
+
+## Token Savior
+- Use for:
+  - “Where is X defined?”
+  - “Who calls X?”
+  - “Impact of changing X?”
+- Always ask for concise summaries (≤10 bullets)
+
+## Verification
+- Always specify:
+  - Tests to add/run
+  - Commands to execute (pytest, uvicorn, etc.)
+  - “Fix until all tests pass”
+```
+
+If you want, next step I can help you:
+- Draft concrete `researcher`, `fastapi_reviewer`, and `test_writer` YAMLs customized to your actual repo structure, or
+- Walk through one full example session (from `/clear` to final tests) for a specific feature you’re building.
+
+Step 5 – How to use the Postgres MCP in your workflows
+Typical patterns:
+
+5.1 – Explore schema
+text
+Use the postgres MCP to:
+- List all tables in the database.
+- For each table, show columns and types.
+Summarize in a compact table.
+5.2 – Inspect data for debugging
+text
+Use the postgres MCP to:
+- Show 5 sample rows from the `documents` table.
+- Show counts per `collection_id`.
+Don’t paste all rows; just summarize patterns.
+5.3 – Validate your RAG app’s state
+text
+Use the postgres MCP to check our RAG metadata:
+- How many rows in `document_chunks`?
+- Are there any chunks with null embeddings?
+- Show distribution of chunk sizes (min, max, avg) if possible.
+Because the role is read‑only and time‑boxed, even if Claude generates a bad query, Postgres will reject writes and long queries.
+

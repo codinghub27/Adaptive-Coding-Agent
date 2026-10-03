@@ -39,18 +39,67 @@ export function renderMarkdown(markdown = "") {
   return text;
 }
 
+
+// Map step names to their visual icons
+const STEP_ICONS = {
+  "Understanding your question": "⌕",
+  "Reading your input": "⌕", 
+  "Understanding": "⌕",
+  "Finding relevant concepts": "✦",
+  "Finding relevant knowledge": "✦",
+  "Knowledge": "✦",
+  "Solving the problem": "◈",
+  "Choosing an approach": "◈",
+  "Solving": "◈",
+  "Writing code": "⌘",
+  "Modifying code": "⌘",
+  "Coding": "⌘",
+  "Debugging": "⚙",
+  "Investigating problems": "⚙",
+  "Running code": "▶",
+  "Executing": "▶",
+  "Running": "▶",
+  "Verifying the solution": "✓",
+  "Checking results": "✓",
+  "Verification": "✓",
+  "Preparing your explanation": "✎",
+  "Writing response": "✎",
+  "Response": "✎"
+};
+
+function getStepIcon(stepName, status) {
+  if (status === "completed") return "✓";
+  if (status === "running") return "●";
+  if (STEP_ICONS[stepName]) return STEP_ICONS[stepName];
+  const lowerName = stepName.toLowerCase();
+  for (const [key, icon] of Object.entries(STEP_ICONS)) {
+    if (lowerName.includes(key.toLowerCase())) return icon;
+  }
+  return "○";
+}
+
 function conceptMarkup(concept) {
   if (!concept) return "";
   return `<div class="concept-card"><span class="concept-icon">◇</span><span><small>${escapeHtml(concept.label)}</small><strong>${escapeHtml(concept.title)}</strong></span></div>`;
 }
 
 function workMarkup(steps = [], streaming = false) {
-  // While streaming the card is rendered empty and filled stage by stage.
   if (!steps.length && !streaming) return "";
   const complete = steps.length > 0 && steps.every((step) => step.status === "completed");
+  
   return `<div class="working-card ${complete ? "complete" : ""}">
-    <button class="working-toggle" aria-expanded="true"><i></i><strong>${streaming && !complete ? "Working…" : "Working process"}</strong><span>⌃</span></button>
-    <div class="working-steps">${steps.map((step) => `<div class="work-step ${step.status}" data-step="${escapeHtml(step.name)}"><span class="step-state"></span><span>${escapeHtml(step.name)}</span>${step.detail ? `<small>${escapeHtml(step.detail)}</small>` : ""}</div>`).join("")}</div>
+    <button class="working-toggle" aria-expanded="true">
+      <strong>Working on your request</strong>
+      <span>⌃</span>
+    </button>
+    <div class="working-steps">${steps.map((step) => {
+      const icon = getStepIcon(step.name, step.status);
+      return `<div class="work-step ${step.status}" data-step="${escapeHtml(step.name)}">
+        <span class="step-icon">${icon}</span>
+        <span class="step-label">${escapeHtml(step.name)}</span>
+        ${step.detail ? `<small>${escapeHtml(step.detail)}</small>` : ""}
+      </div>`;
+    }).join("")}</div>
   </div>`;
 }
 
@@ -153,19 +202,22 @@ export function updateStreamingStep(article, event) {
   // Stages stream in one at a time (each is a graph node that has actually
   // started), so an index we have not rendered yet means "append", not "drop".
   if (container && !container.children[event.data.index] && event.data.name) {
+    const icon = getStepIcon(event.data.name, event.data.status || "running");
     container.insertAdjacentHTML(
       "beforeend",
-      `<div class="work-step ${escapeHtml(event.data.status || "running")}" data-step="${escapeHtml(event.data.name)}"><span class="step-state"></span><span>${escapeHtml(event.data.name)}</span></div>`,
+      `<div class="work-step ${escapeHtml(event.data.status || "running")}" data-step="${escapeHtml(event.data.name)}"><span class="step-icon">${icon}</span><span class="step-label">${escapeHtml(event.data.name)}</span></div>`,
     );
   }
   const steps = article.querySelectorAll(".work-step");
   const target = steps[event.data.index];
   if (!target) return;
   target.className = `work-step ${event.data.status}`;
+  const iconSpan = target.querySelector(".step-icon");
+  if (iconSpan) iconSpan.textContent = getStepIcon(event.data.name, event.data.status);
   if (event.data.detail && !target.querySelector("small")) target.insertAdjacentHTML("beforeend", `<small>${escapeHtml(event.data.detail)}</small>`);
   if (event.data.status === "completed" && [...steps].every((step) => step.classList.contains("completed"))) {
     article.querySelector(".working-card")?.classList.add("complete");
-    article.querySelector(".working-toggle strong").textContent = "Working process";
+    article.querySelector(".working-toggle strong").textContent = "Working on your request";
   }
 }
 
