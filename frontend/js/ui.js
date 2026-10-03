@@ -1,106 +1,345 @@
+import { icon, sectionStyle, stageIcon } from "./icons.js";
+
 const escapeHtml = (value = "") =>
   String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
 
+/* ------------------------------------------------------------------------ */
+/* Code blocks                                                               */
+/* ------------------------------------------------------------------------ */
+
+const PY_KEYWORDS = "def|return|if|else|elif|for|while|in|not|and|or|is|None|True|False|class|import|from|as|with|try|except|finally|raise|yield|lambda|pass|break|continue|global|nonlocal|assert|del|async|await";
+const TOKEN_RE = new RegExp(
+  [
+    "(#[^\\n]*)", // 1 comment
+    "(\"(?:\\\\.|[^\"\\\\\\n])*\"|'(?:\\\\.|[^'\\\\\\n])*')", // 2 string
+    `\\b(${PY_KEYWORDS})\\b`, // 3 keyword
+    "\\b(\\d+(?:\\.\\d+)?)\\b", // 4 number
+    "\\b([A-Za-z_]\\w*)(?=\\()", // 5 call
+  ].join("|"),
+  "g",
+);
+const TOKEN_CLASSES = [null, "tok-comment", "tok-str", "tok-key", "tok-num", "tok-fn"];
+
+/** Single-pass highlighter: each token is escaped and wrapped exactly once. */
 function highlight(code) {
-  return escapeHtml(code)
-    .replace(/(#.*)$/gm, '<span class="tok-comment">$1</span>')
-    .replace(/\b(def|return|if|else|elif|for|while|in|not|None|True|False|class|import|from|as)\b/g, '<span class="tok-key">$1</span>')
-    .replace(/\b(\d+)\b/g, '<span class="tok-num">$1</span>')
-    .replace(/(&quot;.*?&quot;|&#039;.*?&#039;)/g, '<span class="tok-str">$1</span>')
-    .replace(/\b([a-zA-Z_]\w*)(?=\()/g, '<span class="tok-fn">$1</span>');
+  let out = "";
+  let last = 0;
+  for (const match of code.matchAll(TOKEN_RE)) {
+    out += escapeHtml(code.slice(last, match.index));
+    const group = match.findIndex((value, index) => index > 0 && value !== undefined);
+    out += `<span class="${TOKEN_CLASSES[group]}">${escapeHtml(match[0])}</span>`;
+    last = match.index + match[0].length;
+  }
+  return out + escapeHtml(code.slice(last));
 }
 
 function codeBlock(code, language = "code") {
-  return `<div class="code-block"><div class="code-head"><span>${escapeHtml(language)}</span><button class="copy-code" aria-label="Copy code">Copy</button></div><pre><code>${highlight(code.trim())}</code></pre></div>`;
+  return `<div class="code-block"><div class="code-head">${icon("code")}<span>${escapeHtml(language)}</span><button class="copy-code" aria-label="Copy code">${icon("copy")}<b>Copy</b></button></div><pre><code>${highlight(code.replace(/^\n+|\s+$/g, ""))}</code></pre></div>`;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Markdown → structured response                                            */
+/* ------------------------------------------------------------------------ */
+
+// Decorative emoji the model sometimes writes (📚 🎯 🚀 …). The UI supplies its
+// own consistent symbols, so these are removed; plain ✓ ✗ → are kept.
+const EMOJI_RE = /(?:[\u{1F000}-\u{1FAFF}☀-✒✔-✖✘-➿⭐⭕⌚⌛⏩-⏺⤴⤵〰〽㊗㊙]️?|‍|️)/gu;
+const KEYCAP_RE = /(\d)️?⃣/gu;
+const DONE_MARK_RE = /^(?:✅|✔️?|☑️?|✓)\s*/u;
+const NOT_MARK_RE = /^(?:❌|✖️?|✗|✘)\s*/u;
+
+// An emoji plus the single space after it, so "📚 Roadmap" becomes "Roadmap".
+const EMOJI_GAP_RE = new RegExp(`${EMOJI_RE.source}[ \\t]?`, "gu");
+const stripEmoji = (text) => text.replace(KEYCAP_RE, "$1.").replace(EMOJI_GAP_RE, "");
+
+/** Inline formatting on ALREADY-ESCAPED text. */
+function inline(text) {
+  const spans = [];
+  let out = text.replace(/`([^`]+)`/g, (_, code) => {
+    spans.push(`<code>${code}</code>`);
+    return `\u0001${spans.length - 1}\u0001`;
+  });
+  out = out
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__(.+?)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\w)/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_(?!\s)([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/ -- /g, " — ")
+    .replace(/&lt;br\s*\/?&gt;/g, "<br>");
+  return out.replace(/\u0001(\d+)\u0001/g, (_, index) => spans[Number(index)]);
+}
+
+const fmt = (line) => inline(escapeHtml(stripEmoji(line).trim()));
+
+const HEADING_RE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+const LIST_RE = /^(\s*)([-*•+]|\d{1,3}[.)])\s+(.*)$/;
+const HR_RE = /^\s*([-*_])(?:\s*\1){2,}\s*$/;
+const TABLE_SEP_RE = /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/;
+
+/**
+ * Some answers arrive with a table or numbered list flattened onto one line
+ * ("| a | b | |---|---| | 1 | 2 |", "1. Foo 2. Bar"). Restore the line breaks
+ * so they render as the structure they were meant to be.
+ */
+function normalizeLines(markdown) {
+  return markdown
+    .split("\n")
+    .flatMap((line) => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("|") && /\|\s*:?-{3,}/.test(trimmed) && /\|\s+\|/.test(trimmed)) {
+        return trimmed.replace(/\|\s+\|/g, "|\n|").split("\n");
+      }
+      if (/^1[.)]\s/.test(trimmed) && /\s2[.)]\s+\S/.test(trimmed)) {
+        return trimmed.split(/\s+(?=\d{1,2}[.)]\s+[^\d\s])/);
+      }
+      return [line];
+    });
+}
+
+function splitRow(row) {
+  return row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function tableMarkup(rows) {
+  const hasHeader = rows.length > 1 && TABLE_SEP_RE.test(rows[1].trim());
+  const head = hasHeader ? splitRow(rows[0]) : null;
+  const body = (hasHeader ? rows.slice(2) : rows).filter((row) => !TABLE_SEP_RE.test(row.trim()));
+  const thead = head ? `<thead><tr>${head.map((cell) => `<th>${fmt(cell)}</th>`).join("")}</tr></thead>` : "";
+  const tbody = body.map((row) => `<tr>${splitRow(row).map((cell) => `<td>${fmt(cell)}</td>`).join("")}</tr>`).join("");
+  return `<div class="table-wrap"><table>${thead}<tbody>${tbody}</tbody></table></div>`;
+}
+
+function listItemMarkup(text) {
+  let body = text;
+  let cls = "";
+  let mark = "";
+  const task = body.match(/^\[( |x|X)\]\s+(.*)$/);
+  if (task) {
+    const done = task[1] !== " ";
+    cls = done ? "task done" : "task";
+    mark = `<span class="task-box">${done ? icon("check") : ""}</span>`;
+    body = task[2];
+  } else if (DONE_MARK_RE.test(body)) {
+    cls = "task done";
+    mark = `<span class="task-box">${icon("check")}</span>`;
+    body = body.replace(DONE_MARK_RE, "");
+  } else if (NOT_MARK_RE.test(body)) {
+    cls = "task no";
+    mark = `<span class="task-box">${icon("xCircle")}</span>`;
+    body = body.replace(NOT_MARK_RE, "");
+  }
+  return `<li${cls ? ` class="${cls}"` : ""}>${mark}<span>${fmt(body)}</span>`;
+}
+
+/** Nested lists from indentation; ordered vs. bulleted per level. */
+function listMarkup(items) {
+  let html = "";
+  const stack = [];
+  for (const item of items) {
+    const ordered = /\d/.test(item.marker);
+    while (stack.length && item.indent < stack.at(-1).indent) {
+      html += `</li></${stack.pop().tag}>`;
+    }
+    const top = stack.at(-1);
+    if (!top || item.indent > top.indent) {
+      const tag = ordered ? "ol" : "ul";
+      const start = ordered && parseInt(item.marker, 10) > 1 ? ` start="${parseInt(item.marker, 10)}"` : "";
+      stack.push({ indent: item.indent, tag });
+      html += `<${tag}${start}>`;
+    } else {
+      html += "</li>";
+    }
+    html += listItemMarkup(item.text);
+  }
+  while (stack.length) html += `</li></${stack.pop().tag}>`;
+  return html;
+}
+
+// `render_verdict` (app/response/format.py) opens with one of these fixed
+// phrases, so the badge is a direct reading of the sandbox verdict — never a
+// guess from free text.
+const VERDICT_PREFIXES = [
+  ["The sandbox confirmed this passes", "pass", "checkCircle", "Passed in sandbox"],
+  ["The sandbox still found a failure", "fail", "xCircle", "Failing in sandbox"],
+  ["Correctness could not be checked", "unverified", "info", "Not verified"],
+];
+
+function paragraphMarkup(lines) {
+  const raw = lines.join("\n").trim();
+  if (!raw) return "";
+  // A paragraph that is entirely italic is a server-side caveat ("Not verified
+  // by running your code …"); give it the note treatment.
+  const note = raw.match(/^_([^_][\s\S]*?)_$/) || raw.match(/^\*([^*][\s\S]*?)\*$/);
+  if (note) {
+    return `<div class="callout note">${icon("info")}<p>${fmt(note[1]).replace(/\n/g, "<br>")}</p></div>`;
+  }
+  const verdict = VERDICT_PREFIXES.find(([prefix]) => raw.startsWith(prefix));
+  const badge = verdict ? `<span class="verdict ${verdict[1]}">${icon(verdict[2])}${verdict[3]}</span>` : "";
+  return `${badge}<p>${lines.map(fmt).join("<br>")}</p>`;
+}
+
+function sectionOpen(title) {
+  const clean = stripEmoji(title).replace(/^(\d+)\.\s*/, "").trim();
+  const number = stripEmoji(title).match(/^(\d+)\.\s*/);
+  const { name, tone } = sectionStyle(clean);
+  const marker = number ? `<span class="resp-num">${number[1]}</span>` : `<span class="resp-icon">${icon(name)}</span>`;
+  return `<section class="resp-section${tone ? ` tone-${tone}` : ""}"><header class="resp-head">${marker}<h3>${inline(escapeHtml(clean))}</h3></header><div class="resp-body">`;
 }
 
 export function renderMarkdown(markdown = "") {
   const blocks = [];
-  let text = markdown.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, language, code) => {
+  let source = String(markdown).replace(/\r\n?/g, "\n");
+  source = source.replace(/```([\w+#.-]*)[^\S\n]*\n([\s\S]*?)```/g, (_, language, code) => {
     blocks.push(codeBlock(code, language || "code"));
-    return `%%CODE_${blocks.length - 1}%%`;
+    return `\n\u0000${blocks.length - 1}\u0000\n`;
   });
-  text = escapeHtml(text)
-    // The response generator emits h2 ("## Section"); the design has one
-    // heading size, so every heading level renders as the same h3.
-    .replace(/^#{1,4} (.+)$/gm, "<h3>$1</h3>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/^- (.+)$/gm, "<li>$1</li>");
-  text = text
-    .split(/\n{2,}/)
-    .map((section) => {
-      if (section.startsWith("%%CODE_") || section.startsWith("<h3>")) return section;
-      if (section.includes("<li>")) return `<ul>${section}</ul>`;
-      return section.trim() ? `<p>${section.replace(/\n/g, "<br>")}</p>` : "";
-    })
-    .join("");
-  blocks.forEach((block, index) => (text = text.replace(`%%CODE_${index}%%`, block)));
-  return text;
-}
-
-
-// Map step names to their visual icons
-const STEP_ICONS = {
-  "Understanding your question": "⌕",
-  "Reading your input": "⌕", 
-  "Understanding": "⌕",
-  "Finding relevant concepts": "✦",
-  "Finding relevant knowledge": "✦",
-  "Knowledge": "✦",
-  "Solving the problem": "◈",
-  "Choosing an approach": "◈",
-  "Solving": "◈",
-  "Writing code": "⌘",
-  "Modifying code": "⌘",
-  "Coding": "⌘",
-  "Debugging": "⚙",
-  "Investigating problems": "⚙",
-  "Running code": "▶",
-  "Executing": "▶",
-  "Running": "▶",
-  "Verifying the solution": "✓",
-  "Checking results": "✓",
-  "Verification": "✓",
-  "Preparing your explanation": "✎",
-  "Writing response": "✎",
-  "Response": "✎"
-};
-
-function getStepIcon(stepName, status) {
-  if (status === "completed") return "✓";
-  if (status === "running") return "●";
-  if (STEP_ICONS[stepName]) return STEP_ICONS[stepName];
-  const lowerName = stepName.toLowerCase();
-  for (const [key, icon] of Object.entries(STEP_ICONS)) {
-    if (lowerName.includes(key.toLowerCase())) return icon;
+  // An unclosed fence (mid-stream) renders as the code it will become.
+  const open = source.indexOf("```");
+  if (open !== -1) {
+    const rest = source.slice(open + 3);
+    const newline = rest.indexOf("\n");
+    const language = newline === -1 ? rest : rest.slice(0, newline);
+    blocks.push(codeBlock(newline === -1 ? "" : rest.slice(newline + 1), language.trim() || "code"));
+    source = `${source.slice(0, open)}\n\u0000${blocks.length - 1}\u0000\n`;
   }
-  return "○";
+
+  const lines = normalizeLines(source);
+  let html = "";
+  let inSection = false;
+  let paragraph = [];
+  const flush = () => {
+    html += paragraphMarkup(paragraph);
+    paragraph = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) { flush(); continue; }
+
+    const code = trimmed.match(/^\u0000(\d+)\u0000$/);
+    if (code) { flush(); html += blocks[Number(code[1])]; continue; }
+
+    const heading = trimmed.match(HEADING_RE);
+    if (heading) {
+      flush();
+      // A new top-level section opens for the server's own section titles
+      // (SECTION_TITLES); headings the model writes inside a section (e.g. an
+      // explanation's "## Weekly Breakdown") stay sub-headings of it.
+      const known = sectionStyle(stripEmoji(heading[2]).trim()).name !== "dot";
+      if (heading[1].length <= 2 && (!inSection || known)) {
+        if (inSection) html += "</div></section>";
+        html += sectionOpen(heading[2]);
+        inSection = true;
+      } else {
+        html += `<h4>${fmt(heading[2])}</h4>`;
+      }
+      continue;
+    }
+
+    if (HR_RE.test(trimmed)) { flush(); html += "<hr>"; continue; }
+
+    if (trimmed.startsWith("|")) {
+      flush();
+      const rows = [];
+      while (index < lines.length && lines[index].trim().startsWith("|")) rows.push(lines[index++]);
+      index -= 1;
+      html += tableMarkup(rows);
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      flush();
+      const quote = [];
+      while (index < lines.length && lines[index].trim().startsWith(">")) quote.push(lines[index++].trim().replace(/^>\s?/, ""));
+      index -= 1;
+      html += `<blockquote>${quote.map(fmt).join("<br>")}</blockquote>`;
+      continue;
+    }
+
+    if (LIST_RE.test(line)) {
+      flush();
+      const items = [];
+      while (index < lines.length) {
+        const match = lines[index].match(LIST_RE);
+        if (match) {
+          items.push({ indent: match[1].replace(/\t/g, "  ").length, marker: match[2], text: match[3] });
+        } else if (lines[index].trim() && /^\s{2,}/.test(lines[index]) && items.length) {
+          items.at(-1).text += ` ${lines[index].trim()}`; // wrapped continuation
+        } else {
+          break;
+        }
+        index += 1;
+      }
+      index -= 1;
+      html += listMarkup(items);
+      continue;
+    }
+
+    paragraph.push(trimmed);
+  }
+  flush();
+  if (inSection) html += "</div></section>";
+  return html;
 }
 
-function conceptMarkup(concept) {
-  if (!concept) return "";
-  return `<div class="concept-card"><span class="concept-icon">◇</span><span><small>${escapeHtml(concept.label)}</small><strong>${escapeHtml(concept.title)}</strong></span></div>`;
+/* ------------------------------------------------------------------------ */
+/* Working process                                                           */
+/* ------------------------------------------------------------------------ */
+
+const SPINNER = '<span class="spinner" aria-hidden="true"></span>';
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  if (ms < 1) return "<1ms";
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function stepState(status) {
+  if (status === "running") return SPINNER;
+  if (status === "completed") return icon("check", "ok");
+  return "";
+}
+
+function stepMarkup(step) {
+  const status = step.status || "pending";
+  return `<li class="work-step ${escapeHtml(status)}" data-node="${escapeHtml(step.node || "")}" data-ms="${Number(step.durationMs) || 0}">
+    <span class="step-icon">${icon(stageIcon(step.node))}</span>
+    <span class="step-label">${escapeHtml(step.name)}</span>
+    <span class="step-time">${formatDuration(step.durationMs)}</span>
+    <span class="step-state">${stepState(status)}</span>
+  </li>`;
+}
+
+// Live placeholder for whichever node is running now; the stream only names a
+// node once it has finished, so the label stays generic.
+const NEXT_STEP = `<li class="work-step running next"><span class="step-icon">${SPINNER}</span><span class="step-label">Thinking…</span><span class="step-time"></span><span class="step-state"></span></li>`;
+
+function workSummary(steps) {
+  const total = steps.reduce((sum, step) => sum + (step.durationMs || 0), 0);
+  const count = `${steps.length} step${steps.length === 1 ? "" : "s"}`;
+  return total ? `${count} · ${formatDuration(total)}` : count;
 }
 
 function workMarkup(steps = [], streaming = false) {
   if (!steps.length && !streaming) return "";
-  const complete = steps.length > 0 && steps.every((step) => step.status === "completed");
-  
-  return `<div class="working-card ${complete ? "complete" : ""}">
-    <button class="working-toggle" aria-expanded="true">
-      <strong>Working on your request</strong>
-      <span>⌃</span>
+  const complete = !streaming && steps.length > 0 && steps.every((step) => step.status === "completed");
+  return `<div class="working-card ${complete ? "complete collapsed" : "live"}">
+    <button class="working-toggle" aria-expanded="${String(!complete)}">
+      <span class="work-status">${complete ? icon("checkCircle") : SPINNER}</span>
+      <strong>${complete ? "Reasoning complete" : "Working on your request"}</strong>
+      <small class="work-meta">${complete ? workSummary(steps) : ""}</small>
+      <span class="work-chevron">${icon("chevron")}</span>
     </button>
-    <div class="working-steps">${steps.map((step) => {
-      const icon = getStepIcon(step.name, step.status);
-      return `<div class="work-step ${step.status}" data-step="${escapeHtml(step.name)}">
-        <span class="step-icon">${icon}</span>
-        <span class="step-label">${escapeHtml(step.name)}</span>
-        ${step.detail ? `<small>${escapeHtml(step.detail)}</small>` : ""}
-      </div>`;
-    }).join("")}</div>
+    <ol class="working-steps">${steps.map(stepMarkup).join("")}${streaming ? NEXT_STEP : ""}</ol>
   </div>`;
+}
+
+function conceptMarkup(concept) {
+  if (!concept) return "";
+  return `<div class="concept-card"><span class="concept-icon">${icon("target")}</span><span><small>${escapeHtml(concept.label)}</small><strong>${escapeHtml(concept.title)}</strong></span></div>`;
 }
 
 /**
@@ -116,19 +355,19 @@ function hintMarkup(hint, messageId, topic) {
   const level = Math.min(hint.level, hint.total);
   const atCeiling = !hint.moreHelpAvailable;
   return `<div class="hint-ladder" data-message-id="${escapeHtml(messageId)}" data-more-help="${String(Boolean(hint.moreHelpAvailable))}" data-topic="${escapeHtml(topic || "")}">
-    <div class="hint-head"><div><span class="bulb-icon">?</span><span><span class="hint-count">${atCeiling ? "Final guidance" : `Hint ${level} of ${hint.total}`}</span><strong>${atCeiling ? "Solution direction" : "One step at a time"}</strong></span></div><div class="hint-dots">${Array.from({ length: hint.total }, (_, index) => `<i class="${index < level ? "active" : ""}"></i>`).join("")}</div></div>
+    <div class="hint-head"><div><span class="bulb-icon">${icon("bulb")}</span><span><span class="hint-count">${atCeiling ? "Final guidance" : `Hint ${level} of ${hint.total}`}</span><strong>${atCeiling ? "Solution direction" : "One step at a time"}</strong></span></div><div class="hint-dots">${Array.from({ length: hint.total }, (_, index) => `<i class="${index < level ? "active" : ""}"></i>`).join("")}</div></div>
     <div class="hint-copy">${renderMarkdown(hint.text)}</div>
-    <div class="hint-actions"><button class="next-hint">${atCeiling ? "Ask for more help →" : "Get next hint →"}</button><span class="hint-note">${atCeiling ? "You’ve reached this level’s ceiling" : "Solution stays hidden"}</span></div>
+    <div class="hint-actions"><button class="next-hint">${atCeiling ? "Ask for more help" : "Get next hint"}${icon("arrowRight")}</button><span class="hint-note">${icon(atCeiling ? "info" : "shield")}${atCeiling ? "You’ve reached this level’s ceiling" : "Solution stays hidden"}</span></div>
   </div>`;
 }
 
 function questionMarkup(question) {
   if (!question) return "";
-  return `<div class="question-card"><span>Quick clarification</span><strong>${escapeHtml(question.prompt)}</strong><div class="question-options">${question.options.map((option) => `<button>${escapeHtml(option)}</button>`).join("")}</div></div>`;
+  return `<div class="question-card"><span>${icon("help")}Quick clarification</span><strong>${escapeHtml(question.prompt)}</strong><div class="question-options">${question.options.map((option) => `<button>${escapeHtml(option)}</button>`).join("")}</div></div>`;
 }
 
 function actionsMarkup() {
-  return `<div class="message-actions"><button class="copy-message" aria-label="Copy response" title="Copy">▣</button><button aria-label="Helpful" title="Helpful">＋</button><button aria-label="Not helpful" title="Not helpful">−</button></div>`;
+  return `<div class="message-actions"><button class="copy-message" aria-label="Copy response" title="Copy">${icon("copy")}</button><button aria-label="Helpful" title="Helpful">${icon("thumbUp")}</button><button aria-label="Not helpful" title="Not helpful">${icon("thumbDown")}</button></div>`;
 }
 
 export function messageMarkup(message) {
@@ -140,8 +379,8 @@ export function messageMarkup(message) {
     return `<article class="message user" data-id="${escapeHtml(message.id)}"><div><div class="user-bubble">${attachment}${escapeHtml(message.content)}</div><div class="message-time">${time}</div></div></article>`;
   }
   return `<article class="message agent" data-id="${escapeHtml(message.id)}">
-    <span class="message-avatar" aria-hidden="true">A</span>
-    <div class="message-body"><div class="message-meta"><strong>Adaptive</strong><span>${time}</span>${message.adapted ? '<span class="adapted-label">Adapted to your level</span>' : ""}</div>
+    ${AVATAR}
+    <div class="message-body"><div class="message-meta"><strong>Adaptive</strong><span>${time}</span>${message.adapted ? `<span class="adapted-label">${icon("sparkle")}Adapted to your level</span>` : ""}</div>
       ${workMarkup(message.work || [])}
       ${conceptMarkup(message.concept)}
       <div class="agent-content">${renderMarkdown(message.content)}</div>
@@ -178,7 +417,7 @@ function skillDeltaMarkup(deltas = {}) {
 
 export function renderMessages(container, messages) {
   if (!messages.length) {
-    container.innerHTML = `<section class="empty-state"><div class="empty-mark">✦</div><h1>What are you learning today?</h1><p>I’ll adapt the depth, hints, and pace to how you learn.</p><div class="suggestions">
+    container.innerHTML = `<section class="empty-state"><div class="empty-mark">${icon("logo")}</div><h1>What are you learning today?</h1><p>I’ll adapt the depth, hints, and pace to how you learn.</p><div class="suggestions">
       <button class="suggestion" data-prompt="Help me debug this code"><span>01 · DEBUG</span><strong>Debug my code</strong><small>Find the cause, not just the fix</small></button>
       <button class="suggestion" data-prompt="Explain binary search with a visual mental model"><span>02 · UNDERSTAND</span><strong>Explain a concept</strong><small>Build a durable mental model</small></button>
       <button class="suggestion" data-prompt="Give me a guided DSA challenge"><span>03 · PRACTICE</span><strong>Solve a DSA problem</strong><small>Progressive hints, solution hidden</small></button>
@@ -189,39 +428,51 @@ export function renderMessages(container, messages) {
   container.innerHTML = `<div class="date-divider"><span>Today</span></div>${messages.map(messageMarkup).join("")}`;
 }
 
+const AVATAR = `<span class="message-avatar" aria-hidden="true">${icon("logo")}</span>`;
+
 export function createStreamingMessage(container, steps) {
   const article = document.createElement("article");
   article.className = "message agent";
-  article.innerHTML = `<span class="message-avatar" aria-hidden="true">A</span><div class="message-body"><div class="message-meta"><strong>Adaptive</strong><span>now</span><span class="adapted-label">Adapting response</span></div>${workMarkup(steps, true)}<div class="stream-content"></div></div>`;
+  article.innerHTML = `${AVATAR}<div class="message-body"><div class="message-meta"><strong>Adaptive</strong><span>now</span><span class="adapted-label live">${SPINNER}Thinking</span></div>${workMarkup(steps, true)}<div class="stream-content"></div></div>`;
   container.append(article);
   return article;
 }
 
 export function updateStreamingStep(article, event) {
-  const container = article.querySelector(".working-steps");
-  // Stages stream in one at a time (each is a graph node that has actually
-  // started), so an index we have not rendered yet means "append", not "drop".
-  if (container && !container.children[event.data.index] && event.data.name) {
-    const icon = getStepIcon(event.data.name, event.data.status || "running");
-    container.insertAdjacentHTML(
-      "beforeend",
-      `<div class="work-step ${escapeHtml(event.data.status || "running")}" data-step="${escapeHtml(event.data.name)}"><span class="step-icon">${icon}</span><span class="step-label">${escapeHtml(event.data.name)}</span></div>`,
-    );
+  const list = article.querySelector(".working-steps");
+  if (!list) return;
+  const { index, name, node, status = "completed", durationMs } = event.data;
+  const rendered = list.querySelectorAll(".work-step:not(.next)");
+  const step = stepMarkup({ name, node, status, durationMs });
+  if (rendered[index]) {
+    rendered[index].outerHTML = step;
+    return;
   }
-  const steps = article.querySelectorAll(".work-step");
-  const target = steps[event.data.index];
-  if (!target) return;
-  target.className = `work-step ${event.data.status}`;
-  const iconSpan = target.querySelector(".step-icon");
-  if (iconSpan) iconSpan.textContent = getStepIcon(event.data.name, event.data.status);
-  if (event.data.detail && !target.querySelector("small")) target.insertAdjacentHTML("beforeend", `<small>${escapeHtml(event.data.detail)}</small>`);
-  if (event.data.status === "completed" && [...steps].every((step) => step.classList.contains("completed"))) {
-    article.querySelector(".working-card")?.classList.add("complete");
-    article.querySelector(".working-toggle strong").textContent = "Working on your request";
-  }
+  const next = list.querySelector(".work-step.next");
+  if (next) next.insertAdjacentHTML("beforebegin", step);
+  else list.insertAdjacentHTML("beforeend", step);
+}
+
+/** The answer is starting: fold the finished process away behind its summary. */
+function completeWorkCard(article) {
+  const card = article.querySelector(".working-card");
+  if (!card) return;
+  card.querySelector(".work-step.next")?.remove();
+  const steps = [...card.querySelectorAll(".work-step")];
+  card.classList.remove("live");
+  card.classList.add("complete", "collapsed");
+  card.querySelector(".working-toggle").setAttribute("aria-expanded", "false");
+  card.querySelector(".work-status").innerHTML = icon("checkCircle");
+  card.querySelector(".working-toggle strong").textContent = "Reasoning complete";
+  const total = steps.reduce((sum, step) => sum + (Number(step.dataset.ms) || 0), 0);
+  const count = `${steps.length} step${steps.length === 1 ? "" : "s"}`;
+  card.querySelector(".work-meta").textContent = total ? `${count} · ${formatDuration(total)}` : count;
+  const label = article.querySelector(".adapted-label.live");
+  if (label) label.innerHTML = `${icon("pen")}Writing`;
 }
 
 export function startStreamingContent(article, concept) {
+  completeWorkCard(article);
   article.querySelector(".stream-content").innerHTML = `${conceptMarkup(concept)}<div class="agent-content streaming-cursor"></div>`;
 }
 

@@ -326,15 +326,15 @@ function bindMessageInteractions() {
       const card = toggle.closest(".working-card");
       card.classList.toggle("collapsed");
       toggle.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
-      toggle.querySelector("span").textContent = card.classList.contains("collapsed") ? "⌄" : "⌃";
       return;
     }
     const copyCode = event.target.closest(".copy-code");
     if (copyCode) {
       await navigator.clipboard.writeText(copyCode.closest(".code-block").querySelector("code").innerText);
-      copyCode.textContent = "Copied";
+      const copyLabel = copyCode.querySelector("b") || copyCode;
+      copyLabel.textContent = "Copied";
       showToast("Code copied to clipboard");
-      setTimeout(() => (copyCode.textContent = "Copy"), 1600);
+      setTimeout(() => (copyLabel.textContent = "Copy"), 1600);
       return;
     }
     const copyMessage = event.target.closest(".copy-message");

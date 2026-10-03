@@ -74,15 +74,22 @@ function buildHint(generated) {
  *
  * The server assembles `generated.text` from every section including
  * `next_hint`; rendering that text as-is under a hint card repeats the hint
- * verbatim. When a hint card is present the body is rebuilt from the other
- * sections instead — the same content, each part shown exactly once.
+ * verbatim. The body is rebuilt from the sections instead (exactly how the
+ * server joins them, `app/response/generate.py`), skipping `next_hint` when a
+ * hint card shows it — the same content, each part shown exactly once.
  */
 function answerBody(generated, hasHintCard) {
   const sections = generated?.sections || [];
-  if (!hasHintCard || !sections.length) return generated?.text || "";
-  const rest = sections.filter((section) => section.kind !== "next_hint");
+  if (!sections.length) return generated?.text || "";
+  const rest = sections.filter((section) => !(hasHintCard && section.kind === "next_hint"));
   if (!rest.length) return "";
-  return rest.map((section) => `## ${section.title}\n\n${section.body}`).join("\n\n");
+  // Presentation order only: "Next steps" closes the answer instead of sitting
+  // between the hint and the explanation. Same sections, same text.
+  const ordered = [
+    ...rest.filter((section) => section.kind !== "next_steps"),
+    ...rest.filter((section) => section.kind === "next_steps"),
+  ];
+  return ordered.map((section) => `## ${section.title}\n\n${section.body}`).join("\n\n");
 }
 
 /**
@@ -106,7 +113,7 @@ function buildMessage(payload, steps) {
     createdAt: new Date().toISOString(),
     content: withReferences(answerBody(generated, Boolean(hint)) || payload.response, generated?.citations),
     concept: buildConcept(payload),
-    work: steps.map((step) => ({ ...step, status: "completed" })),
+    work: steps.map(({ name, node, durationMs }) => ({ name, node, durationMs, status: "completed" })),
     hint,
     question: null,
     nextSteps: generated?.next_steps || [],
@@ -192,14 +199,16 @@ export async function streamChat({ conversationId, content, attachmentFile = nul
 
   onEvent?.({ type: "start", data: { steps: [] } });
 
+  // A `stage` frame is emitted when a graph node FINISHES (LangGraph
+  // "updates" mode), so each frame is a completed step. Its duration is the
+  // gap since the previous frame (or since the stream opened), measured here.
+  let mark = performance.now();
   const handleStage = (stage) => {
-    const previous = steps.length - 1;
-    if (previous >= 0) {
-      steps[previous].status = "completed";
-      onEvent?.({ type: "step", data: { index: previous, name: steps[previous].name, status: "completed" } });
-    }
-    steps.push({ name: stage.label, status: "running" });
-    onEvent?.({ type: "step", data: { index: steps.length - 1, name: stage.label, status: "running" } });
+    const now = performance.now();
+    const step = { name: stage.label, node: stage.node, status: "completed", durationMs: now - mark };
+    mark = now;
+    steps.push(step);
+    onEvent?.({ type: "step", data: { index: steps.length - 1, ...step } });
   };
 
   try {
@@ -224,13 +233,6 @@ export async function streamChat({ conversationId, content, attachmentFile = nul
   if (failure) throw new ApiError(failure, 500);
   if (!finalPayload) throw new ApiError("The agent stopped responding.", 502);
 
-  // Every node that ran has now finished.
-  steps.forEach((step, index) => {
-    if (step.status !== "completed") {
-      step.status = "completed";
-      onEvent?.({ type: "step", data: { index, name: step.name, status: "completed" } });
-    }
-  });
 
   const message = buildMessage(finalPayload, steps);
   onEvent?.({ type: "content_start", data: { concept: message.concept } });
