@@ -101,7 +101,11 @@ _SYNTH_SYSTEM: Final = (
     'correctly solving the problem>", '
     '"cases": [{"name": "<unique case name>", "args": [<positional args>], '
     '"kwargs": {<keyword args>}, "expected": <the correct return value>}, ...]} '
-    "Propose at most 6 cases."
+    "Propose at most 6 cases. For a binary-tree argument or result, write the value in a "
+    "case as its LeetCode level-order list with null for a missing child (for example "
+    "[1,2,3,null,4]; the empty tree is []). For a linked list, write a plain list. The "
+    "reference solution itself still takes and returns TreeNode / ListNode objects as usual; "
+    "those classes are provided, do not define them."
 )
 
 

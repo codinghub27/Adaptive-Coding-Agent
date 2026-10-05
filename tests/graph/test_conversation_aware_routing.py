@@ -38,6 +38,7 @@ from app.schemas.execution import ExecutionRequest, ExecutionResult, TestCase, T
 from app.schemas.input import ActiveProblem, CodeBlock, StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.plan import TeachingPlan
+from app.schemas.profile import LearnerProfileView
 from app.schemas.tutoring import PendingCheck, SessionProgress
 from tests.graph import test_conversation_regression as reg
 from tests.graph.test_conversation_regression import (
@@ -518,3 +519,70 @@ async def test_a_crash_is_reported_on_the_line_the_learner_typed() -> None:
     assert run.result.failing_case is not None
     assert "line 3" in run.result.failing_case
     assert "line 4" not in run.result.failing_case
+
+
+# --- R2: the same problem is taught differently to a weak and a strong learner ---------------
+
+
+async def test_a_weak_and_a_strong_learner_get_different_help_on_the_same_problem(
+    store: _Store,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seeded profiles on one topic; everything else about the turn is equal."""
+    levels: dict[str, float] = {}
+
+    async def get_profile(session: object, user_id: UUID) -> LearnerProfileView:
+        del session, user_id
+        return LearnerProfileView.empty().model_copy(update={"skill_levels": dict(levels)})
+
+    monkeypatch.setattr(nodes, "get_profile", get_profile)
+    ask = _TWO_SUM + "\n\nhow to solve this prob"
+
+    async def plan_for(skill: float) -> tuple[GraphRunResult, TeachingPlan]:
+        levels["hashing"] = skill
+        # A new conversation each time: nothing pending, nothing active.
+        store.messages.clear()
+        store.hints.clear()
+        store.active = None
+        store.pending = None
+        store.progress = SessionProgress.empty()
+        chat = _Chat()
+        result = await run_graph(
+            RawInput(text=ask, topic_hint="hashing"),
+            llm=chat.llm,
+            session=cast("AsyncSession", reg._Session()),  # pyright: ignore[reportPrivateUsage]
+            user_id=chat.user_id,
+            conversation_id=chat.conversation_id,
+        )
+        assert result.state.plan is not None
+        assert result.state.plan.topic == "hashing"
+        return result, result.state.plan
+
+    weak_run, weak = await plan_for(0.2)
+    strong_run, strong = await plan_for(0.85)
+    fresh_run, fresh = await plan_for(0.5)
+    del fresh_run
+
+    order = ["hint", "concept", "pseudocode", "partial", "full"]
+    # Weak: the smallest step, easy difficulty. Strong: more is shown per turn,
+    # concisely, at hard difficulty. A fresh learner sits between them.
+    assert weak.assistance_level == "hint"
+    assert order.index(strong.assistance_level) > order.index(fresh.assistance_level)
+    assert order.index(fresh.assistance_level) > order.index(weak.assistance_level)
+    assert (weak.difficulty, fresh.difficulty, strong.difficulty) == ("easy", "medium", "hard")
+    assert strong.concise and not weak.concise
+    assert "weak_skill" in weak.rationale
+    assert "strong_skill" in strong.rationale
+    assert fresh.rationale == ["escalation_denied_no_explicit_ask"]  # nothing profile-driven
+    # The hint ladder the learner can climb without asking is longer for the
+    # strong learner: the ceiling is set by the assistance level.
+    weak_generated = weak_run.state.generated_response
+    strong_generated = strong_run.state.generated_response
+    assert weak_generated is not None
+    assert strong_generated is not None
+    assert weak_generated.hint_ceiling is not None
+    assert strong_generated.hint_ceiling is not None
+    assert strong_generated.hint_ceiling > weak_generated.hint_ceiling
+    # Neither is handed the solution for asking how to approach it.
+    assert not weak_generated.reveals_code
+    assert not strong_generated.reveals_code

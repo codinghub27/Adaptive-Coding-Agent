@@ -32,6 +32,7 @@ from app.llm.base import (
     LLMRateLimitError,
     TokenUsage,
 )
+from app.llm.telemetry import HttpTelemetry
 
 _T = TypeVar("_T")
 
@@ -630,17 +631,31 @@ class FailoverLLMClient:
 
 
 def _build_client(
-    settings: Settings, provider: LLMProvider, api_key: SecretStr, tracer: Tracer
+    settings: Settings,
+    provider: LLMProvider,
+    api_key: SecretStr,
+    tracer: Tracer,
+    credential_index: int = 0,
 ) -> LangChainLLMClient:
-    """One credentialed `LangChainLLMClient` for `provider`."""
+    """One credentialed `LangChainLLMClient` for `provider`.
+
+    `credential_index` is this credential's position in the failover chain;
+    it labels the HTTP telemetry (`app.llm.telemetry`) so a rate-limited key
+    can be told from the others without ever logging the key.
+    """
     model_name = settings.model_for(provider)
     vision_model_name = settings.vision_model_for(provider)
 
     chat_model: BaseChatModel
     vision_model: BaseChatModel
     if provider == "groq":
-        chat_model = ChatGroq(model=model_name, api_key=api_key)
-        vision_model = ChatGroq(model=vision_model_name, api_key=api_key)
+        http = HttpTelemetry(
+            provider=provider,
+            credential_index=credential_index,
+            log_path=settings.llm_http_log_path,
+        ).client()
+        chat_model = ChatGroq(model=model_name, api_key=api_key, http_async_client=http)
+        vision_model = ChatGroq(model=vision_model_name, api_key=api_key, http_async_client=http)
     else:
         chat_model = ChatOpenRouter(model=model_name, api_key=api_key)
         vision_model = ChatOpenRouter(model=vision_model_name, api_key=api_key)
@@ -670,7 +685,10 @@ def get_llm_client(settings: Settings, tracer: Tracer | None = None) -> LLMClien
     if not chain:
         raise RuntimeError("no LLM provider API key is configured")
 
-    clients = [_build_client(settings, provider, api_key, tracer) for provider, api_key in chain]
+    clients = [
+        _build_client(settings, provider, api_key, tracer, index)
+        for index, (provider, api_key) in enumerate(chain)
+    ]
     if len(clients) == 1:
         return clients[0]
     return FailoverLLMClient(clients)

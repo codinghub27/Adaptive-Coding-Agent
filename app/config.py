@@ -124,6 +124,10 @@ class Settings(BaseSettings):
 
     llm_provider: LLMProvider = "openrouter"
     llm_model: str | None = None
+    #: When set, every HTTP attempt against the LLM provider is appended
+    #: here as one JSON line: status, seconds, rate-limit headers. Metadata
+    #: only (see `app.llm.telemetry`). Off by default.
+    llm_http_log_path: Path | None = None
     llm_vision_model: str | None = None
     groq_api_key: SecretStr | None = None
     #: Additional Groq keys (`GROQ_API_KEY_1` .. `GROQ_API_KEY_4`), tried in

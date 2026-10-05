@@ -120,8 +120,17 @@ def select_entrypoint(
 # --------------------------------------------------------------------------
 
 
+#: JSON spellings a LeetCode example uses inside a list
+#: (`root = [1,null,2]`, `flags = [true,false]`), outside any quoted string.
+_JSON_WORD_RE: Final = re.compile(
+    r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(null|true|false)\b"""
+)
+_JSON_WORDS: Final = {"null": "None", "true": "True", "false": "False"}
+
+
 def _clean_expr(text: str) -> str:
-    return text.strip().strip("`*").strip()
+    cleaned = text.strip().strip("`*").strip()
+    return _JSON_WORD_RE.sub(lambda m: m.group(1) or _JSON_WORDS[m.group(2)], cleaned)
 
 
 def _safe_literal_eval(expr: str) -> object:

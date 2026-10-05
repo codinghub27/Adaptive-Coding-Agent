@@ -32,8 +32,10 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.execution.base import RawRun, SandboxBackend, truncate_text
+from app.execution.node_adapter import adapt_nodes
 from app.execution.sandbox import DockerSandbox, SandboxError, SandboxLimits, make_docker_client
 from app.schemas.execution import (
+    MAX_CODE_CHARS,
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
@@ -195,6 +197,16 @@ def interpret(raw: RawRun, marker: str) -> ExecutionResult:
 # --------------------------------------------------------------------------
 
 
+def _unshift_lines(result: ExecutionResult, shift: int) -> ExecutionResult:
+    """`result` with its error line counted in the submission as it was given,
+    not in the copy that had `shift` lines of class definitions put above it."""
+    error = result.error
+    if shift <= 0 or error is None or error.lineno is None:
+        return result
+    lineno = max(error.lineno - shift, 1)
+    return result.model_copy(update={"error": error.model_copy(update={"lineno": lineno})})
+
+
 class SandboxRunner:
     """Dispatches `ExecutionRequest`s to a per-language `SandboxBackend`,
     bounding concurrency with a semaphore-backed queue.
@@ -239,6 +251,16 @@ class SandboxRunner:
                 ),
             )
 
+        # Tree / linked-list solutions are made callable with the plain lists a
+        # test case carries (`app.execution.node_adapter`). Only what is SENT
+        # changes; `shift` maps reported line numbers back to the submission.
+        shift = 0
+        if request.tests is not None:
+            adapted, shift = adapt_nodes(request.code)
+            if adapted != request.code and len(adapted) <= MAX_CODE_CHARS:
+                request = request.model_copy(update={"code": adapted})
+            else:
+                shift = 0
         payload_b64 = encode_payload(request)
         if len(payload_b64) > MAX_PAYLOAD_B64_BYTES:
             logger.info("sandbox run rejected: payload too large")
@@ -281,7 +303,7 @@ class SandboxRunner:
                         message="the sandbox backend failed to run this submission",
                     ),
                 )
-            return interpret(raw, marker)
+            return _unshift_lines(interpret(raw, marker), shift)
         finally:
             self._in_flight -= 1
             self._semaphore.release()
