@@ -518,9 +518,13 @@ _VERIFIED_REVEAL_TEXT: Final = (
     "is checked, not proven. Read it line by line, then rewrite it yourself without looking."
 )
 _UNVERIFIED_REVEAL_TEXT: Final = (
-    "You've earned the full solution, but I couldn't verify one in the sandbox this time, "
-    "and I won't show code that hasn't been run. Ask again in a moment, or paste your "
-    "attempt and I'll run it against the examples."
+    "Here is a full solution. **Not verified in sandbox**: {reason}. Treat it as a draft -- "
+    "trace it on the examples yourself before you rely on it."
+)
+_NO_SOLUTION_TEXT: Final = (
+    "You asked for the full solution and I tried to write one, but the model did not "
+    "return usable code this time. Ask again and I'll retry -- or paste your attempt and "
+    "I'll work from that."
 )
 
 
@@ -646,9 +650,10 @@ async def run_dsa(
     for section in teaching:
         if section.citation not in citations:
             citations.append(section.citation)
-    # AD-4: the only code ever revealed is `solution`, the reference that
-    # passed its own cases in the sandbox. The solver LLM's own `code` is
-    # discarded unconditionally -- an unverified solution is never shown.
+    # AD-4 (revised, A-10): the code revealed is `solution`, the reference
+    # `verified_reference` proposed and tried to verify. One that passed is
+    # shown as checked; one that could not be verified is still shown, under
+    # "Not verified in sandbox". The solver LLM's own `code` is never used.
     hint = final_state.get("hint")
     at_full = hint is not None and hint.level >= HintLevel.L6_FULL
     revealed_code = solution.code if solution is not None and at_full else None
@@ -663,11 +668,18 @@ async def run_dsa(
                 "ceiling": max(held, hint.ceiling if hint.ceiling < HintLevel.L6_FULL else held),
                 "reveals_code": False,
                 "is_terminal": True,
-                "text": _UNVERIFIED_REVEAL_TEXT,
+                "text": _NO_SOLUTION_TEXT,
             }
         )
-    elif hint is not None and revealed_code is not None:
-        hint = hint.model_copy(update={"text": _VERIFIED_REVEAL_TEXT})
+    elif hint is not None and solution is not None and revealed_code is not None:
+        # A-10: an explicit ask is answered with the code either way; what
+        # differs is the label. Only a sandbox pass may be called checked.
+        text = (
+            _VERIFIED_REVEAL_TEXT
+            if solution.verified
+            else _UNVERIFIED_REVEAL_TEXT.format(reason=solution.reason or "it was not run")
+        )
+        hint = hint.model_copy(update={"text": text})
     elif hint is not None and plan is not None:
         note = _refused_ask_note(plan, hint)
         if note is not None:

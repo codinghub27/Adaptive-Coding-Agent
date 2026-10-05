@@ -258,7 +258,9 @@ async def test_example_input_alone_is_not_the_learners_code(store: _Store) -> No
     assert result.state.route == "dsa"
 
 
-async def test_a_refused_reveal_is_one_honest_note_not_a_survey(store: _Store) -> None:  # noqa: F811
+async def test_a_reveal_with_no_code_produced_is_one_honest_note_not_a_survey(
+    store: _Store,  # noqa: F811
+) -> None:
     del store
     chat = reg._Conversation()  # pyright: ignore[reportPrivateUsage]
     await chat.turn(reg._PARTITION_LABELS)  # pyright: ignore[reportPrivateUsage]
@@ -268,7 +270,7 @@ async def test_a_refused_reveal_is_one_honest_note_not_a_survey(store: _Store) -
     generated = result.state.generated_response
     assert generated is not None
     assert [section.kind for section in generated.sections] == ["next_hint"]
-    assert "couldn't verify" in _reply(result)
+    assert "did not return usable code" in _reply(result)
     assert "Understanding the problem" not in _reply(result)
 
 
@@ -375,8 +377,8 @@ def test_nothing_to_fix_is_said_only_when_the_code_passed() -> None:
         result=DebugResult(initial_verdict=unproven, bug_explanation="`i < n` should be `i <= n`."),
         plan=plan,
     ).text
-    assert "the version you shared is the one to keep" in said
-    assert "the version you shared is the one to keep" not in unsaid
+    assert "there was nothing to fix" in said
+    assert "there was nothing to fix" not in unsaid
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,7 @@ from pydantic import Field
 from app.schemas.base import APIModel
 from app.schemas.event import Difficulty
 from app.schemas.execution import Verdict
+from app.schemas.input import ActiveProblem, CodeBlock
 from app.schemas.plan import AssistanceLevel
 
 __all__ = [
@@ -146,6 +147,13 @@ class SessionProgress(APIModel):
     #: Scaffolding floor per problem key (or topic): raised one step by a
     #: "don't know" (G1/G5) so later turns on that problem keep the extra help.
     assistance_floor: dict[str, AssistanceLevel] = Field(default_factory=dict[str, AssistanceLevel])
+    #: The subject this conversation was on BEFORE the current one, so "go back
+    #: to the earlier one" has something to go back to. Untrusted learner data.
+    earlier_problem: ActiveProblem | None = None
+    #: The learner's latest code for the subject `last_attempt_key` names, so
+    #: "where's the mistake?" one turn later still has code to read.
+    last_attempt: list[CodeBlock] = Field(default_factory=list[CodeBlock])
+    last_attempt_key: str | None = Field(default=None, max_length=32)
 
     @classmethod
     def empty(cls) -> "SessionProgress":

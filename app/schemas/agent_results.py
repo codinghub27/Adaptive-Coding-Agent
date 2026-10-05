@@ -234,6 +234,16 @@ class DebugResult(APIModel):
     bug_explanation: str | None = None
     bug_location: BugLocation | None = None
     patched_code: str | None = None
+    #: The learner's OWN code handed back because they asked for the code and
+    #: there was no fix to show (F2): tidied and commented when that version
+    #: held up in the sandbox, otherwise exactly what they shared.
+    #: `presented_label` says what is known about it; `presented_notes` are
+    #: brief LLM-written notes (display-only).
+    presented_code: str | None = None
+    presented_label: str | None = None
+    presented_notes: list[str] = Field(default_factory=list[str])
+    #: Why nothing was run (no sandbox). The reply then says "Not executed".
+    not_executed: bool = False
     attempts: int = Field(default=0, ge=0)
     initial_verdict: Verdict | None = None
     final_verdict: Verdict | None = None

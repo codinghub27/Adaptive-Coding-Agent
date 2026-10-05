@@ -20,7 +20,7 @@ import ast
 import builtins
 from typing import Final
 
-__all__ = ["WRAPPER_NAME", "is_sample_data", "repair_snippet"]
+__all__ = ["WRAPPER_NAME", "is_sample_data", "line_offset", "repair_snippet"]
 
 #: The function a bare body is wrapped in.
 WRAPPER_NAME: Final = "solve"
@@ -260,6 +260,25 @@ def is_sample_data(code: str) -> bool:
     if tree is None or not tree.body:
         return False
     return all(isinstance(node, ast.Assign) and _is_literal(node.value) for node in tree.body)
+
+
+def line_offset(original: str, repaired: str) -> int:
+    """How many lines `repaired` has above the learner's own text.
+
+    Found by locating the learner's lines in the repaired source: repair only
+    re-indents lines and adds whole lines above or below them, so the first
+    original line that still exists gives the shift. 0 when nothing moved.
+    """
+    after = [line.strip() for line in repaired.split("\n")]
+    before = original.replace("\r\n", "\n").split("\n")
+    for index, line in enumerate(before):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for position in range(index, len(after)):
+            if after[position] == stripped:
+                return min(position - index, 10)
+    return 0
 
 
 def repair_snippet(code: str) -> str:

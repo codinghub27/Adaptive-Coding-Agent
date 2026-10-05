@@ -11,9 +11,11 @@ from app.db.models.hint_progress import HintProgress
 from app.db.models.message import Message
 from app.db.models.profile import LearnerProfile
 from app.db.models.refresh_token import RefreshToken
+from app.db.models.test_suite import CachedTestSuite
 from app.db.models.user import User
 
 __all__ = [
+    "CachedTestSuite",
     "Conversation",
     "HintProgress",
     "LearnerProfile",

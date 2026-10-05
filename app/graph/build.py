@@ -129,9 +129,12 @@ def build_graph(node_overrides: Mapping[str, Node] | None = None) -> _CompiledGr
         builder.add_node(name, safe_node(name, fn, FALLBACKS[name]))  # pyright: ignore[reportUnknownMemberType]
 
     builder.add_edge(START, "understand_input")
-    builder.add_edge("understand_input", "classify_intent")
-    builder.add_edge("classify_intent", "load_learner_profile")
-    builder.add_edge("load_learner_profile", "retrieve_knowledge")
+    # The conversation is loaded BEFORE classification (A-08): the classifier
+    # is shown the active subject, the pending question and the last messages,
+    # so a follow-up is read as a follow-up instead of as a first message.
+    builder.add_edge("understand_input", "load_learner_profile")
+    builder.add_edge("load_learner_profile", "classify_intent")
+    builder.add_edge("classify_intent", "retrieve_knowledge")
     builder.add_edge("retrieve_knowledge", "plan_teaching")
     builder.add_edge("plan_teaching", "route")
     # `dict(ROUTE_NODES)` types as `dict[RouteKey, str]`, which pyright treats

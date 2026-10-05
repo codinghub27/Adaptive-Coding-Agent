@@ -161,8 +161,9 @@ _PATCH_RAN_CLEAN_NOTE = (
 
 _NOTHING_TO_FIX_NOTE = (
     "You asked for the corrected code: yours passed every test case in the sandbox, so "
-    "there is no fix to show -- the version you shared is the one to keep."
+    "there was nothing to fix. It is shown above, tidied and commented."
 )
+_YOUR_CODE_TITLE = "Your code"
 
 
 def _patch_ran_clean(result: DebugResult) -> bool:
@@ -220,7 +221,13 @@ def _render_debug(
         # overclaiming here is exactly what the "never trust an LLM's claim of
         # correctness" rule exists to prevent.
         body = result.bug_explanation
-        if result.initial_verdict is None or result.initial_verdict.status != "fail":
+        if result.not_executed:
+            body = (
+                body
+                + "\n\n_Not executed -- the code sandbox is not available, so this is a"
+                + " reading of your code, not a test of it._"
+            )
+        elif result.initial_verdict is None or result.initial_verdict.status != "fail":
             body = (
                 body
                 + "\n\n_Not verified by running your code -- no test cases could be"
@@ -236,6 +243,17 @@ def _render_debug(
         patch_section = _section("patch", render_code_block(result.patched_code))
         if patch_section is not None:
             sections.append(patch_section)
+
+    patch_shown = any(section.kind == "patch" for section in sections)
+    if result.presented_code is not None and not patch_shown and _may_reveal_code(plan):
+        # F2: they asked for the code and there is no fix to show, so THEIR
+        # code is handed back -- with what the sandbox knows about it.
+        parts = [result.presented_label or "", render_code_block(result.presented_code)]
+        if result.presented_notes:
+            parts.append(render_bullet_list(result.presented_notes))
+        body = "\n\n".join(part for part in parts if part)
+        if body.strip():
+            sections.append(ResponseSection(kind="code", title=_YOUR_CODE_TITLE, body=body))
 
     # The learner asked about THEIR code, so this section reports the verdict on
     # what they submitted (`initial_verdict`), not `final_verdict` -- which is

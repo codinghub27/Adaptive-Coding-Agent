@@ -49,7 +49,7 @@ async def test_debug_agent_surfaces_agent_result_of_kind_debug() -> None:
         ),
     )
 
-    update = await debug_agent(state, _runtime())
+    update = await debug_agent(state, _runtime(llm=FakeLLMClient(chat_content="{}")))
 
     result = update.get("agent_result")
     assert isinstance(result, DebugResult)

@@ -162,6 +162,9 @@ class AgentState(BaseModel):
     active_problem: ActiveProblem | None = None
     problem_relation: ProblemRelation = "none"
     problem_key: str | None = None
+    #: This turn went back to the conversation's EARLIER subject: `active_problem`
+    #: now holds it and must be stored as the active one again.
+    subject_switched: bool = False
     #: Tutoring loop (ADAPTIVE-tutoring). `pending_check`/`session_progress`
     #: are loaded with the profile; `answer_grade` is set by `grade_answer`;
     #: `next_pending`/`tutoring` are decided in `final_response` and persisted
@@ -211,6 +214,7 @@ class AgentStateUpdate(TypedDict, total=False):
     active_problem: ActiveProblem | None
     problem_relation: ProblemRelation
     problem_key: str | None
+    subject_switched: bool
     pending_check: PendingCheck | None
     session_progress: SessionProgress | None
     answer_grade: AnswerGrade | None

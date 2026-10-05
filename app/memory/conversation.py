@@ -12,7 +12,7 @@ and returned verbatim, never truncated, and never interpreted as instructions.
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,7 @@ __all__ = [
     "get_tutoring_state",
     "list_conversations",
     "list_messages",
+    "progress_payload",
     "rename_conversation",
     "set_active_problem",
     "set_tutoring_state",
@@ -313,6 +314,16 @@ async def set_active_problem(
     await session.flush()
 
 
+def progress_payload(progress: SessionProgress) -> dict[str, Any]:
+    """`progress` as the JSON stored on the conversation row.
+
+    `is_empty` is a computed field of the stored earlier subject: dumped, it
+    is rejected as an unknown field on the next read and the WHOLE progress
+    record then silently reads as empty (same exclusion as `set_active_problem`).
+    """
+    return progress.model_dump(mode="json", exclude={"earlier_problem": {"problem": {"is_empty"}}})
+
+
 async def get_tutoring_state(
     session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID
 ) -> tuple[PendingCheck | None, SessionProgress]:
@@ -353,7 +364,7 @@ async def set_tutoring_state(
     """Store this turn's pending check (NULL clears it) and session progress."""
     conversation = await get_owned_conversation(session, user_id, conversation_id)
     conversation.pending_check = pending.model_dump(mode="json") if pending is not None else None
-    conversation.session_progress = progress.model_dump(mode="json")
+    conversation.session_progress = progress_payload(progress)
     await session.flush()
 
 

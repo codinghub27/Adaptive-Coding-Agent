@@ -94,12 +94,14 @@ async def test_disabled_tracer_is_a_true_noop_and_result_is_unchanged() -> None:
     """`tracer=None` and an explicit `Tracer.disabled()` must behave
     identically -- both a complete no-op that never touches LangSmith and
     never changes the graph's own result."""
-    without_tracer = await run_graph(RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient())
+    without_tracer = await run_graph(
+        RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient(chat_content="{}")
+    )
     with_disabled_tracer = await run_graph(
-        RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient(), tracer=Tracer.disabled()
+        RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient(chat_content="{}"), tracer=Tracer.disabled()
     )
 
-    assert without_tracer.llm_calls == with_disabled_tracer.llm_calls == 0
+    assert without_tracer.llm_calls == with_disabled_tracer.llm_calls == 1
     assert without_tracer.state.route == with_disabled_tracer.state.route == "debug"
     assert without_tracer.state.model_dump() == with_disabled_tracer.state.model_dump()
 
@@ -108,7 +110,9 @@ async def test_parent_run_receives_the_expected_metadata_keys() -> None:
     mock_client = _mock_langsmith_client()
     tracer = Tracer(enabled=True, client=mock_client, project_name="test-project")
 
-    result = await run_graph(RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient(), tracer=tracer)
+    result = await run_graph(
+        RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient(chat_content="{}"), tracer=tracer
+    )
 
     assert result.state.route == "debug"
 
@@ -132,7 +136,7 @@ async def test_trace_payload_never_carries_learner_text() -> None:
     tracer = Tracer(enabled=True, client=mock_client, project_name="test-project")
 
     result = await run_graph(
-        RawInput(text=_SENTINEL_DEBUG_TEXT), llm=FakeLLMClient(), tracer=tracer
+        RawInput(text=_SENTINEL_DEBUG_TEXT), llm=FakeLLMClient(chat_content="{}"), tracer=tracer
     )
 
     assert result.state.route == "debug"
@@ -161,7 +165,7 @@ async def test_stream_graph_creates_exactly_one_parent_run_with_usage_metadata()
     stages: list[str] = []
     results: list[GraphResultEvent] = []
     async for event in stream_graph(
-        RawInput(text=_SENTINEL_DEBUG_TEXT), llm=FakeLLMClient(), tracer=tracer
+        RawInput(text=_SENTINEL_DEBUG_TEXT), llm=FakeLLMClient(chat_content="{}"), tracer=tracer
     ):
         if isinstance(event, GraphStageEvent):
             stages.append(event.node)
@@ -198,7 +202,12 @@ async def test_stream_graph_creates_exactly_one_parent_run_with_usage_metadata()
 
 
 async def test_stream_graph_without_tracer_still_streams() -> None:
-    events = [e async for e in stream_graph(RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient())]
+    events = [
+        e
+        async for e in stream_graph(
+            RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient(chat_content="{}")
+        )
+    ]
     assert isinstance(events[-1], GraphResultEvent)
     assert sum(isinstance(e, GraphResultEvent) for e in events) == 1
 
@@ -210,7 +219,7 @@ async def test_closing_stream_graph_early_cancels_the_graph_task() -> None:
     import asyncio
 
     before = {t for t in asyncio.all_tasks() if not t.done()}
-    stream = stream_graph(RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient())
+    stream = stream_graph(RawInput(text=_DEBUG_TEXT), llm=FakeLLMClient(chat_content="{}"))
     first = await anext(stream)
     assert isinstance(first, GraphStageEvent)
     await stream.aclose()

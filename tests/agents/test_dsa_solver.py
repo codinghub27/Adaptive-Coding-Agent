@@ -160,8 +160,8 @@ async def test_full_assistance_can_reach_l6_and_only_then_carries_code() -> None
     assert len(llm.chat_calls) == 1
 
 
-async def test_full_assistance_without_a_verified_solution_reveals_nothing() -> None:
-    """AD-4: no sandbox-verified reference -> no code, and the hint says so."""
+async def test_full_assistance_with_no_solution_at_all_says_so_and_holds_the_ladder() -> None:
+    """No reference was produced at all -> no code, and the hint says so."""
     plan = _plan("full")
     llm = FakeLLMClient(chat_content=_FULL_ANALYSIS_JSON)
 
@@ -176,7 +176,7 @@ async def test_full_assistance_without_a_verified_solution_reveals_nothing() -> 
     # ladder stays at its previous rung (no needed_full_solution, no L6 stored).
     assert run.result.hint.level == HintLevel.L5_PARTIAL
     assert run.result.hint.reveals_code is False
-    assert "couldn't verify" in run.result.hint.text
+    assert "did not return usable code" in run.result.hint.text
     assert run.result.to_outcome().needed_full_solution is False
     assert run.result.code is None
     assert run.execution_request is None

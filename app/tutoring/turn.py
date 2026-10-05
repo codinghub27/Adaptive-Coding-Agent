@@ -460,14 +460,18 @@ def next_progress(
     floors = dict(progress.assistance_floor)
     if floor_key is not None and floor is not None:
         floors[floor_key] = floor
-    return SessionProgress(
-        last_topic=topic or progress.last_topic,
-        last_practice=practice or progress.last_practice,
-        grades=grades[-MAX_GRADES:],
-        asked=asked_list[-MAX_ASKED:],
-        misconceptions=seen,
-        assistance_floor=floors,
-        grades_at_practice=grades_at_practice,
+    # A copy, not a fresh record: fields this function does not own (the
+    # earlier subject) must survive the turn.
+    return progress.model_copy(
+        update={
+            "last_topic": topic or progress.last_topic,
+            "last_practice": practice or progress.last_practice,
+            "grades": grades[-MAX_GRADES:],
+            "asked": asked_list[-MAX_ASKED:],
+            "misconceptions": seen,
+            "assistance_floor": floors,
+            "grades_at_practice": grades_at_practice,
+        }
     )
 
 

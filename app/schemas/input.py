@@ -21,6 +21,10 @@ class CodeBlock(APIModel):
 
     content: str = Field(min_length=1)
     language: str | None = None
+    #: How many lines `app.input.snippet.repair_snippet` put ABOVE the
+    #: learner's own first line (a `def` header, a typing import). A line
+    #: number the sandbox reports minus this is the line the learner typed.
+    line_offset: int = Field(default=0, ge=0, le=10)
 
 
 InputSource = Literal["text", "image"]

@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Final, Literal
 
+from app.agents.planner import wants_the_code
 from app.graph.state import AgentState, RouteKey
 from app.input.intent import is_small_talk, names_a_request
 from app.schemas.intent import Intent
@@ -117,6 +118,15 @@ _META_HISTORY_RE: Final = re.compile(
 )
 
 
+def _own_code(state: AgentState) -> bool:
+    """Did THIS turn bring code? A follow-up never does: when the conversation's
+    subject is the learner's code, a follow-up's input carries that stored code
+    (see `inherit_active_problem`), and reading it as "this turn has code" kept
+    a reply to the tutor's question from ever being graded."""
+    inp = state.structured_input
+    return inp is not None and bool(inp.code) and state.problem_relation != "followup"
+
+
 def meta_followup(state: AgentState) -> MetaKind | None:
     """Is this turn a question about the conversation itself, not about DSA?
 
@@ -126,9 +136,20 @@ def meta_followup(state: AgentState) -> MetaKind | None:
     that brings code, an error or a statement of its own.
     """
     inp = state.structured_input
-    if inp is None or inp.code or inp.error or state.problem_relation in ("new", "same"):
+    if inp is None or _own_code(state) or inp.error or state.problem_relation in ("new", "same"):
         return None
     text = inp.question or ""
+    if state.subject_switched:
+        return None  # "go back to the earlier one" resumes that subject; it is not a question
+    flagged = state.intent.about_conversation if state.intent is not None else None
+    if flagged is not None:
+        # The classifier read the turn with the conversation in front of it.
+        # The phrase lists below only pick the wording of the reply.
+        if not flagged:
+            return None
+        return "history" if _META_HISTORY_RE.search(text) else "name"
+    # Fallback: no confident reading from the model (a rule, the keyword
+    # heuristic, or an unsure label).
     if _META_NAME_RE.search(text) and not _META_NOT_NAME_RE.search(text):
         return "name"
     if _META_HISTORY_RE.search(text):
@@ -195,7 +216,11 @@ def should_grade(state: AgentState) -> bool:
     inp = state.structured_input
     if pending is None or inp is None or inp.is_empty:
         return False
-    if state.problem_relation == "new" or inp.code or inp.error or state.submitted_code:
+    if state.subject_switched:
+        # "go back to the earlier one" is not an answer to the question that
+        # was pending on the subject being left.
+        return False
+    if state.problem_relation == "new" or _own_code(state) or inp.error or state.submitted_code:
         return False
     reply = inp.question or ""
     if not reply.strip():
@@ -218,6 +243,10 @@ def should_grade(state: AgentState) -> bool:
         and not state.intent.low_confidence
         and not _bare_reply(reply)
     ):
+        return False
+    if state.intent is not None and wants_the_code(state.intent, reply):
+        # "write it out" is a request the phrase list below has never heard of;
+        # the classifier read it as an ask for the code, so it is not an answer.
         return False
     return not asks_for_help(reply)
 

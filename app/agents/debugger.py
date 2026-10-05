@@ -37,6 +37,7 @@ import builtins as _builtins_module
 import json
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Final
 
 import tree_sitter_python as tspython
@@ -51,12 +52,16 @@ from app.schemas.execution import Verdict
 from app.schemas.input import StructuredInput
 
 __all__ = [
+    "AnnotatedCode",
+    "CodeReading",
+    "annotate_code",
     "explain_bug",
     "extract_learner_code",
     "failing_case_summary",
     "infer_approach",
     "localize_bug",
     "patch_code",
+    "read_code",
     "static_analysis",
 ]
 
@@ -494,7 +499,36 @@ class _BugExplanationOutput(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
     bug_explanation: str | None = None
+    inferred_approach: str | None = None
     used: list[int] = Field(default_factory=list[int])
+
+
+class _AnnotatedOutput(BaseModel):
+    """Parsed shape of `annotate_code`'s LLM JSON response."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    inferred_approach: str | None = None
+    commented_code: str | None = None
+    notes: list[str] = Field(default_factory=list[str])
+
+
+@dataclass(frozen=True, slots=True)
+class CodeReading:
+    """One model call's reading of the learner's code: what it attempts, what
+    (if anything) is wrong, and which reference notes were used."""
+
+    explanation: str | None = None
+    citations: list[str] = field(default_factory=list[str])
+    approach: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotatedCode:
+    """The learner's own code, tidied and commented, plus brief notes."""
+
+    code: str
+    approach: str | None
+    notes: list[str]
 
 
 class _PatchedCodeOutput(BaseModel):
@@ -615,6 +649,119 @@ _READ_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "Reply with ONLY a single JSON object and nothing else: "
     '{"bug_explanation": "<your reading>", "used": [<note numbers>]}'
 )
+
+
+_APPROACH_ADDENDUM: Final = (
+    ' Also include a third key, "inferred_approach": one sentence written TO the learner '
+    '("You are ...") naming the approach their code takes, without judging it.'
+)
+
+_ANNOTATE_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
+    "The learner asked to be given the code. Return THEIR code, cleaned up: consistent "
+    "formatting, a one-line docstring, and a few brief comments on the lines that carry the "
+    "idea. Do not change what it does, its function names or its parameters; add no features, "
+    "prints or example calls. Also give one sentence naming the approach, written TO the "
+    'learner ("You are ..."), and at most three short notes (an edge case it handles, its '
+    "time and space cost). Reply with ONLY a single JSON object and nothing else: "
+    '{"inferred_approach": "<one sentence>", "commented_code": "<the complete source>", '
+    '"notes": ["<short note>", ...]}'
+)
+
+_MAX_NOTES: Final = 3
+
+
+def _top_level_names(code: str) -> set[str] | None:
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+async def annotate_code(problem: StructuredInput, llm: LLMClient) -> AnnotatedCode | None:
+    """One LLM call: the learner's own code, tidied and commented.
+
+    The result is a candidate only: the caller re-runs it in the sandbox and
+    falls back to the learner's code as typed if it does not hold up. Rejected
+    here already when it does not parse or no longer defines the same
+    top-level functions/classes. Never raises.
+    """
+    original = extract_learner_code(problem)
+    if original is None:
+        return None
+    messages = [
+        ChatMessage(role="system", content=_ANNOTATE_SYSTEM),
+        ChatMessage(role="user", content=_user_input_block(problem)),
+    ]
+    try:
+        result = await llm.chat(messages, temperature=0.0, max_tokens=1400)
+    except LLMError:
+        return None
+    json_str = extract_json_object(result.content)
+    if json_str is None:
+        return None
+    try:
+        parsed = _AnnotatedOutput.model_validate(json.loads(json_str))
+    except (json.JSONDecodeError, ValidationError):
+        return None
+    code = _none_if_blank(parsed.commented_code)
+    if code is None or len(code) > _MAX_CODE_CHARS:
+        return None
+    names = _top_level_names(code)
+    if names is None or not (_top_level_names(original) or set()) <= names:
+        return None
+    notes = [note.strip() for note in parsed.notes if note.strip()][:_MAX_NOTES]
+    return AnnotatedCode(code=code, approach=_none_if_blank(parsed.inferred_approach), notes=notes)
+
+
+async def read_code(
+    problem: StructuredInput,
+    *,
+    static_findings: Sequence[StaticFinding],
+    failing_case: str | None,
+    bug_location: BugLocation | None,
+    llm: LLMClient,
+    references: Sequence[Reference] = (),
+    failure_established: bool = True,
+) -> CodeReading:
+    """ONE LLM call that both names the learner's approach and explains the
+    bug (or reports that none was found). Replaces the separate
+    `infer_approach` + `explain_bug` pair on a debug turn: same content, one
+    round trip less. Never raises."""
+    context = _debug_context_block(
+        static_findings=static_findings, failing_case=failing_case, bug_location=bug_location
+    )
+    parts = [_user_input_block(problem)]
+    if context:
+        parts.append(context)
+    notes = references_block(references)
+    if notes:
+        parts.append(notes)
+    system = (_EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM) + _APPROACH_ADDENDUM
+    messages = [
+        ChatMessage(role="system", content=system),
+        ChatMessage(role="user", content="\n".join(parts)),
+    ]
+    try:
+        result = await llm.chat(messages, temperature=0.2, max_tokens=600)
+    except LLMError:
+        return CodeReading()
+    json_str = extract_json_object(result.content)
+    if json_str is None:
+        return CodeReading()
+    try:
+        parsed = _BugExplanationOutput.model_validate(json.loads(json_str))
+    except (json.JSONDecodeError, ValidationError):
+        return CodeReading()
+    return CodeReading(
+        explanation=_none_if_blank(parsed.bug_explanation),
+        citations=cited(references, parsed.used),
+        approach=_none_if_blank(parsed.inferred_approach),
+    )
 
 
 async def explain_bug(

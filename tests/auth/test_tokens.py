@@ -169,7 +169,7 @@ def test_tampered_signature_is_invalid(make_settings: Callable[..., Settings]) -
     settings = make_settings()
     issued = issue_access_token(user_id=uuid4(), session_id=uuid4(), settings=settings)
     header_b64, payload_b64, signature_b64 = issued.token.split(".")
-    flipped = ("A" if signature_b64[-1] != "A" else "B") + signature_b64[1:]
+    flipped = ("A" if signature_b64[0] != "A" else "B") + signature_b64[1:]
     tampered = f"{header_b64}.{payload_b64}.{flipped}"
 
     with pytest.raises(InvalidTokenError):

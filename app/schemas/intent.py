@@ -55,6 +55,19 @@ class IntentResult(APIModel):
     confidence: float = Field(ge=0.0, le=1.0)
     source: IntentSource
     rationale: str | None = None
+    #: What the classifier read from the conversation it was shown (A-08).
+    #: `None` whenever the model did not say so with confidence (a rule, the
+    #: keyword fallback, or a low-confidence label): then, and only then, the
+    #: deterministic phrase lists decide.
+    #: `refers_to_previous`: the message is about the conversation's current
+    #: subject. `earlier_subject`: it asks to go back to the subject BEFORE the
+    #: current one. `asks_for_code`: an explicit ask to be given the code /
+    #: solution / fix now. `about_conversation`: a question about the chat
+    #: itself ("what was that problem called?", "can you see my messages?").
+    refers_to_previous: bool | None = None
+    earlier_subject: bool | None = None
+    asks_for_code: bool | None = None
+    about_conversation: bool | None = None
 
     @computed_field
     @property

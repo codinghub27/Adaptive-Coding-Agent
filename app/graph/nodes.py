@@ -41,6 +41,7 @@ from app.agents.concept import (
 from app.agents.debugger import extract_learner_code
 from app.agents.hint_engine import HintProgress
 from app.agents.planner import (
+    DEBUG_ROUTE_INTENTS,
     DSA_ROUTE_INTENTS,
     INTENT_DEFAULTS,
     MIN_RETRIEVAL_TOPIC_SCORE,
@@ -49,11 +50,13 @@ from app.agents.planner import (
     build_plan,
     clamp_assistance,
     explicit_ask_phrase,
+    wants_the_code,
 )
 from app.agents.practice import render_practice_problem, select_session_problem
 from app.agents.reviewer import review_code
+from app.execution.base import canonical
 from app.execution.synth import synthesize_test_suite, verified_reference
-from app.execution.testgen import extract_test_suite
+from app.execution.testgen import extract_test_suite, select_entrypoint, top_level_functions
 from app.execution.verification import verify as verify_result
 from app.graph.routing import asks_for_guidance, meta_followup, select_route
 from app.graph.state import (
@@ -73,7 +76,7 @@ from app.graph.subgraphs.explain import run_explain
 from app.input.intent import classify_intent as _classify_intent_llm
 from app.input.intent import is_small_talk
 from app.input.normalize import merge_inputs, normalize_text
-from app.input.snippet import is_sample_data, repair_snippet
+from app.input.snippet import is_sample_data, line_offset, repair_snippet
 from app.input.vision import ImageValidationError, extract_from_image
 from app.knowledge.ingest import load_corpus
 from app.llm.base import LLMError
@@ -88,11 +91,24 @@ from app.memory.conversation import (
 from app.memory.events import record_event, requested_help_for
 from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress, save_hint_progress
 from app.memory.profile import FAMILY_PREFIX, PRIOR, apply_event, get_profile
+from app.memory.test_suites import (
+    CachedSource,
+    get_cached_cases,
+    save_cached_cases,
+    subject_key,
+)
 from app.response.format import SAFE_FALLBACK_RESPONSE, SECTION_TITLES, protect_symbols
 from app.response.generate import generate_response
 from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel
 from app.schemas.event import LearningEventCreate, slug_tag
-from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verdict
+from app.schemas.execution import (
+    MAX_TEST_CASES,
+    ExecutionResult,
+    HarnessError,
+    TestCase,
+    TestSuite,
+    Verdict,
+)
 from app.schemas.input import ActiveProblem, CodeBlock, ProblemRelation, StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.knowledge import RetrievalHit
@@ -221,12 +237,14 @@ def _runnable(structured: StructuredInput | None) -> StructuredInput | None:
     `class Solution` is otherwise reported as a syntax error and never run."""
     if structured is None or not structured.code:
         return structured
-    blocks = [
-        block.model_copy(update={"content": repair_snippet(block.content)})
-        if block.language in (None, "python")
-        else block
-        for block in structured.code
-    ]
+    blocks: list[CodeBlock] = []
+    for block in structured.code:
+        if block.language not in (None, "python"):
+            blocks.append(block)
+            continue
+        repaired = repair_snippet(block.content)
+        offset = line_offset(block.content, repaired) if repaired != block.content else 0
+        blocks.append(block.model_copy(update={"content": repaired, "line_offset": offset}))
     return structured.model_copy(update={"code": blocks})
 
 
@@ -243,8 +261,59 @@ async def classify_intent(state: AgentState, runtime: Runtime[GraphContext]) -> 
     inp = state.structured_input
     if inp is None or inp.is_empty:
         return {"intent": None}
-    result = await _classify_intent_llm(inp, runtime.context.llm)
+    result = await _classify_intent_llm(inp, runtime.context.llm, classifier_context(state))
     return {"intent": result}
+
+
+_CONTEXT_MESSAGES: Final = 6
+_CONTEXT_CHARS: Final = 240
+
+
+def _one_line(text: str, limit: int = _CONTEXT_CHARS) -> str:
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[:limit] + "..."
+
+
+def _subject_line(active: ActiveProblem) -> str:
+    if _code_anchored(active):
+        lines = (ln for block in active.problem.code for ln in block.content.splitlines())
+        first = next((ln.strip() for ln in lines if ln.strip()), "")
+        return f"code the learner shared (starts: {_one_line(first, 100)})"
+    title = problem_title(active)
+    return f"problem: {title}" if title else "a problem the learner shared"
+
+
+def classifier_context(state: AgentState) -> str | None:
+    """What the classifier is told about the conversation (A-08), or `None`
+    on a first message.
+
+    Short on purpose: the active subject in one line, the subject before it,
+    the tutor's open question, the learner's skill on the active topic, and
+    the last few messages, each cut to a line. Everything here but the
+    pending question is UNTRUSTED learner text; `app.input.intent` sends it
+    inside its own delimiters as data.
+    """
+    lines: list[str] = []
+    active = state.active_problem
+    if active is not None:
+        lines.append(f"active_subject: {_subject_line(active)}")
+    progress = state.session_progress
+    if progress is not None and progress.earlier_problem is not None:
+        lines.append(f"earlier_subject: {_subject_line(progress.earlier_problem)}")
+    pending = state.pending_check
+    if pending is not None and pending.kind == "question":
+        lines.append(f"pending_question: {_one_line(pending.question)}")
+    elif pending is not None:
+        lines.append("pending_question: (the tutor asked the learner to write the code)")
+    profile = state.profile
+    if profile is not None and active is not None and active.topic in profile.skill_levels:
+        level = profile.skill_levels[active.topic]
+        lines.append(f"learner_skill: {level:.2f} on {active.topic} (0 = weak, 1 = strong)")
+    recent = state.recent_context[-_CONTEXT_MESSAGES:]
+    if recent:
+        lines.append("recent_messages:")
+        lines += [f"- {message.role}: {_one_line(message.content)}" for message in recent]
+    return "\n".join(lines) or None
 
 
 def _classify_intent_fallback(state: AgentState) -> AgentStateUpdate:
@@ -704,58 +773,137 @@ def _code_submission_update(state: AgentState) -> AgentStateUpdate | None:
 
 def _problem_update(state: AgentState) -> AgentStateUpdate:
     """This turn's relation to the active problem, its ladder key, and -- for a
-    follow-up -- the structured input re-anchored on the active statement."""
+    follow-up -- the structured input re-anchored on the active statement.
+
+    The classifier's own reading of the conversation (`IntentResult`'s flags,
+    set only on a confident model label) decides first. The phrase lists are
+    the fallback for a turn it did not read: a rule label, the keyword
+    heuristic, or an unsure answer.
+    """
     submission = _code_submission_update(state)
     if submission is not None:
         return submission
-    relation, key = resolve_problem_relation(
-        state.structured_input,
-        state.active_problem,
-        state.intent.intent if state.intent is not None else None,
-        answering=_answering_the_tutor(state),
-    )
-    update: AgentStateUpdate = {"problem_relation": relation, "problem_key": key}
-    if relation == "followup" and state.active_problem is not None:
-        update["structured_input"] = inherit_active_problem(
-            state.structured_input, state.active_problem
+    intent = state.intent
+    inp = state.structured_input
+    active = state.active_problem
+    update: AgentStateUpdate = {}
+
+    earlier = state.session_progress.earlier_problem if state.session_progress else None
+    brings_subject = inp is not None and bool(inp.problem or inp.code or inp.error)
+    if intent is not None and intent.earlier_subject and earlier is not None and not brings_subject:
+        # "go back to the earlier one": the two subjects trade places, and the
+        # rest of the turn is an ordinary follow-up on the restored one.
+        if state.session_progress is not None:
+            update["session_progress"] = state.session_progress.model_copy(
+                update={"earlier_problem": active}
+            )
+        update["active_problem"] = earlier
+        update["subject_switched"] = True
+        active = earlier
+
+    if (
+        inp is not None
+        and active is not None
+        and not _code_anchored(active)
+        and _brings_only_code(inp)
+        and intent is not None
+        and intent.refers_to_previous
+    ):
+        # Code with no statement, which the classifier read as being ABOUT the
+        # active problem ("here is my attempt"): it is judged against that
+        # problem's own statement and examples, not as anonymous code.
+        update["problem_relation"] = "same"
+        update["problem_key"] = active.key
+        update["structured_input"] = active.problem.model_copy(
+            update={
+                "code": list(inp.code),
+                "question": inp.question,
+                "error": inp.error,
+                "language": inp.language or active.problem.language,
+            }
         )
-        question = state.structured_input.question if state.structured_input else None
+        if _code_first(intent):
+            update["intent"] = _relabel(intent, Intent.CODE_DEBUG, "an attempt at the problem")
+        return update
+
+    relation, key = resolve_problem_relation(
+        inp,
+        active,
+        intent.intent if intent is not None else None,
+        answering=_answering_the_tutor(state),
+        refers=True
+        if update.get("subject_switched")
+        else (intent.refers_to_previous if intent is not None else None),
+    )
+    update["problem_relation"] = relation
+    update["problem_key"] = key
+    if relation == "followup" and active is not None:
+        update["structured_input"] = inherit_active_problem(inp, active)
+        question = inp.question if inp else None
         if _needs_solution_intent(state, question):
             # "give code for that" on the active problem is an explicit ask for
             # ITS solution; the classifier, seeing four words and no problem,
             # called it a low-confidence concept question and the turn went to
             # `clarify` (P4, T9). A fixed phrase match on a follow-up with a
             # known problem is unambiguous, so it is classified deterministically.
-            update["intent"] = IntentResult(
-                intent=Intent.DSA_SOLVE,
-                confidence=0.8,
-                source="rule",
-                rationale="explicit solution ask on the conversation's active problem",
-            )
-        elif _continues_active_problem(state, question):
+            update["intent"] = _relabel(intent, Intent.DSA_SOLVE, "explicit solution ask")
+        elif _continues_active_problem(state, question) or update.get("subject_switched"):
             # "I don't know", or a turn the classifier filed under its catch-all
             # GENERAL_GUIDANCE without any plan/advice ask: the learner is still
             # on the conversation's problem, so the tutor takes the next step on
             # it (one rung more help) instead of a study plan or "could you
             # confirm?" (regression: LeetCode 678 screenshot, turns 2-4).
-            update["intent"] = IntentResult(
-                intent=Intent.DSA_HINT,
-                confidence=0.7,
-                source="rule",
-                rationale="follow-up on the conversation's active problem",
+            update["intent"] = _relabel(intent, Intent.DSA_HINT, "follow-up on the active problem")
+        attempt = state.session_progress.last_attempt if state.session_progress else []
+        labelled = update.get("intent", intent)
+        if (
+            attempt
+            and not _code_anchored(active)
+            and state.session_progress is not None
+            and state.session_progress.last_attempt_key == active.key
+            and labelled is not None
+            and labelled.intent in _ABOUT_CODE_INTENTS
+        ):
+            # "where's the mistake?" after an attempt was shared: that attempt
+            # is the code in question.
+            update["structured_input"] = update["structured_input"].model_copy(  # type: ignore[union-attr]
+                update={"code": list(attempt)}
             )
-        if _code_anchored(state.active_problem) and _code_first(update.get("intent", state.intent)):
+        if _code_anchored(active) and _code_first(update.get("intent", intent)):
             # The conversation's subject is the learner's own code: "give full
             # code and tell me where the bug is" is about THAT code, so it is
             # read and run -- never answered from the hint ladder.
-            update["intent"] = _code_debug_intent("follow-up on the code shared earlier")
-    elif _brings_only_code(state.structured_input) and _code_first(state.intent):
+            update["intent"] = _relabel(intent, Intent.CODE_DEBUG, "follow-up on the shared code")
+    elif _brings_only_code(inp) and _code_first(intent):
         # User-code-first (target behaviour section 10): code with no problem
         # statement is the evidence. "give correct code of this" + code was
         # labelled DSA_SOLVE and got Hint 1 of 4 with the code never read.
-        update["intent"] = _code_debug_intent("code shared without a problem statement")
+        update["intent"] = _relabel(intent, Intent.CODE_DEBUG, "code shared without a statement")
     return update
 
+
+def _relabel(base: IntentResult | None, intent: Intent, rationale: str) -> IntentResult:
+    """A rule's label for this turn that KEEPS what the classifier read from
+    the conversation (whether the code was asked for, and so on)."""
+    return IntentResult(
+        intent=intent,
+        confidence=0.8,
+        source="rule",
+        rationale=rationale,
+        refers_to_previous=base.refers_to_previous if base is not None else None,
+        earlier_subject=base.earlier_subject if base is not None else None,
+        asks_for_code=base.asks_for_code if base is not None else None,
+        about_conversation=base.about_conversation if base is not None else None,
+    )
+
+
+#: Labels that are a question about code: on a follow-up they are about the
+#: learner's latest attempt at the active problem.
+_ABOUT_CODE_INTENTS: Final = DEBUG_ROUTE_INTENTS | {
+    Intent.CODE_EXPLAIN,
+    Intent.CODE_REVIEW,
+    Intent.OPTIMIZATION,
+}
 
 #: Labels that send a turn to the hint ladder or the study-plan prompt. On a
 #: turn whose subject is the learner's own code they are a misreading; a
@@ -765,12 +913,6 @@ _CODE_FIRST_INTENTS: Final = DSA_ROUTE_INTENTS | {Intent.GENERAL_GUIDANCE}
 
 def _code_first(intent: IntentResult | None) -> bool:
     return intent is None or intent.low_confidence or intent.intent in _CODE_FIRST_INTENTS
-
-
-def _code_debug_intent(rationale: str) -> IntentResult:
-    return IntentResult(
-        intent=Intent.CODE_DEBUG, confidence=0.8, source="rule", rationale=rationale
-    )
 
 
 def _brings_only_code(inp: StructuredInput | None) -> bool:
@@ -820,8 +962,16 @@ def _answering_the_tutor(state: AgentState) -> bool:
     return last is not None and last.role == "assistant" and last.content.rstrip().endswith("?")
 
 
+#: Labels under which an explicit ask for the code is already honoured.
+_SOLUTION_BEARING_INTENTS: Final = DSA_ROUTE_INTENTS | DEBUG_ROUTE_INTENTS
+
+
 def _needs_solution_intent(state: AgentState, question: str | None) -> bool:
     intent = state.intent
+    if intent is not None and intent.asks_for_code is not None:
+        # Read by the classifier: "show me the solution" on the active problem
+        # is an ask for ITS solution unless it was already labelled as one.
+        return wants_the_code(intent, question) and intent.intent not in _SOLUTION_BEARING_INTENTS
     if question is None or not explicit_ask_phrase(question):
         return False
     # Only override a classification that is missing or unsure: a confident
@@ -945,6 +1095,7 @@ def resolve_problem_relation(
     intent: Intent | None = None,
     *,
     answering: bool = False,
+    refers: bool | None = None,
 ) -> tuple[ProblemRelation, str | None]:
     """How this turn relates to the conversation's active problem, and its ladder key.
 
@@ -984,6 +1135,11 @@ def resolve_problem_relation(
         # Naming a technique in reply to the tutor's question IS the answer,
         # not a new subject ("two pointers?" after "what would you try?").
         return "followup", active.key
+    if refers is not None and not (question and is_dont_know(question)):
+        # The classifier read this turn with the conversation in front of it
+        # (`refers_to_previous`). The corpus-vocabulary check below is the
+        # fallback for a turn it did not read.
+        return ("followup", active.key) if refers else ("none", None)
     if names_corpus_subject(question):
         return "none", None
     return "followup", active.key
@@ -1536,15 +1692,70 @@ async def _resolve_test_suite(
     ever trusted -- see `app.execution.synth`), so a real debug/review turn
     can still verify a fix even when the statement has no worked examples.
     """
-    tests = extract_test_suite(state.structured_input)
+    ctx = runtime.context
+    inp = state.structured_input
+    extracted = extract_test_suite(inp)
+    key = subject_key(inp)
+    cached = await _cached_cases(ctx, key)
+    functions = top_level_functions(extract_learner_code(inp))
+
+    if extracted is not None:
+        # The statement's own examples are the baseline and are ALWAYS in the
+        # suite; cases validated on an earlier turn are added to them.
+        extra = cached[0] if cached is not None else []
+        return _with_extra_cases(extracted, extra), "extracted"
+    if cached is not None:
+        entrypoint = select_entrypoint(functions, cached[0])
+        if entrypoint is not None:
+            return TestSuite(entrypoint=entrypoint, cases=cached[0]), cached[1]
+    tests = await synthesize_test_suite(inp, ctx.llm, ctx.runner)
     if tests is not None:
-        return tests, "extracted"
-    tests = await synthesize_test_suite(
-        state.structured_input, runtime.context.llm, runtime.context.runner
-    )
-    if tests is not None:
+        await _remember_cases(ctx, key, tests.cases, "synthesised")
         return tests, "synthesised"
     return None, "none"
+
+
+async def _cached_cases(
+    ctx: GraphContext, key: str | None
+) -> tuple[list[TestCase], CachedSource] | None:
+    """This learner's validated cases for the subject, or `None`. Never raises."""
+    if key is None or ctx.session is None or ctx.user_id is None:
+        return None
+    try:
+        async with ctx.session.begin_nested():
+            return await get_cached_cases(ctx.session, ctx.user_id, key)
+    except Exception:  # noqa: BLE001 - a cache miss must never cost the turn
+        return None
+
+
+async def _remember_cases(
+    ctx: GraphContext, key: str | None, cases: list[TestCase], source: CachedSource
+) -> None:
+    """Keep sandbox-validated cases so the same subject is judged by the same
+    cases next time, instead of whatever the model proposes on that turn."""
+    if key is None or ctx.session is None or ctx.user_id is None:
+        return
+    try:
+        async with ctx.session.begin_nested():
+            await save_cached_cases(ctx.session, ctx.user_id, key, cases, source)
+    except Exception:  # noqa: BLE001 - a failed write must never cost the turn
+        return
+
+
+def _with_extra_cases(suite: TestSuite, extra: Sequence[TestCase]) -> TestSuite:
+    """`suite` plus the `extra` cases it does not already contain."""
+    cases = list(suite.cases)
+    seen = {(canonical(list(c.args)), canonical(dict(c.kwargs))) for c in cases}
+    names = {c.name for c in cases}
+    for case in extra:
+        signature = (canonical(list(case.args)), canonical(dict(case.kwargs)))
+        if signature in seen or len(cases) >= MAX_TEST_CASES:
+            continue
+        seen.add(signature)
+        name = case.name if case.name not in names else f"{case.name}_{len(cases)}"
+        names.add(name)
+        cases.append(case.model_copy(update={"name": name}))
+    return TestSuite(entrypoint=suite.entrypoint, cases=cases)
 
 
 async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
@@ -2634,6 +2845,8 @@ def active_problem_update(state: AgentState) -> ActiveProblem | None:
       client `topic` hint, which describes the request, not the problem.
     - Anything else (no problem in play) leaves the stored one untouched.
     """
+    if state.subject_switched and state.active_problem is not None:
+        return state.active_problem  # the restored earlier subject is active again
     if state.route == "practice" and state.practice is not None and state.practice.statement:
         # An agent-chosen practice problem becomes the active problem, so the
         # learner's follow-ups ("hint?", their code) are about IT (tutoring Q1).
@@ -2678,6 +2891,21 @@ async def _persist_tutoring_state(state: AgentState, ctx: GraphContext) -> NodeE
     if ctx.session is None or ctx.user_id is None or ctx.conversation_id is None:
         return None
     progress = state.next_progress or state.session_progress or SessionProgress.empty()
+    replaced = active_problem_update(state)
+    current = state.active_problem
+    if (
+        not state.subject_switched
+        and replaced is not None
+        and current is not None
+        and replaced.key != current.key
+    ):
+        # A new subject takes over: remember the one it replaces.
+        progress = progress.model_copy(update={"earlier_problem": current})
+    own_code = state.structured_input.code if state.structured_input is not None else []
+    if own_code and state.problem_key is not None and state.problem_relation in ("new", "same"):
+        progress = progress.model_copy(
+            update={"last_attempt": list(own_code), "last_attempt_key": state.problem_key}
+        )
     try:
         async with ctx.session.begin_nested():
             await set_tutoring_state(

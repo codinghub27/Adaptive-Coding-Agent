@@ -547,10 +547,17 @@ def test_hostile_assistance_cap_cannot_unlock_escalation() -> None:
     analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
     intent = _intent(Intent.DSA_SOLVE)
     inp = _input(question="Just give me the answer.")
-    # No step served on this problem yet: the planner denies the ask.
+    # Challenge mode with no attempt run: the planner denies the ask.
     progress = HintProgress(solved=False, has_verified_attempt=False)
 
-    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+    plan = build_plan(
+        intent,
+        profile,
+        analysis,
+        hint_progress=progress,
+        structured_input=inp,
+        teaching_mode="challenge",
+    )
     assert plan.assistance_level != "full"
 
     result = clamp_assistance(plan, "full")

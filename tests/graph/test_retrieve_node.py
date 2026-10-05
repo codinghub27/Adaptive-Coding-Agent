@@ -415,7 +415,7 @@ def test_graph_has_retrieve_knowledge_edges_and_unchanged_route_targets() -> Non
     drawable = get_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in drawable.edges}
 
-    assert ("load_learner_profile", "retrieve_knowledge") in edges
+    assert ("classify_intent", "retrieve_knowledge") in edges
     assert ("retrieve_knowledge", "plan_teaching") in edges
     assert ("plan_teaching", "route") in edges
 

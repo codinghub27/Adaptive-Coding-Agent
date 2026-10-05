@@ -15,9 +15,9 @@ _EXPECTED_NODES = _NODE_NAMES | {"__start__", "__end__"}
 _EXPECTED_EDGES: frozenset[tuple[str, str]] = frozenset(
     {
         ("__start__", "understand_input"),
-        ("understand_input", "classify_intent"),
-        ("classify_intent", "load_learner_profile"),
-        ("load_learner_profile", "retrieve_knowledge"),
+        ("understand_input", "load_learner_profile"),
+        ("load_learner_profile", "classify_intent"),
+        ("classify_intent", "retrieve_knowledge"),
         ("retrieve_knowledge", "plan_teaching"),
         ("plan_teaching", "route"),
         ("route", "dsa_agent"),
@@ -65,7 +65,7 @@ def test_node_functions_and_fallbacks_declare_the_same_names() -> None:
     assert set(ROUTE_NODES.values()) <= set(NODE_FUNCTIONS)
 
 
-async def test_end_to_end_debug_route_with_zero_llm_calls() -> None:
+async def test_end_to_end_debug_route_without_a_sandbox_reads_the_code_once() -> None:
     """No sandbox runner is configured for this run, so `run_debug` short-
     circuits before spending any of the turn's LLM budget (the "zero LLM
     calls" property this test name promises still holds for the real
@@ -74,11 +74,11 @@ async def test_end_to_end_debug_route_with_zero_llm_calls() -> None:
     renders what little the sandbox reported (a skipped verdict), so the
     turn's response is that verification text rather than empty or a stub
     placeholder."""
-    fake = FakeLLMClient()
+    fake = FakeLLMClient(chat_content="{}")
 
     result = await run_graph(RawInput(text=_DEBUG_TEXT), llm=fake)
 
-    assert result.llm_calls == 0
+    assert result.llm_calls == 1  # A-15: one reading call, nothing run
     assert result.state.route == "debug"
     assert result.state.response is not None
     assert "stub" not in result.state.response.lower()

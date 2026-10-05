@@ -436,7 +436,7 @@ async def test_debug_agent_no_runner_returns_real_outcome_without_execution_requ
         ),
     )
 
-    update = await debug_agent(state, _runtime())
+    update = await debug_agent(state, _runtime(llm=FakeLLMClient(chat_content="{}")))
 
     outcome = update.get("agent_output")
     assert outcome is not None
@@ -554,7 +554,7 @@ async def test_debug_agent_suite_source_none_when_nothing_found() -> None:
         ),
     )
 
-    update = await debug_agent(state, _runtime())
+    update = await debug_agent(state, _runtime(llm=FakeLLMClient(chat_content="{}")))
 
     assert update.get("suite_source") == "none"
 

@@ -224,8 +224,11 @@ async def test_runner_none_degrades_cleanly() -> None:
     assert run_result.result.final_verdict is not None
     assert run_result.result.final_verdict.status == "skipped"
     assert run_result.execution_request is None
-    # No sandbox available: never spend the run's LLM budget on an unverifiable guess.
-    assert len(llm.chat_calls) == 0
+    # No sandbox (owner decision A-15): the ast checks plus ONE model call
+    # reading the code, marked as not executed. Never a patch, never a claim.
+    assert len(llm.chat_calls) == 1
+    assert run_result.result.not_executed is True
+    assert run_result.result.patched_code is None
 
 
 # --------------------------------------------------------------------------

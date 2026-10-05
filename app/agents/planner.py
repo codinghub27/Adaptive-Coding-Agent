@@ -56,6 +56,7 @@ __all__ = [
     "TopicSource",
     "analyze_problem",
     "asks_for_fix",
+    "wants_the_code",
     "build_plan",
     "clamp_assistance",
     "difficulty_for",
@@ -171,6 +172,36 @@ def asks_for_fix(text: str | None) -> bool:
     return bool(_FIX_ASK_RE.search(lowered) or _EXPLICIT_ASK_RE.search(lowered))
 
 
+#: A message that says it wants to LEARN is not a demand for the code, whatever
+#: a model made of it. Measured live: "Can you help me solve Two Sum? ... I
+#: don't understand how to start" came back `asks_for_code: true`, and the
+#: beginner got the full solution on turn 1.
+_LEARNING_ASK_RE: Final = re.compile(
+    r"\b(help|how|hint|nudge|start|understand|explain|why|stuck|don'?t know|not sure|"
+    r"walk me|teach|guide)\b"
+)
+_MAX_DEMAND_WORDS: Final = 14
+
+
+def wants_the_code(intent: IntentResult, question: str | None, *, fix: bool = False) -> bool:
+    """Is this turn an explicit ask to be given the code (or, with `fix`, the fix)?
+
+    The classifier's `asks_for_code` decides when it read the turn (A-08): it
+    is what recognises "write it out" or "show me the solution", which no
+    phrase list anticipates. It is believed only for a short message with no
+    learning ask in it -- a wrong "yes" hands a beginner the answer, a wrong
+    "no" costs one more message. Without a confident reading (a rule label,
+    the keyword fallback, an unsure answer) the fixed phrase lists decide.
+    """
+    text = (question or "").lower()
+    if intent.asks_for_code is None:
+        return asks_for_fix(text) if fix else explicit_ask_phrase(text)
+    if not intent.asks_for_code:
+        return False
+    short = len(text.split()) <= _MAX_DEMAND_WORDS
+    return short and _LEARNING_ASK_RE.search(text) is None
+
+
 def _explicit_solution_request(
     intent: IntentResult, structured_input: StructuredInput | None
 ) -> bool:
@@ -188,7 +219,7 @@ def _explicit_solution_request(
     # The learner's own ask only -- never the problem statement, whose text
     # ("return the answer modulo 10^9+7") is not a request (code review P4).
     question = structured_input.question if structured_input is not None else None
-    return explicit_ask_phrase(question or "")
+    return wants_the_code(intent, question)
 
 
 class ProblemAnalysis(APIModel):
@@ -676,8 +707,11 @@ def build_plan(
         if teaching_mode == "challenge":
             effort = verified_attempt
         else:
+            # Owner decision (A-10, target behaviour section 9): an explicit
+            # ask for the code is never refused outside Challenge mode -- not
+            # even on the first message.
             effort = True
-            ceiling_reached = progress.last_level is not None or verified_attempt
+            ceiling_reached = True
 
         if ceiling_reached and explicit_ask and effort:
             assistance = "full"
@@ -707,7 +741,11 @@ def build_plan(
     if (
         intent.intent in DEBUG_ROUTE_INTENTS
         and teaching_mode != "challenge"
-        and asks_for_fix(structured_input.question if structured_input is not None else None)
+        and wants_the_code(
+            intent,
+            structured_input.question if structured_input is not None else None,
+            fix=True,
+        )
     ):
         assistance = "full"
         rationale.append("fix_requested")

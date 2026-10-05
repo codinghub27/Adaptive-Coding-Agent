@@ -173,11 +173,11 @@ def _hint() -> HintResult:
 
 
 def test_a_refused_ask_never_quotes_a_hint_quota() -> None:
+    # A-10: outside Challenge mode a first-message ask is granted, so there
+    # is no refusal to explain.
     first_message = _plan("balanced", HintProgress())
-    note = _refused_ask_note(first_message, _hint())
-    assert note is not None
-    assert "more hint" not in note
-    assert "just ask" in note
+    assert first_message.assistance_level == "full"
+    assert _refused_ask_note(first_message, _hint()) is None
 
     challenge = _plan("challenge", HintProgress(last_level=HintLevel.L1_WHAT_TO_TRACK))
     note = _refused_ask_note(challenge, _hint())

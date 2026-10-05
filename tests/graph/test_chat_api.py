@@ -120,7 +120,7 @@ async def _client_for(
 # --------------------------------------------------------------------------
 
 
-async def test_code_and_indexerror_returns_debug_route_with_zero_llm_calls(
+async def test_code_and_indexerror_without_a_sandbox_is_read_once(
     make_settings: MakeSettings,
 ) -> None:
     fake = FakeLLMClient(chat_content="unused")
@@ -138,13 +138,13 @@ async def test_code_and_indexerror_returns_debug_route_with_zero_llm_calls(
     # non-empty rather than a stub placeholder.
     assert body["response"] != ""
     assert "stub" not in body["response"].lower()
-    assert body["llm_calls"] == 0
+    assert body["llm_calls"] == 1  # A-15: one reading call
     # No topic could be inferred (empty profile, no topic hint), so
     # `update_learner_model` never builds a learning event for this turn.
     assert body["events"] == []
     assert body["events_persisted"] == []
     assert body["errors"] == []
-    assert fake.chat_calls == []
+    assert len(fake.chat_calls) == 1
 
 
 # --------------------------------------------------------------------------

@@ -509,4 +509,4 @@ async def test_asking_for_the_code_after_one_step_is_granted_not_rationed(store:
     generated = result.state.generated_response
     assert generated is not None
     assert not generated.reveals_code  # nothing verified, nothing shown
-    assert "couldn't verify" in reply
+    assert "did not return usable code" in reply

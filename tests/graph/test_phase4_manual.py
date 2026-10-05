@@ -115,7 +115,7 @@ async def test_manual_1_debug_turn_for_weak_skill_hint_preferring_learner(
     )
 
     assert fake.chat_calls  # the question forced Phase 2 onto the LLM path
-    assert result.llm_calls == 1
+    assert result.llm_calls == 2  # classifier + the A-15 reading call
 
     assert state.route == "debug"
     assert state.plan is not None

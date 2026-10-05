@@ -67,10 +67,12 @@ def test_guidance_reveals_on_an_explicit_ask_at_the_ceiling() -> None:
     assert _plan("guidance", _AT_CEILING)[0] == "full"
 
 
-def test_no_mode_reveals_on_a_first_message_ask() -> None:
-    """Before any step on the problem, an ask gets one step first -- in every mode."""
-    for mode in ("guidance", "balanced", "challenge"):
-        assert _plan(mode, HintProgress())[0] != "full"
+def test_a_first_message_ask_is_honoured_outside_challenge_mode() -> None:
+    """Owner decision A-10: an explicit ask for the code is never refused, not
+    even on the first message. Challenge mode is the learner's own "not yet"."""
+    for mode in ("guidance", "balanced"):
+        assert _plan(mode, HintProgress())[0] == "full"
+    assert _plan("challenge", HintProgress())[0] != "full"
 
 
 def test_an_explicit_ask_is_honoured_after_one_step_without_a_hint_quota() -> None:
@@ -179,22 +181,34 @@ async def test_a_reference_is_revealed_only_when_the_sandbox_passes_it() -> None
     runner = _Runner(passed=True)
     solution = await verified_reference(_STATEMENT, FakeLLMClient(chat_content=_PROPOSAL), runner)
     assert solution is not None
+    assert solution.verified is True
+    assert solution.verdict is not None
+    assert solution.request is not None
     assert solution.verdict.status == "pass"
     assert solution.request.code == solution.code
     assert len(runner.calls) == 1
 
 
-async def test_a_failing_reference_is_never_revealed() -> None:
+async def test_a_failing_reference_is_returned_as_unverified_with_the_reason() -> None:
+    """A-10: the code is still handed over, but never as checked."""
     runner = _Runner(passed=False)
     llm = FakeLLMClient(chat_content=_PROPOSAL)
-    assert await verified_reference(_STATEMENT, llm, runner) is None
+    solution = await verified_reference(_STATEMENT, llm, runner)
+    assert solution is not None
+    assert solution.verified is False
+    assert solution.reason is not None
+    assert "did not pass" in solution.reason
+    assert solution.verdict is not None
+    assert solution.verdict.status == "fail"
 
 
 async def test_a_failing_reference_gets_one_repair_turn_with_sandbox_feedback() -> None:
     # ollama migration: the local coder's hand-computed `expected` values are
     # sometimes wrong; the repair turn quotes what the sandbox returned.
     llm = FakeLLMClient(chat_content=_PROPOSAL)
-    assert await verified_reference(_STATEMENT, llm, _Runner(passed=False)) is None
+    solution = await verified_reference(_STATEMENT, llm, _Runner(passed=False))
+    assert solution is not None
+    assert solution.verified is False
     assert len(llm.chat_calls) == 2
     repair = llm.chat_calls[1][-1].content
     assert "your reference_solution returned 3" in repair
@@ -223,12 +237,18 @@ async def test_statement_examples_outrank_the_models_own_expected_values() -> No
     assert [case.expected for case in suite.cases] == [2]
 
 
-async def test_no_statement_or_no_sandbox_means_no_reveal() -> None:
+async def test_no_sandbox_means_unverified_and_nothing_to_solve_means_nothing() -> None:
     llm = FakeLLMClient(chat_content=_PROPOSAL)
-    no_statement = StructuredInput(source="text", question="give full code")
-    assert await verified_reference(no_statement, llm, _Runner(passed=True)) is None
-    assert await verified_reference(_STATEMENT, llm, None) is None
+    nothing = StructuredInput(source="text")
+    assert await verified_reference(nothing, llm, _Runner(passed=True)) is None
     assert llm.chat_calls == []
+    # No sandbox: verification cannot be attempted, and the label says so.
+    solution = await verified_reference(_STATEMENT, llm, None)
+    assert solution is not None
+    assert solution.verified is False
+    assert solution.reason is not None
+    assert "not available" in solution.reason
+    assert len(llm.chat_calls) == 1
 
 
 def test_the_problem_statement_is_never_read_as_an_ask() -> None:

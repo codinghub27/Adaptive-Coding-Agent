@@ -294,15 +294,27 @@ def _repair_feedback(execution_result: ExecutionResult) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class VerifiedSolution:
-    """A reference solution that PASSED its own cases in the sandbox.
+    """A reference solution and what the sandbox said about it.
 
-    The only code the agent may ever reveal as "the solution" (ADAPTIVE-upgrade
-    P4): `request` is what was run, `verdict` is the sandbox's pass.
+    `verified=True`: it PASSED its own cases in the sandbox (`request` is what
+    was run, `verdict` the pass). `verified=False`: it could not be verified --
+    no sandbox, no usable cases, or it failed them. Owner decision A-10: an
+    explicit ask for the code is still answered with it, labelled "Not
+    verified in sandbox"; `reason` says why, and `request` (when there is
+    one) lets the turn show the real result of running it.
     """
 
     code: str
-    request: ExecutionRequest
-    verdict: Verdict
+    request: ExecutionRequest | None
+    verdict: Verdict | None
+    verified: bool = True
+    reason: str | None = None
+
+
+_NO_SANDBOX: Final = "the code sandbox is not available, so it was not run"
+_NO_CASES: Final = "there were no usable test cases to check it against"
+_FAILED_CASES: Final = "it did not pass every test case it was run against"
+_SANDBOX_TROUBLE: Final = "the sandbox could not finish running it"
 
 
 async def verified_reference(
@@ -310,31 +322,32 @@ async def verified_reference(
     llm: LLMClient,
     runner: CodeRunner | None,
 ) -> VerifiedSolution | None:
-    """An LLM-proposed reference solution, revealed only if the sandbox passes it.
+    """An LLM-proposed reference solution, verified in the sandbox when possible.
 
-    Unlike `synthesize_test_suite` there is no learner code to take an
-    entrypoint from (the learner asked for the solution), so the entrypoint is
-    the reference's own -- it must define the function its cases call, and
-    every case must pass in the sandbox. Anything less is `None`: never
-    reveal unverified code. Needs a real problem STATEMENT, so the cases come
-    from the problem, not from a bare "give me the code". Never raises.
+    There is no learner code to take an entrypoint from (the learner asked for
+    the solution), so the entrypoint is the reference's own. Verification is
+    always attempted; when it cannot be completed the candidate is returned
+    with `verified=False` and the reason, never silently passed off as
+    checked. `None` only when the model produced no usable code at all, or
+    the turn names nothing to solve. Never raises.
     """
-    if problem is None or not problem.problem or runner is None:
+    if problem is None or not (problem.problem or problem.question):
         return None
     try:
         return await _verified_reference(problem, llm, runner)
-    except Exception:  # noqa: BLE001 - fail-soft: no reveal beats an unverified one
+    except Exception:  # noqa: BLE001 - fail-soft: the caller says no code was produced
         return None
 
 
 async def _verified_reference(
-    problem: StructuredInput, llm: LLMClient, runner: CodeRunner
+    problem: StructuredInput, llm: LLMClient, runner: CodeRunner | None
 ) -> VerifiedSolution | None:
     statement_only = problem.model_copy(update={"code": [], "error": None})
     messages = [
         ChatMessage(role="system", content=_SYNTH_SYSTEM),
         ChatMessage(role="user", content=_user_input_block(statement_only)),
     ]
+    best: VerifiedSolution | None = None
     for _ in range(SYNTH_ATTEMPTS):
         try:
             result = await llm.chat(
@@ -343,12 +356,13 @@ async def _verified_reference(
                 max_tokens=2000,
             )
         except LLMError:
-            return None
-        outcome = await _check_reference(statement_only, result.content, runner)
-        if not isinstance(outcome, _Retry):
-            return outcome
-        if not outcome.feedback or not outcome.previous:
-            return None  # at temperature 0 a blind retry repeats the proposal
+            return best
+        outcome, candidate = await _check_reference(statement_only, result.content, runner)
+        if candidate is not None and candidate.verified:
+            return candidate
+        best = candidate or best
+        if outcome is None or not outcome.feedback or not outcome.previous:
+            return best  # at temperature 0 a blind retry repeats the proposal
         # LLM-ollama-local: the same repair turn `_synthesize` uses. Measured:
         # the local coder's Two Sum reference was right but one hand-computed
         # `expected` was wrong, so the Guidance-mode reveal never happened.
@@ -356,47 +370,62 @@ async def _verified_reference(
             ChatMessage(role="assistant", content=outcome.previous),
             ChatMessage(role="user", content=outcome.feedback),
         ]
-    return None
+    return best
 
 
 async def _check_reference(
-    statement_only: StructuredInput, content: str, runner: CodeRunner
-) -> VerifiedSolution | None | _Retry:
-    """Run one proposed reference in the sandbox: verified, rejected, or repairable."""
+    statement_only: StructuredInput, content: str, runner: CodeRunner | None
+) -> tuple[_Retry | None, VerifiedSolution | None]:
+    """Run one proposed reference in the sandbox.
+
+    Returns `(retry, candidate)`: `candidate` is the proposal with what is
+    known about it (`None` when the reply held no usable code); `retry` is
+    set when a repair turn could fix a proposal that contradicted itself.
+    """
     parsed = _parse_synth_output(content)
     if parsed is None or not parsed.reference_solution:
-        return None
-    if len(parsed.reference_solution) > MAX_CODE_CHARS:
-        return None
+        return None, None
+    code = parsed.reference_solution
+    if len(code) > MAX_CODE_CHARS:
+        return None, None
+
+    def unverified(
+        reason: str, request: ExecutionRequest | None = None, verdict: Verdict | None = None
+    ) -> VerifiedSolution:
+        return VerifiedSolution(
+            code=code, request=request, verdict=verdict, verified=False, reason=reason
+        )
+
     # The statement's own worked examples (read deterministically, no LLM)
     # outrank the model's hand-computed `expected` values: a small local model
     # mis-computes those often enough to veto its own correct solution.
     with_reference = statement_only.model_copy(
-        update={"code": [CodeBlock(content=parsed.reference_solution, language="python")]}
+        update={"code": [CodeBlock(content=code, language="python")]}
     )
     suite = extract_test_suite(with_reference)
     if suite is None:
         cases = _build_cases(parsed)
-        if cases is None:
-            return None
-        functions = top_level_functions(parsed.reference_solution)
+        functions = top_level_functions(code)
         names = {func.name for func in functions}
         entrypoint = parsed.entrypoint if parsed.entrypoint in names else None
-        if entrypoint is None:
+        if entrypoint is None and cases is not None:
             entrypoint = select_entrypoint(functions, cases)
-        if entrypoint is None:
-            return None
+        if cases is None or entrypoint is None:
+            return None, unverified(_NO_CASES)
         try:
             suite = TestSuite(entrypoint=entrypoint, cases=cases)
         except ValidationError:
-            return None
-    request = ExecutionRequest(code=parsed.reference_solution, tests=suite)
+            return None, unverified(_NO_CASES)
+    request = ExecutionRequest(code=code, tests=suite)
+    if runner is None:
+        return None, unverified(_NO_SANDBOX)
     execution_result = await runner.run(request)
     verdict = verify(execution_result, request)
     if verdict.status == "fail":
-        return _Retry(_repair_feedback(execution_result), content)
+        failed = unverified(_FAILED_CASES, request, verdict)
+        return _Retry(_repair_feedback(execution_result), content), failed
     if verdict.status != "pass" or verdict.cases_total == 0:
-        return None
+        return None, unverified(_SANDBOX_TROUBLE, request, verdict)
     if verdict.cases_passed != verdict.cases_total:
-        return None
-    return VerifiedSolution(code=parsed.reference_solution, request=request, verdict=verdict)
+        return None, unverified(_FAILED_CASES, request, verdict)
+    return None, VerifiedSolution(code=code, request=request, verdict=verdict)
