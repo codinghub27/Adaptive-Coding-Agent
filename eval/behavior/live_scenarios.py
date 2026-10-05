@@ -314,8 +314,9 @@ def scenarios() -> list[Scenario]:
 
 
 class Api:
-    def __init__(self, base_url: str, timeout: float) -> None:
+    def __init__(self, base_url: str, timeout: float, pace: float = 0.0) -> None:
         self._client = httpx.Client(base_url=base_url, timeout=timeout)
+        self._pace = pace
         self._headers: dict[str, str] = {}
 
     def new_account(self) -> None:
@@ -341,6 +342,8 @@ class Api:
             body["_seconds"] = round(time.perf_counter() - started, 2)
             conversation_id = body["conversation_id"]
             turns.append(body)
+            if self._pace > 0:
+                time.sleep(self._pace)
         return turns
 
 
@@ -378,6 +381,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--only", nargs="*", default=None, help="scenario keys to run")
+    parser.add_argument(
+        "--pace", type=float, default=0.0, help="seconds between turns (LLM rate limits)"
+    )
     parser.add_argument("--out", default=None, help="write the JSON record here")
     args = parser.parse_args(argv)
 
@@ -386,7 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     seconds: list[float] = []
     calls: list[int] = []
     record: list[dict[str, Any]] = []
-    api = Api(args.base_url, args.timeout)
+    api = Api(args.base_url, args.timeout, args.pace)
     for run in range(1, args.runs + 1):
         shared_ready = False
         for scenario in chosen:
