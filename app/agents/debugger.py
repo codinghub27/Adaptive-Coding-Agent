@@ -602,6 +602,21 @@ _EXPLAIN_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
 )
 
 
+_READ_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
+    "No failure has been established for the learner's code: the sandbox either had no test "
+    "cases to check it against or could not run it. Do NOT assume the code is wrong. Read it "
+    "line by line and trace it on one small input of your own. If you find a definite bug, "
+    "name it: quote the one line or expression that is wrong, show the value it produces on "
+    "your input, and say what it should be instead. If you find none, say plainly that you "
+    "found no bug, and name the input you traced and the result it gives. Never invent a bug "
+    'to have something to report. Write TO the learner ("you") in 2-4 sentences, and do not '
+    "rewrite their function. If trusted <reference_notes> are provided, use the ones that "
+    'genuinely apply and list their numbers in "used"; never cite a note you did not use. '
+    "Reply with ONLY a single JSON object and nothing else: "
+    '{"bug_explanation": "<your reading>", "used": [<note numbers>]}'
+)
+
+
 async def explain_bug(
     problem: StructuredInput,
     *,
@@ -611,8 +626,14 @@ async def explain_bug(
     inferred_approach: str | None,
     llm: LLMClient,
     references: Sequence[Reference] = (),
+    failure_established: bool = True,
 ) -> tuple[str | None, list[str]]:
     """One LLM call: explain the already-established (sandbox-verified) failure.
+
+    `failure_established=False` is the turn where nothing was proven (no test
+    cases, or no sandbox): the model is then asked to READ the code and is
+    told it may be correct. Telling it "the failure is FACT" on such a turn
+    made it invent a bug in working code.
 
     Returns the explanation and the labels of the `references` (trusted corpus
     excerpts shown in the prompt) the model reported using -- the only thing
@@ -632,7 +653,9 @@ async def explain_bug(
     if notes:
         parts.append(notes)
     messages = [
-        ChatMessage(role="system", content=_EXPLAIN_SYSTEM),
+        ChatMessage(
+            role="system", content=_EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM
+        ),
         ChatMessage(role="user", content="\n".join(parts)),
     ]
     try:

@@ -224,6 +224,11 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     if not state.get("code"):
         # Nothing to read: without code there is no bug to describe.
         return {"bug_explanation": None}
+    verdict = state.get("initial_verdict")
+    if verdict is not None and verdict.status == "pass":
+        # Their code passed every case: there is no bug to explain, and asking
+        # for one would get one invented.
+        return {"bug_explanation": None}
     explanation, citations = await explain_bug(
         problem,
         static_findings=state.get("static_findings", []),
@@ -232,6 +237,7 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
         inferred_approach=state.get("inferred_approach"),
         llm=runtime.context.llm,
         references=state.get("references", []),
+        failure_established=state.get("has_established_failure", False),
     )
     return {"bug_explanation": explanation, "citations": citations}
 

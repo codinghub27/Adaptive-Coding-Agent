@@ -311,6 +311,10 @@ def render_execution_line(verdict: Verdict | None, label: str = "") -> str:
             f"{head} ✓ passed {verdict.cases_passed}/{verdict.cases_total} test cases "
             "in the sandbox"
         )
+    if verdict.status == "fail" and not verdict.cases_total:
+        # No case ever ran (the code crashed, timed out or would not compile):
+        # "0/0 test cases passed" described a failure as a score.
+        return f"{head} ✗ failed in the sandbox before any test case ran -- {verdict.summary}"
     if verdict.status == "fail":
         return (
             f"{head} ✗ failed -- {verdict.cases_passed}/{verdict.cases_total} test cases "

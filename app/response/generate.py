@@ -152,6 +152,34 @@ def _render_dsa(
     return sections, hint_level, hint_ceiling, more_help_available, citations, next_steps
 
 
+_PATCH_RAN_CLEAN_NOTE = (
+    "The fix above ran in the sandbox without the failure your code hit. There were no "
+    "test cases to check its output against, so it is executed, not verified -- run it on "
+    "an input whose answer you know."
+)
+
+
+_NOTHING_TO_FIX_NOTE = (
+    "You asked for the corrected code: yours passed every test case in the sandbox, so "
+    "there is no fix to show -- the version you shared is the one to keep."
+)
+
+
+def _patch_ran_clean(result: DebugResult) -> bool:
+    """The learner's code FAILED in the sandbox and the patch then ran to
+    completion, with no test cases to judge its output (execution, not
+    verification -- target behaviour section 15). Enough to show the patch
+    with that label; never enough to call it fixed."""
+    initial, final = result.initial_verdict, result.final_verdict
+    return (
+        initial is not None
+        and initial.status == "fail"
+        and final is not None
+        and final.status == "inconclusive"
+        and final.category == "no_tests"
+    )
+
+
 def _debug_next_steps(result: DebugResult) -> list[str]:
     has_content = bool(
         result.static_findings
@@ -203,7 +231,8 @@ def _render_debug(
         if section is not None:
             sections.append(section)
 
-    if result.patched_code is not None and result.fixed and _may_reveal_code(plan):
+    ran_clean = _patch_ran_clean(result)
+    if result.patched_code is not None and (result.fixed or ran_clean) and _may_reveal_code(plan):
         patch_section = _section("patch", render_code_block(result.patched_code))
         if patch_section is not None:
             sections.append(patch_section)
@@ -217,17 +246,28 @@ def _render_debug(
     verdict_for_render = (
         result.initial_verdict if result.initial_verdict is not None else verification
     )
-    verdict_section = _section("verification", render_verdict(verdict_for_render))
+    # One "What the sandbox found" section: their code's verdict, then what
+    # (if anything) is known about the fix. Two sections under one title read
+    # as two different findings.
+    found = [render_verdict(verdict_for_render)]
+    if result.fixed and result.final_verdict is not None:
+        found.append(
+            f"A fix was found and verified in the sandbox: {result.final_verdict.summary}."
+        )
+    elif ran_clean and result.patched_code is not None and _may_reveal_code(plan):
+        found.append(_PATCH_RAN_CLEAN_NOTE)
+    elif (
+        _may_reveal_code(plan)
+        and result.initial_verdict is not None
+        and result.initial_verdict.status == "pass"
+    ):
+        # They asked for the corrected code and theirs PASSED: say so, rather
+        # than leave the request unanswered. Not on an unproven run -- there
+        # the reading above may have named a bug, and this would contradict it.
+        found.append(_NOTHING_TO_FIX_NOTE)
+    verdict_section = _section("verification", "\n\n".join(part for part in found if part))
     if verdict_section is not None:
         sections.append(verdict_section)
-
-    if result.fixed and result.final_verdict is not None:
-        fix_section = _section(
-            "verification",
-            f"A fix was found and verified in the sandbox: {result.final_verdict.summary}.",
-        )
-        if fix_section is not None:
-            sections.append(fix_section)
 
     return sections, _debug_next_steps(result)
 
