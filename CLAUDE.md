@@ -130,6 +130,18 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
 - **Tests are deterministic where they can be.** A statement's own examples are
   always in the suite. Sandbox-validated cases are cached per learner and
   subject (`test_suite_cache`, `app/memory/test_suites.py`) and reused.
+- **Tree and linked-list code runs.** `app/execution/node_adapter.py` wraps
+  node-taking functions in the code SENT to the sandbox so test cases can use
+  LeetCode level-order lists and plain lists. The harness and image are
+  untouched; do not add node handling to `docker/harness/run.py`.
+- **Rate limits are the latency.** Groq's limit is tokens per minute per key
+  and per model. With several keys the SDK's own retries are off and
+  `FailoverLLMClient` moves on, waiting out only a short `retry-after`.
+  `LLM_HTTP_LOG_PATH` records every provider call (metadata only);
+  `LLM_CLASSIFIER_MODEL` (off) moves classification to a smaller model.
+- **Measuring behaviour.** `eval.behavior.live_scenarios --runs N` gives a pass
+  rate per scenario and per check. One live transcript proves little: the
+  classifier's reading varies between runs.
 - **Infra.** `docker compose up -d` starts Postgres and Qdrant with
   `restart: unless-stopped`. If the server logs "knowledge dense retrieval
   failed: ResponseHandlingException (ConnectError)", Qdrant is not running; the

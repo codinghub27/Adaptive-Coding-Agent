@@ -395,3 +395,237 @@ The three review fixes landed after the live scenarios were run. They change `wa
 - Scenario 8: the profile carries across sessions and is cited, but the level
   of help did not change because no skill crossed a threshold.
 - Round 2 is two large commits rather than one per fix.
+
+## 11. Round 3 (2026-10-05): reliability, adaptivity, tree execution, latency
+
+### R1: reliability -- NOT at the merge bar's sample size
+
+**The five-runs-per-scenario measurement on one final commit was not
+completed.** The Groq quota for the main model ran out part-way: three of the
+five keys began refusing normal-sized requests with a `retry-after` of 7 to 15
+minutes (a one-token request still succeeded, so it is a token quota, not an
+outage). A full 5x pass is about 320 turns and roughly 1.6 million tokens,
+which is more than the keys had left after the day's testing. Three attempts at
+the full run were started and stopped; each also found a real defect, so the
+code changed between them.
+
+What was measured, all on round-3 code, with `eval/behavior/live_scenarios.py`
+(the hand-scored checks of `docs/LIVE_BEHAVIOR.md` made programmatic):
+
+| # | Scenario | Passed / runs, all round-3 commits | On the final commit `6a5877f` or its parent | Merge-bar check |
+|---|---|---|---|---|
+| 1 | Beginner, Two Sum | 6 / 7 | 2 / 2 | no full code on turn 1: **7 / 7** |
+| 2 | KeyError debug | 5 / 6 | 1 / 2 (the failure is the regression fixed in `6a5877f`) | |
+| 3 | Challenge mode | 5 / 5 | 2 / 2 | solution withheld on every turn: **5 / 5** |
+| 4 | Max Path Sum | 3 / 6 | 2 / 2 | |
+| 5 | BFS vs DFS | 5 / 5 | 2 / 2 | |
+| 6 | Session M, 678 as text | 5 / 6 | 2 / 2 | no study plan on follow-ups: **5 / 5** completed runs |
+| 7 | Vague phrasings | 2 / 2 | 1 / 1 | |
+| 8 | Cross-session | 1 / 1 valid | 1 / 1 | |
+
+Reference replay (`eval.behavior.replay`, 130 checks): 130 / 130 on `c69e1b7`
+and 130 / 130 on `3bcd6ce` with the classifier on the smaller model. One run
+each, not five.
+
+So: the three must-be-5/5 checks did hold on every run that completed (7, 5
+and 5 runs). Scenarios 7 and 8 have too few runs to say anything about a 4/5
+bar. The table mixes commits and is evidence, not the certification the brief
+asked for. To finish it, on a day with quota:
+
+```powershell
+.\venv\Scripts\python.exe -m eval.behavior.live_scenarios --runs 5 --pace 12 --base-url http://127.0.0.1:8000
+```
+
+It prints the per-scenario and per-check table and exits 1 if any check is
+below the bar (all runs for the three strict checks, all but one otherwise).
+
+Every failure, and what it was:
+
+| Failure | Cause | Kind | Fix |
+|---|---|---|---|
+| Scenario 1, turn 4: no code after "I don't know" (1 run) | The reference-solution call was rate limited on every key, so "did not return usable code" | Capacity | `018faa9`, `d210d4d`: fail over at once, wait out a short throttle on the main model |
+| Scenario 4: "no test cases" (3 runs) | The learner names the problem and pastes only code, so the turn depended on test synthesis, which is one large model call | Design, exposed by throttling | `3bcd6ce`: a named curated problem supplies its own examples; no model call |
+| Scenario 2: fewer than 4 cases (1 run) | Side effect of the fix above: Two Sum's curated statement has two examples | Regression, caught by the next run | `6a5877f`: a suite of fewer than 4 example cases is topped up once with validated cases, then cached |
+| Scenario 6: a turn timed out at 300 s (1 run) | Every Groq key refused; the turn went to the last-resort OpenRouter free model and hung | Capacity | Partly: `d210d4d` returns to the main model after 60 s instead of 300. A hung fallback call still has no timeout of its own |
+| Scenario 8: 0 / 2 | Not the agent. The runner ran scenario 8 on scenario 7's account | Measurement bug | `6a5877f`. Those two runs are excluded above |
+
+No failure in round 3 came from classifier flag variance. The guards added in
+round 2 (`wants_the_code`, the subject-switch rules) held on every run.
+
+### R2: can the profile change the level of help?
+
+Yes for code the sandbox has judged; no for answers to questions alone.
+
+Constants: `ALPHA` 0.3 (sandbox outcomes), `CONCEPT_ALPHA` 0.1 with
+`CONCEPT_CEILING` 0.67 (graded answers), prior 0.50. Planner thresholds: weak
+below 0.42, strong from 0.75, hard difficulty from 0.68.
+
+| Evidence on one topic, starting at 0.50 | Events to cross | Lands at |
+|---|---|---|
+| Solved with no hints (score 1.0) | 2 to become strong | 0.755 |
+| Solved with one hint (0.85) | 4 to become strong | 0.766 |
+| Solved with two hints (0.70) | never: the estimate converges on 0.70 | 0.70 |
+| A failed sandbox run (0.10) | 1 to become weak | 0.38 |
+| Needed the full solution (0.30) | 2 to become weak | 0.398 |
+| Correct answers to the tutor's questions (0.85) | never strong, never hard: capped at 0.67 by design | 0.67 |
+| Wrong answers (0.20) | 3 to become weak | 0.419 |
+| "I don't know" (0.25) | 4 to become weak | 0.414 |
+
+So five short sessions CAN cross a threshold: two clean verified solutions on a
+topic make a learner strong on it, and a single failing run makes them weak.
+Scenario 8 did not cross one because scenarios 1 to 5 were mostly answers to
+questions (capped at 0.67) spread over four topics, with at most one verified
+run per topic. The adaptation is not too slow; what scenario 8 measured was
+five conversations that produced little sandbox evidence.
+
+The test the brief asked for is
+`test_a_weak_and_a_strong_learner_get_different_help_on_the_same_problem`: the
+same Two Sum ask for a learner seeded at 0.2, 0.5 and 0.85 on `hashing`.
+
+| Skill | Assistance per turn | Difficulty | Concise | Hint ladder ceiling |
+|---|---|---|---|---|
+| 0.20 | `hint` | easy | no | lower |
+| 0.50 | `concept` | medium | no | |
+| 0.85 | `pseudocode` | hard | yes | higher |
+
+Nothing was tuned. Two things for the owner to decide, neither applied:
+
+1. **One failed run makes a learner "weak"** (0.50 to 0.38). That is fast for a
+   first attempt. Raising `UNSOLVED_SCORE` from 0.10 to 0.25 would make it two
+   failures (0.425, then 0.37). It would also slow the drop for a learner who
+   really is weak by one event.
+2. **A learner who always needs two hints can never be "strong"** (the score
+   for that is 0.70, below the 0.75 threshold). Lowering `HINT_PENALTY` from
+   0.15 to 0.10 makes two-hint solves score 0.80, reaching strong in 6. Whether
+   a learner who needs two hints every time should be called strong is a
+   teaching judgement, not a bug.
+
+### R3: tree and linked-list execution
+
+Done in `app/execution/node_adapter.py`, applied in `SandboxRunner.run` to the
+code about to be sent. A function with a tree or list parameter (by annotation,
+by what it reads on the parameter, or by a conventional name in a module that
+touches `.left`/`.right`/`.next`) is wrapped so it can be called with a
+LeetCode level-order list (`None` for a missing child, `[]` for the empty tree)
+or a plain list, and a returned tree or list comes back in the same form. Only
+the outermost call converts, so recursive solutions work. `TreeNode` and
+`ListNode` are supplied when the submission does not define them.
+
+The brief said to wire this into the harness. It is wired into the code sent to
+the harness instead: the harness is baked into the sandbox image, and changing
+it means rebuilding and re-tagging the image on every machine. The effect is
+the same and the image is untouched. Statement examples written with `null`,
+`true` and `false` are now read, and the synthesis prompt asks for the list form.
+
+Tests: `tests/execution/test_node_adapter.py`, ten cases, the behavioural ones
+in the real sandbox: empty tree, single node, right-skewed, left-skewed, a hole
+in the middle, a returned tree, empty and non-empty linked lists in and out,
+and the scenario 4 code getting a real `fail` (2 of 3) instead of
+`inconclusive 0/0`.
+
+Not covered: functions that modify a list or tree in place and return nothing,
+N-ary trees, graphs given as node objects, and cyclic lists.
+
+### R4: the latency cause
+
+Confirmed: rate limiting, and specifically the tokens-per-minute limit.
+
+Every provider HTTP attempt is now recorded (`app/llm/telemetry.py`): status,
+seconds, credential index and Groq's rate-limit headers. Eleven turns
+(scenarios 1, 6 and 4, one run) on five Groq keys, before any fix:
+
+| | |
+|---|---|
+| HTTP attempts | 27: 17 succeeded, 8 were `429`, 2 were `503` |
+| Limit reported by the headers | `x-ratelimit-limit-tokens: 8000` per minute per key; `x-ratelimit-limit-requests: 1000` |
+| `retry-after` on the 429s | 2, 2, 12, 178, 5, 4, 13 and 688 seconds |
+| Provider time in successful calls | 55.8 s (59%) |
+| Provider time waiting after a 429 | 38.1 s (41%) |
+| Successful calls with under 2000 tokens left in the window | 6 of 17 |
+| Slowest successful call | 13.6 s, on a key with 73 tokens left |
+
+Two mechanisms:
+
+1. **The SDK sleeps.** `ChatGroq` retries a 429 itself (`max_retries=2`),
+   sleeping for `retry-after` first, before the failover client ever sees the
+   error and moves to the next key. That is the 41%.
+2. **8000 tokens a minute is about two tutor turns per key.** A classifier call
+   plus a solver call is roughly 4000 tokens. Five keys give about ten turns a
+   minute in total, and a test run exceeds that.
+
+The 429s are not only slow. A code reveal makes one extra call, and when that
+call was rate limited on every key the turn came back "did not return usable
+code" (scenario 1, turn 4, in the telemetry run).
+
+Applied (`018faa9`): with more than one credential, the SDK's retries are off
+and a 429 fails over immediately. With a single key nothing changes.
+
+Proposed, not applied: `LLM_CLASSIFIER_MODEL=openai/gpt-oss-20b`. Groq's limits
+are per model, so the classifier would get its own 8000 tokens a minute and the
+main model would keep its budget for the solver. The setting exists and is off.
+
+### Streaming
+
+Not enabled, and not possible as asked without a design change. The reply the
+learner reads is assembled after the model call from validated JSON: the solver
+returns `guided_step`, `pattern_slug` and the rest as one object, the step is
+rejected if it contains code, and symbols are escaped. There is no stream of
+reply tokens to forward, and forwarding the raw JSON stream would bypass the
+check that keeps code out of a hint. `/chat/stream` already streams the
+pipeline's stages as they complete. A real fix would be a second, streamed call
+that only words the already-decided step; that adds a call per turn on a
+provider whose limit is tokens per minute, so it would make latency worse here.
+
+### R4 continued: what was applied, and the classifier model
+
+Applied:
+
+- `018faa9`: with more than one credential the SDK's own retries are off.
+- `d210d4d`: when every key for the main model is throttled and the shortest
+  `retry-after` is 15 s or less, that wait is taken once and the call retried
+  on the main model. The failover cursor returns to the first key after 60 s
+  (was 300 s). Before this, one burst of 429s pinned every turn to the
+  fallback model for five minutes, which is where the 30 to 60 s turns in
+  section 10 came from.
+
+Effect, paced runs on the final code: median turn 3.8 to 6.0 s, p90 9.4 to
+11.3 s, slowest 12.0 to 27.8 s, 1.3 to 1.7 model calls per turn, with keys
+still being refused throughout. The 15 s target for a tutor turn is met at the
+p90 when the load is paced; it is not guaranteed, because it depends on quota.
+
+Measured for the proposal, not turned on: `LLM_CLASSIFIER_MODEL=openai/gpt-oss-20b`.
+
+| | Classifier on the main model | Classifier on `gpt-oss-20b` |
+|---|---|---|
+| Replay, routing and behaviour checks | 130 / 130 (`c69e1b7`) | 130 / 130 (`3bcd6ce`) |
+| Classifier call, median / p90 | 1.84 s / 6.2 s | 1.04 s / 1.7 s |
+| Classifier calls rate limited | shares the main model's quota | 0 of 17 |
+
+Recommendation: turn it on, after one more replay and one `live_scenarios`
+pass with it enabled. One run of 130 checks is not enough to call the smaller
+model's routing equal, and the eight scenarios were not run with it at all. It
+removes about a third of the main model's token use and takes the classifier
+out of the queue.
+
+### Verification on the final commit (`6a5877f`)
+
+| Check | Result |
+|---|---|
+| `pytest tests` (Postgres, Qdrant, Docker up) | 1904 passed, 2 skipped (opt-in live LLM) |
+| `pyright app tests` (strict) | 0 errors |
+| `ruff check .`, `ruff format --check .` | clean |
+| `alembic check` | no pending operations |
+
+### Remaining risks after round 3
+
+- Reliability is shown on 1 to 7 runs per scenario across several commits, not
+  5 on one. Run the command above before merging.
+- A turn that reaches the last-resort provider can hang until the client's
+  timeout. The fallback call needs its own time limit.
+- Free-tier quota is the binding constraint on latency AND on correctness of
+  the turns that need a second large call (a code reveal, test synthesis).
+- The suite top-up adds one model call the first time a learner submits code
+  for a statement with fewer than four examples.
+- Tree and list support covers functions that take or return a root or head.
+  In-place mutation with no return value is not handled.
+- Skill thresholds are unchanged; two proposals above await a decision.

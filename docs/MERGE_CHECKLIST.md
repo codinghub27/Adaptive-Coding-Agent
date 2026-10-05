@@ -29,12 +29,24 @@ because local `main` was never pushed past that point.
 | `09824d2` | The uncommitted work found on `fix/conversation-memory-tutor` when round 1 began (ERR-005 to ERR-007) |
 | `957684d` to `19c1b23` | Round 1: audit, code-first routing, snippet repair |
 | `1acc9dd` to `3c47fe6` | Round 2: classifier sees the conversation, owner decisions A-10 and A-15, suite cache (**migration `c6d7e8f9a0b1`**) |
-| `54e0982` onward | Round 3: tree and linked-list execution, provider telemetry, reliability runs |
+| `54e0982` to `6a5877f` (and the docs commit after it) | Round 3: tree and linked-list execution, provider telemetry and failover changes, curated examples as test suites, the repeatable scenario runner |
 
 `experiment/local-ollama` is NOT part of this. It diverged before round 1 and
 none of rounds 1 to 3 has been ported to it.
 
 ## Before merging
+
+0. **Finish the reliability run.** The five-runs-per-scenario measurement was
+   not completed (the Groq quota ran out; audit report section 11). On a day
+   with quota, with the stack and the API up:
+
+   ```powershell
+   .env\Scripts\python.exe -m eval.behavior.live_scenarios --runs 5 --pace 12 --base-url http://127.0.0.1:8000
+   .env\Scripts\python.exe -m eval.behavior.replay --pace 10 --base-url http://127.0.0.1:8000
+   ```
+
+   The first exits 1 if any check is below the bar. Do not merge on the
+   partial numbers alone.
 
 1. `git fetch origin` and confirm `git log main..origin/main` is still empty.
 2. Decide how to merge. A merge commit keeps the history above. A squash loses
@@ -74,6 +86,9 @@ workspace. Add the two lines by hand if you want them documented there.
 Behaviour change with no setting: when more than one LLM credential is
 configured, the Groq SDK's own retries are off, so a rate-limited key fails
 over to the next one immediately. With a single key nothing changes.
+When every key for the main model is throttled for 15 s or less, the call waits
+that long once and retries there before using the fallback provider, and the
+failover returns to the first key after 60 s (was 300 s).
 
 ## Docker
 
