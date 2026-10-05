@@ -32,3 +32,18 @@ frontend/package-lock.json
 
 # transcript-probe raw output (summaries are recorded in docs/features/ADAPTIVE-upgrade.md)
 eval/results/
+
+# Node
+node_modules/
+
+# Local data volumes
+qdrant_storage/
+pgdata/
+
+# Model files
+*.gguf
+*.bin
+
+# Logs
+logs/
+*.log
