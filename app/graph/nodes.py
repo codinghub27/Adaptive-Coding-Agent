@@ -826,28 +826,34 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
             update["intent"] = _relabel(intent, Intent.CODE_DEBUG, "an attempt at the problem")
         return update
 
-    relation, key = resolve_problem_relation(
-        inp,
-        active,
-        intent.intent if intent is not None else None,
-        answering=_answering_the_tutor(state),
-        refers=True
-        if update.get("subject_switched")
-        else (intent.refers_to_previous if intent is not None else None),
-    )
+    if update.get("subject_switched") and active is not None:
+        # Whatever label came with "go back to the earlier one" (measured live:
+        # PRACTICE_REQUEST, which handed out a brand-new problem), the turn is
+        # a follow-up on the subject it just restored.
+        relation, key = "followup", active.key
+    else:
+        relation, key = resolve_problem_relation(
+            inp,
+            active,
+            intent.intent if intent is not None else None,
+            answering=_answering_the_tutor(state),
+            refers=intent.refers_to_previous if intent is not None else None,
+        )
     update["problem_relation"] = relation
     update["problem_key"] = key
     if relation == "followup" and active is not None:
         update["structured_input"] = inherit_active_problem(inp, active)
         question = inp.question if inp else None
-        if _needs_solution_intent(state, question):
+        if update.get("subject_switched"):
+            update["intent"] = _relabel(None, Intent.DSA_HINT, "back to the earlier subject")
+        elif _needs_solution_intent(state, question):
             # "give code for that" on the active problem is an explicit ask for
             # ITS solution; the classifier, seeing four words and no problem,
             # called it a low-confidence concept question and the turn went to
             # `clarify` (P4, T9). A fixed phrase match on a follow-up with a
             # known problem is unambiguous, so it is classified deterministically.
             update["intent"] = _relabel(intent, Intent.DSA_SOLVE, "explicit solution ask")
-        elif _continues_active_problem(state, question) or update.get("subject_switched"):
+        elif _continues_active_problem(state, question):
             # "I don't know", or a turn the classifier filed under its catch-all
             # GENERAL_GUIDANCE without any plan/advice ask: the learner is still
             # on the conversation's problem, so the tutor takes the next step on

@@ -65,7 +65,9 @@ _REFERENCE = (
 
 #: What a real model answers for each of these messages, flags included.
 _READINGS: dict[str, dict[str, object]] = {
-    "go back to the earlier one": {"intent": "GENERAL_GUIDANCE", "earlier_subject": True},
+    # Measured live: the label that came with this was PRACTICE_REQUEST, and the
+    # learner was handed a brand-new problem.
+    "go back to the earlier one": {"intent": "PRACTICE_REQUEST", "earlier_subject": True},
     "what was that problem called again": {
         "intent": "GENERAL_GUIDANCE",
         "about_conversation": True,
@@ -234,6 +236,7 @@ def test_the_models_code_ask_is_believed_only_for_a_plain_demand() -> None:
     # Measured live: a beginner's first message came back asks_for_code=true.
     assert not wants_the_code(asked, "Can you help me solve Two Sum? I don't understand it.")
     assert not wants_the_code(asked, "how to solve this prob")
+    assert not wants_the_code(asked, "give me step by step to solve the valid parenthesis problem")
     # The model said no: the phrase list does not overrule it.
     assert not wants_the_code(_intent(asks_for_code=False), "don't give me the code yet")
     # No reading from the model: the phrase lists are the fallback.

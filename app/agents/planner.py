@@ -178,7 +178,9 @@ def asks_for_fix(text: str | None) -> bool:
 #: beginner got the full solution on turn 1.
 _LEARNING_ASK_RE: Final = re.compile(
     r"\b(help|how|hint|nudge|start|understand|explain|why|stuck|don'?t know|not sure|"
-    r"walk me|teach|guide)\b"
+    # "give me step by step to solve ..." asks to be walked through it, not for
+    # the finished code (measured live: read as a code ask one run in two).
+    r"walk me|teach|guide|step by step|steps?|approach|idea)\b"
 )
 _MAX_DEMAND_WORDS: Final = 14
 
