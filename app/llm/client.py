@@ -636,6 +636,9 @@ def _build_client(
     api_key: SecretStr,
     tracer: Tracer,
     credential_index: int = 0,
+    *,
+    model_override: str | None = None,
+    sdk_retries: int | None = None,
 ) -> LangChainLLMClient:
     """One credentialed `LangChainLLMClient` for `provider`.
 
@@ -643,8 +646,13 @@ def _build_client(
     it labels the HTTP telemetry (`app.llm.telemetry`) so a rate-limited key
     can be told from the others without ever logging the key.
     """
-    model_name = settings.model_for(provider)
+    model_name = model_override or settings.model_for(provider)
     vision_model_name = settings.vision_model_for(provider)
+    # The provider SDK retries a 429 itself, SLEEPING for the server's
+    # `retry-after` first (measured: 41% of provider time on a throttled run).
+    # With another credential to fail over to, that sleep is pure delay, so the
+    # SDK's retries are turned off and `FailoverLLMClient` moves on at once.
+    max_retries = _SDK_DEFAULT_RETRIES if sdk_retries is None else sdk_retries
 
     chat_model: BaseChatModel
     vision_model: BaseChatModel
@@ -654,8 +662,15 @@ def _build_client(
             credential_index=credential_index,
             log_path=settings.llm_http_log_path,
         ).client()
-        chat_model = ChatGroq(model=model_name, api_key=api_key, http_async_client=http)
-        vision_model = ChatGroq(model=vision_model_name, api_key=api_key, http_async_client=http)
+        chat_model = ChatGroq(
+            model=model_name, api_key=api_key, http_async_client=http, max_retries=max_retries
+        )
+        vision_model = ChatGroq(
+            model=vision_model_name,
+            api_key=api_key,
+            http_async_client=http,
+            max_retries=max_retries,
+        )
     else:
         chat_model = ChatOpenRouter(model=model_name, api_key=api_key)
         vision_model = ChatOpenRouter(model=vision_model_name, api_key=api_key)
@@ -670,7 +685,65 @@ def _build_client(
     )
 
 
-def get_llm_client(settings: Settings, tracer: Tracer | None = None) -> LLMClient:
+#: `ChatGroq`'s own default, kept when there is no other credential to try.
+_SDK_DEFAULT_RETRIES: Final = 2
+
+
+class SmallTaskLLMClient:
+    """Sends a few named, small tasks to a smaller model; everything else to `main`.
+
+    A task is named by its exact system prompt (the intent classifier's).
+    Anything the small model's credentials cannot serve (rate limited, down)
+    falls back to `main`, so turning this on can never cost a turn its answer.
+    `vision` and `embed` always go to `main`.
+    """
+
+    def __init__(self, main: LLMClient, small: LLMClient, system_prompts: Sequence[str]) -> None:
+        self._main = main
+        self._small = small
+        self._system_prompts = frozenset(system_prompts)
+
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        first = messages[0] if messages else None
+        if first is not None and first.role == "system" and first.content in self._system_prompts:
+            try:
+                return await self._small.chat(
+                    messages, temperature=temperature, max_tokens=max_tokens
+                )
+            except LLMError:
+                pass
+        return await self._main.chat(messages, temperature=temperature, max_tokens=max_tokens)
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return await self._main.embed(texts)
+
+    async def vision(
+        self,
+        image: bytes,
+        prompt: str,
+        *,
+        mime_type: str = "image/png",
+    ) -> ChatResult:
+        return await self._main.vision(image, prompt, mime_type=mime_type)
+
+
+#: Added to a credential's index in the HTTP telemetry when the request went
+#: to the classifier model, so the two models can be told apart in the log.
+SMALL_TASK_CREDENTIAL_OFFSET: Final = 100
+
+
+def get_llm_client(
+    settings: Settings,
+    tracer: Tracer | None = None,
+    *,
+    small_task_prompts: Sequence[str] = (),
+) -> LLMClient:
     """Build the configured `LLMClient` (Groq or OpenRouter) with tracing wired in.
 
     With more than one credential configured (several `GROQ_API_KEY_*`, or a
@@ -685,10 +758,28 @@ def get_llm_client(settings: Settings, tracer: Tracer | None = None) -> LLMClien
     if not chain:
         raise RuntimeError("no LLM provider API key is configured")
 
+    sdk_retries = 0 if len(chain) > 1 else None
     clients = [
-        _build_client(settings, provider, api_key, tracer, index)
+        _build_client(settings, provider, api_key, tracer, index, sdk_retries=sdk_retries)
         for index, (provider, api_key) in enumerate(chain)
     ]
-    if len(clients) == 1:
-        return clients[0]
-    return FailoverLLMClient(clients)
+    main: LLMClient = clients[0] if len(clients) == 1 else FailoverLLMClient(clients)
+    groq_keys = settings.groq_api_keys
+    if not (settings.llm_classifier_model and small_task_prompts and groq_keys):
+        return main
+    small_clients = [
+        _build_client(
+            settings,
+            "groq",
+            api_key,
+            tracer,
+            SMALL_TASK_CREDENTIAL_OFFSET + index,
+            model_override=settings.llm_classifier_model,
+            sdk_retries=0,
+        )
+        for index, api_key in enumerate(groq_keys)
+    ]
+    small: LLMClient = (
+        small_clients[0] if len(small_clients) == 1 else FailoverLLMClient(small_clients)
+    )
+    return SmallTaskLLMClient(main, small, small_task_prompts)

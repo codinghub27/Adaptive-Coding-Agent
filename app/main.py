@@ -30,6 +30,7 @@ from app.graph.api import router as chat_router
 from app.health import ping_qdrant
 from app.input.api import MAX_REQUEST_BYTES, BodySizeLimitMiddleware
 from app.input.api import router as input_router
+from app.input.intent import INTENT_SYSTEM_PROMPT
 from app.knowledge.ingest import CorpusError
 from app.knowledge.retrieve import create_retriever
 from app.llm import get_llm_client
@@ -94,7 +95,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tracer = Tracer.from_settings(settings)
             stack.callback(tracer.flush, 10.0)
             app.state.tracer = tracer
-            app.state.llm = get_llm_client(settings, tracer)
+            app.state.llm = get_llm_client(
+                settings, tracer, small_task_prompts=(INTENT_SYSTEM_PROMPT,)
+            )
 
             if settings.knowledge_enabled:
                 try:

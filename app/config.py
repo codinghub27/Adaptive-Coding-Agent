@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     #: here as one JSON line: status, seconds, rate-limit headers. Metadata
     #: only (see `app.llm.telemetry`). Off by default.
     llm_http_log_path: Path | None = None
+    #: Optional smaller/faster Groq model for intent classification only.
+    #: Groq's rate limits are per model, so this also gives the classifier
+    #: its own token budget. Unset (the default): the main model classifies.
+    llm_classifier_model: str | None = None
     llm_vision_model: str | None = None
     groq_api_key: SecretStr | None = None
     #: Additional Groq keys (`GROQ_API_KEY_1` .. `GROQ_API_KEY_4`), tried in
