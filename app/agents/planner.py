@@ -54,7 +54,9 @@ __all__ = [
     "WEAK_SKILL",
     "ProblemAnalysis",
     "TopicSource",
+    "MIN_CONCEPT_TOPIC_SCORE",
     "analyze_problem",
+    "relevant_to_concept",
     "asks_for_fix",
     "wants_the_code",
     "build_plan",
@@ -311,6 +313,17 @@ def _best_topic_match(skill_levels: Mapping[str, float], prose_lower: str) -> st
 #: to the conversation's most recent one (`app.graph.nodes._hint_topic_key`),
 #: which is the right behaviour for a follow-up.
 MIN_RETRIEVAL_TOPIC_SCORE: Final = -5.0
+#: The floor for a CONCEPT question ("explain recursion"), where the hit is
+#: also what the answer is grounded on and what the topic card is labelled
+#: with. Measured on the reranker's scale: questions the corpus covers score
+#: 4.4 to 9.0 ("what is a trie" 9.04, "explain binary search" 7.47, "what is
+#: a hash map" 5.16); questions it does not cover score at most 1.0
+#: ("what is recursion" 1.01 and "explain the concept of recursion with
+#: examples" -1.19, both topping out on a dynamic-programming page; "explain
+#: big O notation" -3.48). The gap is wide; 2.5 sits in the middle of it. A
+#: problem STATEMENT scores far lower than a short question against the same
+#: pages, which is why that floor above is -5.0 and must not be raised.
+MIN_CONCEPT_TOPIC_SCORE: Final = 2.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,6 +518,25 @@ def _signal_choice(
     return best[2] if best is not None else None
 
 
+def _on_reranker_scale(hit: RetrievalHit) -> bool:
+    """Both floors are on the cross-encoder's scale. A hit that was never
+    reranked (the reranker timed out) carries a fusion score on another scale
+    entirely, so a floor says nothing about it."""
+    return hit.reranked
+
+
+def relevant_to_concept(hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
+    """The hits good enough to ground a concept answer on.
+
+    A weak match is not "the closest material": it is the wrong material, and
+    an answer built on it either refuses ("the references don't cover
+    recursion") or explains something else.
+    """
+    return [
+        hit for hit in hits if hit.score >= MIN_CONCEPT_TOPIC_SCORE or not _on_reranker_scale(hit)
+    ]
+
+
 def analyze_problem(
     inp: StructuredInput | None,
     profile: LearnerProfileView,
@@ -512,8 +544,14 @@ def analyze_problem(
     context: Sequence[RetrievalHit] = (),
     *,
     inherited_topic: str | None = None,
+    concept_question: bool = False,
 ) -> ProblemAnalysis:
     """Infer a topic and skill level for this turn.
+
+    `concept_question` marks a turn that asks about a concept and carries no
+    problem or code: its topic comes from retrieval only on a strong hit
+    (`MIN_CONCEPT_TOPIC_SCORE`). A weak one is no topic at all -- a recursion
+    question must not be labelled with whichever page happened to rank first.
 
     Resolution order, first match wins:
     1. an explicit `topic_hint` ("hint"),
@@ -582,7 +620,8 @@ def analyze_problem(
             topic_source="title",
         )
 
-    if context and context[0].score >= MIN_RETRIEVAL_TOPIC_SCORE:
+    floor = MIN_CONCEPT_TOPIC_SCORE if concept_question else MIN_RETRIEVAL_TOPIC_SCORE
+    if context and (context[0].score >= floor or not _on_reranker_scale(context[0])):
         chunk = context[0].chunk
         slug = _signal_choice(prose, context, inp) or chunk.pattern or chunk.topic
         return ProblemAnalysis(

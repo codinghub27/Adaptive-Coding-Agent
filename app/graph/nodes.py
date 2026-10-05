@@ -33,6 +33,7 @@ from uuid import UUID
 from langgraph.runtime import Runtime
 
 from app.agents.concept import (
+    ConceptExample,
     answer_concept,
     curriculum_references,
     pattern_chunks,
@@ -45,16 +46,19 @@ from app.agents.planner import (
     DSA_ROUTE_INTENTS,
     INTENT_DEFAULTS,
     MIN_RETRIEVAL_TOPIC_SCORE,
+    STRONG_SKILL,
+    WEAK_SKILL,
     TopicSource,
     analyze_problem,
     build_plan,
     clamp_assistance,
     explicit_ask_phrase,
+    relevant_to_concept,
     wants_the_code,
 )
 from app.agents.practice import render_practice_problem, select_session_problem
 from app.agents.reviewer import review_code
-from app.execution.base import canonical
+from app.execution.base import CodeRunner, canonical
 from app.execution.synth import synthesize_test_suite, verified_reference
 from app.execution.testgen import extract_test_suite, select_entrypoint, top_level_functions
 from app.execution.verification import verify as verify_result
@@ -97,12 +101,18 @@ from app.memory.test_suites import (
     save_cached_cases,
     subject_key,
 )
-from app.response.format import SAFE_FALLBACK_RESPONSE, SECTION_TITLES, protect_symbols
+from app.response.format import (
+    SAFE_FALLBACK_RESPONSE,
+    SECTION_TITLES,
+    protect_symbols,
+    render_code_block,
+)
 from app.response.generate import generate_response
 from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import (
     MAX_TEST_CASES,
+    ExecutionRequest,
     ExecutionResult,
     HarnessError,
     TestCase,
@@ -456,6 +466,7 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         state.input.topic_hint,
         context=state.retrieved_context,
         inherited_topic=inherited_topic,
+        concept_question=_is_concept_question(state),
     )
     hint_progress = await resolve_hint_progress(
         state,
@@ -2038,20 +2049,91 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     return update
 
 
+def _is_concept_question(state: AgentState) -> bool:
+    """A question about a concept, with no problem statement and no code."""
+    inp = state.structured_input
+    if state.intent is None or state.intent.intent is not Intent.CONCEPT_EXPLANATION:
+        return False
+    return inp is not None and not inp.problem and not inp.code
+
+
+def _learner_level(plan: TeachingPlan | None) -> str:
+    """The learner's standing on this turn's topic, in the words the concept
+    prompts use. With no topic the skill is the prior, i.e. intermediate."""
+    skill = plan.skill_level if plan is not None else PRIOR
+    if skill < WEAK_SKILL:
+        return "beginner"
+    return "advanced" if skill >= STRONG_SKILL else "intermediate"
+
+
+_UNGROUNDED_NOTE: Final = (
+    "_Not from the curated material: this explanation comes from the tutor's general "
+    "knowledge, so it carries no references._"
+)
+_EXAMPLE_TIMEOUT_NOTE: Final = "One example was left out: it did not run cleanly in the sandbox."
+_MAX_EXAMPLE_OUTPUT_CHARS: Final = 600
+
+
+async def _run_examples(examples: Sequence[ConceptExample], runner: CodeRunner | None) -> str:
+    """The examples as markdown, each RUN in the sandbox first.
+
+    An example that ran to completion is shown with the output it actually
+    produced. One that crashed, timed out or was rejected is left out (and
+    the reply says one was): a broken example teaches the wrong thing. With
+    no sandbox the code is shown and labelled as not executed. Model-written
+    code never runs anywhere but the sandbox.
+    """
+    blocks: list[str] = []
+    dropped = 0
+    for example in examples:
+        title = " ".join(example.title.split()) or "Example"
+        code = example.code.strip("\n")
+        if runner is None:
+            blocks.append(
+                f"**{title}** (not executed: the code sandbox is not available)\n\n"
+                f"{render_code_block(code)}"
+            )
+            continue
+        try:
+            result = await runner.run(ExecutionRequest(code=code))
+        except Exception:  # noqa: BLE001 - an example that cannot be run is not shown
+            dropped += 1
+            continue
+        if result.status != "completed":
+            dropped += 1
+            continue
+        output = result.stdout.strip()
+        if len(output) > _MAX_EXAMPLE_OUTPUT_CHARS:
+            output = output[:_MAX_EXAMPLE_OUTPUT_CHARS] + "\n...[truncated]"
+        shown = f"**{title}**\n\n{render_code_block(code)}"
+        if output:
+            shown += f"\n\nOutput (run in the sandbox):\n\n{render_code_block(output)}"
+        else:
+            shown += "\n\nRan in the sandbox; it prints nothing."
+        blocks.append(shown)
+    if dropped:
+        blocks.append(f"_{_EXAMPLE_TIMEOUT_NOTE}_")
+    return "\n\n".join(blocks)
+
+
 async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> ExplainResult:
-    """A corpus-grounded answer for a concept question or general guidance.
+    """An answer for a concept question or general guidance.
 
     General guidance (a study plan) is grounded in the curriculum built from
-    the corpus's own front matter; a concept question in the topic's own
-    overview/intuition/recognition sections plus this turn's relevant hits.
+    the corpus's own front matter. A concept question is grounded in the
+    topic's own overview/intuition/recognition sections plus this turn's
+    RELEVANT hits; a weak hit is not relevant (`relevant_to_concept`). When
+    nothing relevant exists the tutor answers from its own knowledge and says
+    so, rather than refusing or explaining the wrong page.
     """
     intent = state.intent.intent if state.intent is not None else None
-    if intent is Intent.GENERAL_GUIDANCE:
+    guidance = intent is Intent.GENERAL_GUIDANCE
+    if guidance:
         references = list(curriculum_references())
     else:
         topic = state.plan.topic if state.plan is not None else None
         references = turn_references(
-            state.retrieved_context,
+            relevant_to_concept(state.retrieved_context),
             pattern_chunks(topic),
             ("overview", "core_intuition", "when_to_recognize_it", "complexity"),
         )
@@ -2059,9 +2141,19 @@ async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> 
         state.structured_input,
         references,
         runtime.context.llm,
-        guidance=intent is Intent.GENERAL_GUIDANCE,
+        guidance=guidance,
+        level=None if guidance else _learner_level(state.plan),
     )
-    return ExplainResult(answer=answer.answer or None, citations=answer.citations)
+    if not answer.answer:
+        return ExplainResult(answer=None, citations=[])
+    parts = [answer.answer]
+    if answer.examples:
+        examples = await _run_examples(answer.examples, runtime.context.runner)
+        if examples:
+            parts.append(examples)
+    if not answer.grounded and not guidance:
+        parts.append(_UNGROUNDED_NOTE)
+    return ExplainResult(answer="\n\n".join(parts), citations=answer.citations)
 
 
 # --- execute_code -------------------------------------------------------------

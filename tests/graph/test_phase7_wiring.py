@@ -624,7 +624,9 @@ async def test_explain_agent_dispatches_review_and_explain_intents(
         calls.clear()
         state = _pipeline_state(route_key="explain", intent=intent_value)
 
-        update = await explain_agent(state, _runtime())
+        # A concept question with nothing to ground on is now answered from the
+        # model's own knowledge; an empty reply here keeps the dispatch under test.
+        update = await explain_agent(state, _runtime(llm=FakeLLMClient(chat_content="{}")))
 
         assert calls == ([expected] if expected is not None else [])
         assert update.get("agent_output") is not None

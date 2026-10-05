@@ -336,3 +336,14 @@ Frontend validation: don't allow debug submission without test examples
 - **Symptom / root cause / fix:** `docs/AUDIT_REPORT.md` section 10 (A-08, A-10, A-15, F1 to F5, A-16 to A-20).
 - **Verification:** `tests/graph/test_conversation_aware_routing.py`; full suite 1885 passed, 2 skipped; pyright strict 0 errors; `eval.behavior.replay` live 126/130 -> 130/130; eight live scenarios in `docs/LIVE_BEHAVIOR.md`.
 - **Status:** fixed
+
+
+### ERR-011 - A concept the corpus lacks was refused and mislabelled
+- **Location:** `app/agents/concept.py`, `app/agents/planner.py` (`analyze_problem`, `relevant_to_concept`), `app/graph/nodes.py` (`_concept_answer`, `_run_examples`)
+- **Severity:** high
+- **Symptom:** "explain the concept of recursion with examples" got "the references don't cover recursion", under a "Mental model: Dynamic programming" card.
+- **Root cause:** No recursion page exists; the dynamic-programming pages ranked first with a weak score (-1.19) and nothing checked the score. They became the topic label and the only references, and the prompt told the model to answer ONLY from them.
+- **Fix:** `docs/AUDIT_REPORT.md` section 12: a relevance floor for concept questions (2.5), no topic from a weak hit, an answer from the model's own knowledge when nothing relevant exists, examples run in the sandbox before they are shown.
+- **Verification:** `tests/graph/test_concept_explanations.py`; replay examples `adaptive_006` and `adaptive_007`, 17/17 live.
+- **Status:** fixed
+

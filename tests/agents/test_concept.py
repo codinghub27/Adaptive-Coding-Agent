@@ -40,12 +40,37 @@ async def test_citations_are_exactly_the_references_the_model_used() -> None:
     assert answer.grounded
 
 
-async def test_no_references_means_no_model_call_and_no_citations() -> None:
-    fake = FakeLLMClient(chat_content="unused")
-    answer = await answer_concept(_QUESTION, [], fake)
+async def test_no_references_is_answered_from_the_tutors_own_knowledge() -> None:
+    """Nothing relevant in the corpus is not a reason to refuse: one call,
+    with no references in it, no citations, and `grounded=False`."""
+    fake = FakeLLMClient(chat_content=json.dumps({"answer": "A concept, explained."}))
+    answer = await answer_concept(_QUESTION, [], fake, level="beginner")
+    assert answer.answer == "A concept, explained."
+    assert answer.citations == []
+    assert answer.grounded is False
+    assert len(fake.chat_calls) == 1
+    system, user = fake.chat_calls[0][0].content, fake.chat_calls[0][-1].content
+    assert "the curated notes do not cover" in system
+    assert "Never say that you cannot answer" in system
+    assert "References:" not in user
+    assert "Learner level: beginner" in user
+
+
+async def test_no_references_and_no_usable_reply_is_an_empty_answer() -> None:
+    answer = await answer_concept(_QUESTION, [], FakeLLMClient(chat_content="not json"))
     assert answer.answer == ""
     assert answer.citations == []
-    assert fake.chat_calls == []
+
+
+async def test_references_the_model_did_not_use_are_not_a_refusal() -> None:
+    """`used: []` is how "the references don't cover this" comes back: the
+    tutor then answers from its own knowledge instead of saying so."""
+    fake = FakeLLMClient(chat_content=json.dumps({"answer": "From what I know.", "used": []}))
+    answer = await answer_concept(_QUESTION, _REFS, fake)
+    assert answer.answer == "From what I know."
+    assert answer.grounded is False
+    assert answer.citations == []
+    assert len(fake.chat_calls) == 2  # the grounded attempt, then the open answer
 
 
 async def test_unparseable_output_falls_back_to_the_references_themselves() -> None:

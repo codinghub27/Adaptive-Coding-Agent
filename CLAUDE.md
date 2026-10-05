@@ -127,6 +127,12 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   verified". With no sandbox the debugger runs its `ast` checks and ONE model
   call, labelled "Not executed". An ask for the code with no fix to show
   returns the learner's own code. Never invent a verdict.
+- **Explanations.** Any concept the learner asks about is explained in detail
+  with one or two examples that were run in the sandbox first
+  (`app/agents/concept.py`). A retrieval hit below `MIN_CONCEPT_TOPIC_SCORE`
+  (2.5, reranker scale) is no hit: it gives no topic label and no references,
+  and the tutor answers from its own knowledge with a one-line note. Never a
+  refusal, and never "the references don't cover this".
 - **Tests are deterministic where they can be.** A statement's own examples are
   always in the suite. Sandbox-validated cases are cached per learner and
   subject (`test_suite_cache`, `app/memory/test_suites.py`) and reused.

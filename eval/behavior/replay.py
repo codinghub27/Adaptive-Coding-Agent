@@ -291,6 +291,52 @@ def _reviewed() -> TurnCheck:
     return check
 
 
+_REFUSALS: Final = (
+    "don't cover",
+    "do not cover",
+    "doesn't cover",
+    "does not cover",
+    "not covered",
+    "i cannot answer",
+    "i can't answer",
+)
+
+
+def _explained(*must_mention: str) -> TurnCheck:
+    """A real answer: long enough, on the subject, and not a refusal."""
+
+    def check(turn: Turn, _history: list[Turn]) -> tuple[bool, str]:
+        lowered = turn.text.lower()
+        refused = [phrase for phrase in _REFUSALS if phrase in lowered]
+        missing = [word for word in must_mention if word.lower() not in lowered]
+        ok = not refused and not missing and len(turn.text) >= 200
+        return ok, f"refused={refused} missing={missing} chars={len(turn.text)}"
+
+    return check
+
+
+def _topic(expected: str | None) -> TurnCheck:
+    """The turn's topic label -- what the topic card shows -- is `expected`."""
+    return lambda t, _h: (t.topic == expected, f"topic={t.topic}")
+
+
+def _never_mentions(*phrases: str) -> TurnCheck:
+    def check(turn: Turn, _history: list[Turn]) -> tuple[bool, str]:
+        lowered = turn.text.lower()
+        found = [phrase for phrase in phrases if phrase.lower() in lowered]
+        return not found, f"found={found}"
+
+    return check
+
+
+def _cited(*, expected: bool) -> TurnCheck:
+    return lambda t, _h: (bool(t.citations) is expected, f"citations={t.citations}")
+
+
+def _says(phrase: str, *, expected: bool = True) -> TurnCheck:
+    return lambda t, _h: ((phrase.lower() in t.text.lower()) is expected, f"says {phrase!r}")
+
+
 GRAPH_FAMILY: Final = (
     "graphs",
     "bfs",
@@ -411,6 +457,31 @@ CHECKS: Final[dict[str, dict[int, list[tuple[str, TurnCheck]]]]] = {
             ("surfaced_misconception", _surfaced()),
         ],
         14: [("graded_dont_know", _graded("dont_know")), ("assistance_up", _assist_up())],
+    },
+    # ADDED 2026-10-05 (two examples; with the per-turn checks every example
+    # gets they add 18: totals before this date are out of 130, after it 148).
+    # A concept the corpus does NOT cover is
+    # explained from the tutor's own knowledge, with examples that were run.
+    "adaptive_006": {
+        0: [
+            ("route_explain", _route("explain")),
+            ("explained_not_refused", _explained("recursion", "base case")),
+            ("no_wrong_label", _topic(None)),
+            ("no_dp_in_reply", _never_mentions("dynamic programming")),
+            ("says_not_from_corpus", _says("not from the curated material")),
+            ("no_citations", _cited(expected=False)),
+            ("example_was_run", _says("run in the sandbox")),
+        ],
+    },
+    # ...and one it DOES cover stays grounded in it and cites what it used.
+    "adaptive_007": {
+        0: [
+            ("route_explain", _route("explain")),
+            ("explained_not_refused", _explained("binary search", "sorted")),
+            ("labelled_from_the_question", _topic("binary_search")),
+            ("cites_references", _cited(expected=True)),
+            ("example_was_run", _says("run in the sandbox")),
+        ],
     },
 }
 

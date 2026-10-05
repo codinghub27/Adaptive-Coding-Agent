@@ -629,3 +629,102 @@ out of the queue.
 - Tree and list support covers functions that take or return a root or head.
   In-place mutation with no return value is not handled.
 - Skill thresholds are unchanged; two proposals above await a decision.
+
+## 12. Concept explanations (2026-10-05)
+
+Reported: "explain the concept of recursion with examples" was refused ("the
+references don't cover recursion"), retrieval returned dynamic-programming
+pages, and the reply was labelled "Mental model: Dynamic programming".
+
+### Why recursion matched dynamic programming
+
+The corpus has no page on recursion. It has thirty pattern pages, and the DP
+pages are the ones that talk about recursion most, so they rank first. They
+rank first with a LOW score, and nothing looked at the score: the only floor
+was the one for problem statements, -5.0.
+
+Measured on the live retriever (reranker scores, top hit):
+
+| Question | Top hit | Score |
+|---|---|---|
+| what is a trie | trie, Overview | 9.04 |
+| explain binary search | binary_search, Overview | 7.47 |
+| what is a hash map | hashing, When to Recognize It | 5.16 |
+| explain the concept of dynamic programming with examples | dynamic_programming, Overview | 4.66 |
+| what is recursion | dynamic_programming, Identification Signals | 1.01 |
+| **explain the concept of recursion with examples** | dynamic_programming, When to Recognize It | **-1.19** |
+| explain big O notation | two_pointers, Complexity | -3.48 |
+
+For the reported query the five hits were -1.19, -1.59 (trees), -1.65 (dfs),
+-2.21 and -4.51 (both dynamic_programming). Questions the corpus covers score
+4.4 and up; questions it does not cover score 1.0 and down.
+
+### Fixes (`fix(explain)` commit)
+
+| # | Change |
+|---|---|
+| 1 | `answer_concept` no longer refuses. With no relevant reference, or when the model reports it used none of the ones it was given, the tutor answers from its own knowledge with a prompt that forbids "I cannot answer" and pitches to the learner's level (beginner / intermediate / advanced, from the plan's skill). The reply ends with a one-line note that it is not from the curated material. A study plan is still built only from the curriculum |
+| 2 | New floor `MIN_CONCEPT_TOPIC_SCORE = 2.5` for concept questions, in the middle of the measured gap. A hit below it is "no hit": it is not offered as a reference. The statement floor stays at -5.0, because a problem statement scores far lower than a short question against the same pages. A hit that was never reranked is not judged by either floor (its score is on another scale) |
+| 3 | The topic of a concept question comes from retrieval only on a hit at or above that floor; otherwise the turn has no topic, so no topic card and no learning event under the wrong pattern. The recursion question is now unlabelled, not "Dynamic programming" |
+| 4 | Examples are a separate field of the model's reply, never part of the answer text. Each is run in the sandbox (script mode) and shown with the output it actually produced. One that crashes, times out or is rejected is left out and the reply says so. With no sandbox the code is shown labelled "not executed" |
+
+### Every explanation is detailed and comes with examples (owner, 2026-10-05)
+
+Asked for during the fix: not only recursion -- any topic the learner asks to
+have explained gets a detailed explanation with examples. Both concept prompts
+(grounded and own-knowledge) now share one rule for depth and one for examples:
+
+- **Depth:** what it is; the intuition; a step-by-step walk through one small
+  concrete input; when to use it and when not to; its time and space cost with
+  the reason; one common mistake. Pitched to the learner's level.
+- **Examples:** one or two short runnable programs on every explanation, asked
+  for or not, each run in the sandbox and shown with its real output.
+- **Still held back:** advanced variants and neighbouring techniques, unless
+  asked. Detail is depth on the topic asked, not breadth (target behaviour
+  section 25). This replaces the "two short paragraphs" rule from ERR-007.
+- The grounded prompt no longer tells the model to say the references do not
+  cover something; it returns `used: []` and the tutor answers from its own
+  knowledge.
+
+Live, on the final prompts:
+
+| Question | Grounded | Length | Examples run |
+|---|---|---|---|
+| explain the concept of recursion with examples | no (note shown) | not measured; the replay's checks passed | at least 1 |
+| explain big O notation | no (note shown) | 3,434 chars | 2 |
+| explain binary search | yes, `binary_search` | 3,453 chars | 2 |
+| what is a linked list | yes, `linked_list` | 3,409 chars | 2 |
+| explain how a heap works | yes, `heaps` | 1,203 chars | 0 |
+
+The heap row is a failure worth knowing about, not a prompt problem: the model
+call was rate limited, and the existing fail-soft path printed the two
+reference excerpts instead. The same question answered in full (3,200 and
+3,800 chars, parsed) when called again. A detailed answer is about 1,200 to
+1,500 output tokens against 300 before, so explanations now use more of the
+8,000-tokens-a-minute budget and meet that limit sooner.
+
+Not done: the corpus still has no recursion page. Adding one would ground the
+answer; it is content work, not a code fix. Item 3 means such a question
+carries no label at all rather than a "Recursion" label, because the label
+vocabulary is the corpus's pattern list.
+
+One thing to know: a concept example is shown on a turn whose plan is below
+`full`. That is deliberate (it illustrates a concept, it is not the solution to
+the learner's problem), but it is a place where code reaches the learner
+outside the hint ladder's gate.
+
+### Verification
+
+- `tests/graph/test_concept_explanations.py` (7), `tests/agents/test_concept.py`
+  (3 new): recursion is explained and not refused, is not labelled DP, its
+  examples go through the sandbox, the no-sandbox label, binary search stays
+  grounded and cited, the floor sits in the measured gap.
+- Replay: `adaptive_006` (recursion) and `adaptive_007` (binary search) added.
+  The replay total is now 148 checks, was 130. Live on the final prompts:
+  18 / 18 on the two new conversations. The other five were not re-run.
+- Live reply for the reported query: three paragraphs on recursion with a base
+  case and the stack-overflow pitfall, a factorial and a Fibonacci example each
+  with its sandbox output (120 and 21), the not-from-the-corpus note, no topic
+  label, 2 model calls, 3.2 s.
+- `pytest` 1913 passed, 2 skipped; `pyright` strict 0 errors; `ruff` clean.
+
