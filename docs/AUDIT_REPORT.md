@@ -160,3 +160,118 @@ tells the reader to run a Streamlit frontend that no longer exists (A-11).
 | C3 | "give python code" got Hint 2 | A-02, A-03, A-07 |
 | C4 | "i asked for python code" got a greeting | A-02, A-04 |
 | C5 | "fix this code" got an indentation complaint, bug not found | A-05, A-13 |
+
+A finding added while fixing:
+
+| ID | Sev | Where | Root cause | Evidence | Fix plan |
+|---|---|---|---|---|---|
+| A-14 | high | `app/agents/debugger.py` `_EXPLAIN_SYSTEM`; `app/graph/subgraphs/debug.py` `_explain` | The explanation prompt tells the model "a sandbox has established that the code fails; that failure is FACT" on every debug turn, including turns where the code passed or nothing was proven. On working code the model is instructed to find a bug that is not there | Prompt text; `_explain` is deliberately not gated on an established failure | A second prompt for the unproven case that allows "no bug found"; no explanation call at all when the learner's code passed |
+| A-15 | medium | `app/graph/subgraphs/debug.py` `run_debug` | With no sandbox (Docker not running) the debugger returns before reading the code: no static findings, no explanation, only "no code was executed" | Offline replay with `runner=None` | Deferred, see section 7 |
+
+## 6. Status
+
+| ID | Status | Commit | What changed |
+|---|---|---|---|
+| A-01 | fixed | `f4ea2ac` | Code with no statement on a hint-ladder or catch-all label is a debug turn (`_problem_update`). Example input alone (`nums = [2, 7, 11, 15]`) does not count as the learner's code |
+| A-02 | fixed | `f4ea2ac` | Code shared with no statement is stored as the conversation's subject (`_shared_code_subject`, key `_c...`) and re-attached to follow-ups (`inherit_active_problem`). It never replaces a stored statement |
+| A-03 | fixed | `f4ea2ac` | Phrase lists widened in `planner._EXPLICIT_ASK_RE` and `grader._HELP_RE`; new `asks_for_fix`. A debug turn that asks for the fix is planned at `full` (`fix_requested`), except in Challenge mode |
+| A-04 | fixed | `f4ea2ac` | Such a turn continues the conversation's subject. With no subject the reply asks what is needed; only a greeting gets the greeting |
+| A-05 | fixed | `5a12e1a`, wired in `f4ea2ac` | New `app/input/snippet.py`, applied once in `understand_input`. `ast` only |
+| A-06 | fixed | `f4ea2ac` | A granted reveal with nothing verified renders the note alone |
+| A-07 | fixed | `2166207` | No fallback to `payload.response` when a hint card shows the text |
+| A-08 | deferred | | See section 7 |
+| A-09 | won't fix | | Owner decision, section 1 |
+| A-10 | deferred | | See section 7 |
+| A-11 | fixed | this commit | Run instructions corrected |
+| A-12 | fixed | `957684d` | |
+| A-13 | fixed | `06bc066` | "failed in the sandbox before any test case ran", with the reason |
+| A-14 | fixed | `06bc066` | `_READ_SYSTEM` prompt when no failure is established; no explanation call when the code passed |
+| A-15 | deferred | | See section 7 |
+
+Also changed: a debug turn's patch is shown when the learner's code failed in
+the sandbox and the patch then ran to completion with no test cases to judge
+it. It is labelled "executed, not verified" and `fixed` stays false, so no
+skill is credited. The sandbox findings are one section instead of two under
+the same title. "what's its name" is recognised as a question about the
+conversation.
+
+## 7. Deferred, and where the docs disagree
+
+**A-08, classifier context.** Giving the classifier the conversation means
+reordering two graph nodes and changing the prompt that every routing eval was
+measured against. The deterministic rules now decide every case measured so
+far, and the replay suite (`eval.behavior.replay`) should be re-run against the
+live model before and after such a change. Not done in this pass.
+
+**A-10, explicit ask against the verification rule.** `docs/target_behavior.md`
+section 9 says an explicit ask for the code is honoured. `CLAUDE.md` ("never
+trust LLM claims of correctness") and decision AD-4 say a reference solution is
+shown only after the sandbox passes it. The brief says the docs and
+`target_behavior.md` win, but both sides here are docs. The refusal stays for a
+reference solution nothing could run. Where the sandbox did run the code, the
+debug route now shows a patch that executed cleanly with an honest label. Owner
+decision needed on whether an unrun reference may be shown with a warning.
+
+**A-15, no sandbox.** Reading the code without a sandbox would cost two model
+calls for an answer that cannot be checked. Nine tests pin the current
+zero-call behaviour as a deliberate choice, so it was left alone. On a machine
+where Docker is not running the debugger is close to useless; worth revisiting.
+
+**Stack.** `CLAUDE.md` said Streamlit and listed no LLM provider. Corrected.
+
+## 8. Verification
+
+| Check | Before | After |
+|---|---|---|
+| `pytest tests` (Postgres and Qdrant up) | 1802 passed, 16 skipped (infra down) | 1867 passed, 2 skipped (opt-in live LLM) |
+| `pyright app tests` (strict) | 0 errors | 0 errors |
+| `ruff check .`, `ruff format --check .` | clean | clean |
+
+New tests: `tests/graph/test_code_first_regression.py` (Session C on one
+conversation id, Challenge mode, refused reveal, cross-session profile, phrase
+lists, vague follow-ups) and `tests/input/test_snippet.py`. Session M is
+`tests/graph/test_conversation_regression.py`, unchanged and green.
+
+### Live sessions, 2026-10-05
+
+`POST /chat` against the running API (Groq), real Docker sandbox, a fresh
+account each time, one conversation per run. Run on the final code:
+conversation `62aa64e9-1698-43ce-af01-79689734811c`. An earlier run, before the
+review fixes: `464600e0-5fb5-490d-af74-127b1aed0f93`. Full replies are in the
+`messages` table.
+
+| Turn | Route, plan | Sandbox | Reply |
+|---|---|---|---|
+| C1 "give correct code of this" + working code | debug, `full` (`fix_requested`) | your code passed 6/6 | Names the approach, then "yours passed every test case in the sandbox, so there is no fix to show -- the version you shared is the one to keep." |
+| C2 "give full code and tell me where is the bug" | debug, follow-up on the stored code | passed 6/6 | Same finding. No hint, no refusal, no survey |
+| C3 "give python code" | debug, follow-up | passed 6/6 | Same finding |
+| C4 "i asked for python code" | debug, follow-up | passed 6/6 | Same finding, no greeting |
+| C5 "fix this code" + the broken variant | debug, `full` | your code: IndexError on line 10 | Names `left -= 1`, shows the corrected function |
+
+C5 took two different paths in the two runs, and both are correct:
+
+- Earlier run: the model's test cases validated, so the fix was run against
+  them. "A fix was found and verified in the sandbox: all 6 case(s) passed."
+  39.5 s, 5 model calls.
+- Final run: test synthesis produced no usable suite. The fix was still run,
+  shown, and labelled "executed, not verified"; the turn's verdict is
+  `inconclusive`. 58.8 s, 7 model calls.
+
+So whether a fix is verified or only executed depends on test synthesis
+succeeding, which varies between runs on the same input.
+
+Not run live: Session M (no LeetCode 678 screenshot fixture in the repo) and
+the browser UI (the A-07 change is a one-line guard and has no JS test).
+
+## 9. Remaining risks
+
+- Test synthesis is not deterministic (see the two live runs), so the same
+  broken code can get a verified fix one time and an executed-only fix the next.
+- C2 to C4 repeat the same analysis for the same code. Correct, but a learner
+  who asks three times probably wants the code printed back; the reply only
+  says which version to keep.
+- A wrapped snippet's line numbers are one higher than the learner's paste when
+  no sample-input line preceded the body.
+- `repair_snippet` handles Python only. Other languages pass through untouched.
+- The widened ask phrases are still fixed lists. Phrasings outside them fall
+  back to the classifier's label (A-08).

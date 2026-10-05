@@ -32,9 +32,8 @@ docker compose up -d                                    # Postgres (5433) + Qdra
 # Run API
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload
 
-# Run Frontend (separate terminal)
-$env:API_BASE_URL="http://127.0.0.1:8000"
-.\venv\Scripts\python.exe -m streamlit run frontend/app.py
+# Frontend: the web UI in frontend/ is served by the API itself once built
+# (pnpm build in frontend/). There is no Streamlit app any more.
 ```
 ```
 
@@ -166,14 +165,14 @@ The 2 skipped tests are opt-in live LLM tests (require `RUN_LIVE_LLM=1`), which 
 
 ---
 
-## ERR-003 — Debugger requires explicit test cases in problem statement
+## ERR-003 ï¿½ Debugger requires explicit test cases in problem statement
 
 - **Location:** `app/execution/testgen.py::extract_test_suite` + `app/graph/nodes.py::debug_agent` (line 589)
 - **Severity:** **HIGH** (headline debugging feature broken for common use case)
 - **Symptom:** When user submits code with a bug but NO explicit test examples (e.g., "find error in this code"), the sandbox is never run and response says "no code was executed"
-- **Root cause:** `extract_test_suite` is "deliberately narrow" (Phase 07 Known Issue) — it only extracts tests from markdown-style `Input:`/`Output:` examples. Without those, it returns `None`, so `debug_agent` passes `tests=None` to `run_debug`, which skips the sandbox entirely.
+- **Root cause:** `extract_test_suite` is "deliberately narrow" (Phase 07 Known Issue) ï¿½ it only extracts tests from markdown-style `Input:`/`Output:` examples. Without those, it returns `None`, so `debug_agent` passes `tests=None` to `run_debug`, which skips the sandbox entirely.
 - **User Impact:** The TWO SUM bug example you showed cannot be debugged because no `Input:`/`Output:` examples were provided. The agent SHOULD infer basic test cases but currently does not.
-- **Status:** **OPEN** — This is a design limitation documented as "known issue" but breaks the user experience
+- **Status:** **OPEN** ï¿½ This is a design limitation documented as "known issue" but breaks the user experience
 
 ---
 
@@ -247,7 +246,7 @@ Frontend validation: don't allow debug submission without test examples
 **My Recommendation:** Option 1 (LLM fallback) is the right balance. Cost is acceptable (~1 extra call per debug), and it makes the debugger actually work for real users.
 
 
-### ERR-004 — LangSmith not showing full agent workflow tree (only flat LLM calls)
+### ERR-004 ï¿½ LangSmith not showing full agent workflow tree (only flat LLM calls)
 - **Location:** `app/graph/build.py:225-228` (`run_graph` and `stream_graph` functions)
 - **Severity:** medium
 - **Symptom:** LangSmith UI shows only individual LLM calls as flat list, not the hierarchical teaching_graph ? nodes ? LLM calls tree. User reported: "why langsmith is not showing all traces of agent workflow?. it only showing the llm call"
@@ -309,4 +308,14 @@ Frontend validation: don't allow debug submission without test examples
   4. A reply to the tutor's own question about the active problem stays on that problem; the solver sees the conversation, returns a verdict on the learner's REASONING (`reply_verdict`), and a fixed opening line is chosen from it. That verdict is wording only and never reaches the learner profile.
   5. Concept answers are told to answer what was asked in two short paragraphs, without advanced variants.
 - **Verification:** `tests/tutoring/test_adaptive_grading.py`, `tests/graph/test_conversation_regression.py`, updated planner/escalation tests; live on local models: binary-search session (terminology credited, code on request, sandbox pass) and `eval.behavior.replay` 130/130.
+- **Status:** fixed
+
+
+### ERR-008 - Pasted code got the hint ladder, follow-ups lost it, and the paste was reported as the bug
+- **Location:** `app/graph/nodes.py` (`_problem_update`, `active_problem_update`, `inherit_active_problem`, `clarify`, `_with_tutoring`), `app/input/snippet.py` (new), `app/agents/planner.py`, `app/tutoring/grader.py`, `app/agents/debugger.py`, `app/graph/subgraphs/debug.py`, `app/response/generate.py`, `app/response/format.py`, `frontend/js/streaming.js`
+- **Severity:** critical
+- **Symptom:** (`docs/current-behavior.md`) A Trapping Rain Water body pasted with "give correct code of this" got Hint 1 of 4, shown twice. "give full code and tell me where is the bug" got a two-pointers survey around "I couldn't verify one in the sandbox". "give python code" got Hint 2. "i asked for python code" got "Hi! Share a problem statement...". "fix this code" with a real bug (`left -= 1`) got "syntax error ... line 5" and "0/0 test cases passed".
+- **Root cause:** (1) A turn with code and no statement was routed by the classifier's label (`DSA_SOLVE`), so the code was never read. (2) Only a problem statement was stored as the conversation's subject; a code-only conversation remembered nothing. (3) The explicit-ask phrase list missed "give python code". (4) Any catch-all turn with no plan ask got the greeting. (5) A method body copied out of a class is not a module: ragged indentation, top-level `return`, no function to call. (6) The debugger's explanation prompt asserted "the failure is FACT" even when nothing had failed. (7) The frontend fell back to the full reply text under a hint card that already showed it.
+- **Fix:** see `docs/AUDIT_REPORT.md`, findings A-01 to A-07, A-13, A-14.
+- **Verification:** `tests/graph/test_code_first_regression.py`, `tests/input/test_snippet.py`; full suite 1867 passed, 2 skipped; pyright strict 0 errors; live session on Groq with the Docker sandbox (working code: 6/6 and "nothing to fix"; broken code: `left -= 1` named, fix verified 6/6).
 - **Status:** fixed

@@ -54,7 +54,8 @@ is a subgraph.
 | Code intelligence | Python `ast`, Tree-sitter, static analysis |
 | Execution | Docker sandbox (isolated, resource-limited) |
 | Observability | LangSmith |
-| Frontend | Streamlit first, React/Next.js later |
+| LLM | Groq / OpenRouter behind `app/llm/` (`LLM_PROVIDER`). The local Ollama port lives on `experiment/local-ollama` only |
+| Frontend | Static web UI in `frontend/` (plain JS modules), served by FastAPI when built |
 | Cache / queue (later) | Redis, optional Celery |
 
 Keep the LLM/vision/embedding providers behind a thin client wrapper
@@ -82,8 +83,34 @@ tests/
 docs/
   architecture.md
   phases/PHASE-01..08
-frontend/            # Streamlit app (later React)
+frontend/            # web UI (js/, css/); built bundle is served by app/main.py
 ```
+
+---
+
+## How a turn actually works (corrected 2026-10-05, see `docs/AUDIT_REPORT.md`)
+
+- **Graph order:** `understand_input → classify_intent → load_learner_profile →
+  retrieve_knowledge → plan_teaching → route → agent → execute_code → verify →
+  final_response → update_learner_model`. Retrieval runs before planning.
+- **Memory is the conversation store, not a LangGraph checkpointer.** The graph
+  state is one frozen object per turn. `load_learner_profile` reads the profile,
+  last messages, active problem, pending check and session progress from
+  Postgres by `conversation_id`; `update_learner_model` writes them back. Do not
+  add a checkpointer without recording the decision (it needs a new dependency).
+- **The conversation's subject** (`conversations.active_problem`) is a problem
+  statement, or, when none was shared, the learner's code (key `_c...`).
+  Follow-ups with no statement or code of their own inherit it.
+- **User code first.** A turn that carries the learner's code and no statement
+  is a debug turn whatever the classifier called it. Pasted Python is made
+  runnable once, in `understand_input` (`app/input/snippet.py`, `ast` only).
+- **The classifier sees one message.** Follow-up routing is decided by
+  deterministic rules after it (`_problem_update`, `select_route`). A study plan
+  needs an explicit ask in the text.
+- **Showing code.** A reference solution is shown only after it passes in the
+  sandbox. A debug patch is shown when it passed, or when the learner's code
+  failed and the patch then ran cleanly, labelled "executed, not verified".
+  Challenge mode and a client `assistance_cap` always win.
 
 ---
 
@@ -139,7 +166,7 @@ tool, read [`docs/TOOLING.md`](docs/TOOLING.md).** In short:
 - **`context7`** — pull current docs for LangGraph / FastAPI / Qdrant / SQLAlchemy
   before writing framework code; don't rely on memory.
 - **`github`** — repo/issue/PR/code-search via the API (pushes/PRs → ask first).
-- **`playwright`** — Streamlit UI verification only (Phase 08).
+- **`playwright`** — web UI verification only (Phase 08).
 - **`postgres`** — read-only schema/data inspection (point it at this project's DB).
 - **`pyright-lsp`** — type-check after every edit (strict pass = done).
 - **`code-review`** — run before committing each phase.
