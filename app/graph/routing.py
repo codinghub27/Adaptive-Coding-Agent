@@ -18,7 +18,7 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 from app.graph.state import AgentState, RouteKey
-from app.input.intent import names_a_request
+from app.input.intent import is_small_talk, names_a_request
 from app.schemas.intent import Intent
 from app.tutoring.grader import asks_for_help, is_dont_know, looks_like_injection
 from app.tutoring.misconceptions import detect_in_code
@@ -29,7 +29,10 @@ __all__ = [
     "VERIFY_NODES",
     "VerifyKey",
     "GRADE_AFTER_NODES",
+    "MetaKind",
+    "asks_for_guidance",
     "grade_after",
+    "meta_followup",
     "route_after",
     "select_route",
     "should_grade",
@@ -65,6 +68,10 @@ ROUTE_NODES: Final[Mapping[RouteKey, str]] = MappingProxyType(
         "clarify": "clarify",
         # ADAPTIVE-tutoring Q1: a reply to the agent's own pending question.
         "grade": "grade_answer",
+        # A question ABOUT the conversation ("what's the name of that problem",
+        # "can't you read previous messages?"): answered from stored state by
+        # the same deterministic, no-LLM node that asks clarifying questions.
+        "meta": "clarify",
     }
 )
 
@@ -73,6 +80,60 @@ _GUIDANCE_ASK_RE: Final = re.compile(
     r"study|learn\w*|start\w*|advice|advise|guide|guidance|topics?|what should|how should|"
     r"where (do|should) i|tips?)\b"
 )
+
+
+def asks_for_guidance(text: str | None) -> bool:
+    """Does `text` explicitly ask for a plan / roadmap / advice?
+
+    GENERAL_GUIDANCE is also the classifier's catch-all for anything that is
+    not about code, so the label alone never earns a study plan (measured:
+    "tell me name of that problem" -> GENERAL_GUIDANCE -> a 6-week plan).
+    """
+    return bool(text) and _GUIDANCE_ASK_RE.search(text or "") is not None
+
+
+MetaKind = Literal["name", "history"]
+
+_META_NAME_RE: Final = re.compile(
+    r"(?i)\b(?:name|title)\b[^.?!\n]{0,40}\b(?:(?:problem|question|screenshot|image|picture)\b|"
+    r"(?:it|that|this)\s*[?.!]*$)"
+    r"|\b(?:problem|question|screenshot|image|picture)\b[^.?!\n]{0,30}\b(?:name|title|called)\b"
+    r"|\b(?:which|what)\s+(?:problem|question)\b[^.?!\n]{0,40}\b(?:working on|solving|shared|"
+    r"sent|discussing|talking about|doing)\b"
+)
+#: "what's the name of the algorithm for this problem" asks about the solution.
+_META_NOT_NAME_RE: Final = re.compile(
+    r"(?i)\b(algorithm|pattern|technique|approach|method|data structure|trick)\b"
+)
+_META_HISTORY_RE: Final = re.compile(
+    r"(?i)\b(?:previous|earlier|prior|past)\s+(?:conversations?|messages?|chats?|turns?|"
+    r"screenshots?|images?)\b"
+    r"|\b(?:remember|recall|forgot|forget|forgotten)\b[^.?!\n]{0,40}\b(?:conversation|messages?|"
+    r"said|shared|sent|screenshot|image|problem|earlier|before)\b"
+    r"|\bcan(?:'t|not| not)? you (?:see|read|access)\b[^.?!\n]{0,40}\b(?:conversations?|"
+    r"messages?|history|screenshot|image)\b"
+    r"|\b(?:chat|conversation) history\b"
+)
+
+
+def meta_followup(state: AgentState) -> MetaKind | None:
+    """Is this turn a question about the conversation itself, not about DSA?
+
+    "name" asks which problem is on the table; "history" asks whether earlier
+    turns are visible. Both are answered from stored state (the conversation's
+    active problem), never by a model. Fixed phrases only, and never a turn
+    that brings code, an error or a statement of its own.
+    """
+    inp = state.structured_input
+    if inp is None or inp.code or inp.error or state.problem_relation in ("new", "same"):
+        return None
+    text = inp.question or ""
+    if _META_NAME_RE.search(text) and not _META_NOT_NAME_RE.search(text):
+        return "name"
+    if _META_HISTORY_RE.search(text):
+        return "history"
+    return None
+
 
 #: Intents that are a request for something NEW, never an answer.
 _NEW_REQUEST_INTENTS: Final = frozenset({Intent.PRACTICE_REQUEST, Intent.GENERAL_GUIDANCE})
@@ -107,16 +168,17 @@ def _code_with_known_misconception(state: AgentState) -> bool:
 
 
 def _guidance_without_ask(state: AgentState) -> bool:
-    """A short message the classifier called GENERAL_GUIDANCE that asks for no
-    plan or advice ("hi agent", "good to see you") is small talk, not a request
-    for a study plan -- answer it with the greeting, never with a 4-week plan."""
+    """A message the classifier called GENERAL_GUIDANCE that asks for no plan or
+    advice ("hi agent", "good to see you") is not a request for a study plan --
+    answer it with the greeting, never with a 4-week plan. Any length: a study
+    plan is only ever the answer to an explicit ask (`asks_for_guidance`)."""
     if state.intent is None or state.intent.intent is not Intent.GENERAL_GUIDANCE:
         return False
     inp = state.structured_input
     text = (inp.question or "") if inp is not None else ""
     if inp is not None and (inp.problem or inp.code or inp.error):
         return False
-    return len(text.split()) <= 4 and _GUIDANCE_ASK_RE.search(text) is None
+    return not asks_for_guidance(text)
 
 
 def should_grade(state: AgentState) -> bool:
@@ -168,6 +230,8 @@ def select_route(state: AgentState) -> RouteKey:
     3. the teaching plan itself already decided to clarify,
     4. otherwise, the fixed intent -> route mapping.
     """
+    if state.structured_input is not None and meta_followup(state) is not None:
+        return "meta"
     if should_grade(state):
         return "grade"
     if state.structured_input is None or state.structured_input.is_empty:
@@ -176,7 +240,15 @@ def select_route(state: AgentState) -> RouteKey:
         return "debug"
     if _code_with_known_misconception(state):
         return "debug"
-    if state.intent is None or state.intent.low_confidence:
+    if state.intent is None:
+        return "clarify"
+    if state.intent.low_confidence:
+        # An unsure label on a follow-up to the conversation's problem keeps
+        # tutoring that problem; "could you confirm?" is for turns with nothing
+        # to anchor on. A bare greeting never inherits (see `_problem_update`).
+        question = state.structured_input.question
+        if state.problem_relation == "followup" and not is_small_talk(question):
+            return "dsa"
         return "clarify"
     if _guidance_without_ask(state):
         return "clarify"

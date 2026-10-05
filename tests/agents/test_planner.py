@@ -448,7 +448,11 @@ def test_build_plan_escalates_to_full_when_all_three_conditions_hold() -> None:
 
 
 def test_build_plan_escalation_denied_when_ceiling_not_reached() -> None:
-    """Condition 1 (ceiling reached) missing; the other two hold."""
+    """Condition 1 (ceiling reached) missing; the other two hold.
+
+    Challenge mode: Guidance and Balanced no longer hold the code behind the
+    rest of the ladder once the learner has had a step (learner-driven).
+    """
     profile = _profile()
     analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
     intent = _intent(Intent.DSA_SOLVE)
@@ -457,7 +461,14 @@ def test_build_plan_escalation_denied_when_ceiling_not_reached() -> None:
         last_level=HintLevel.L1_WHAT_TO_TRACK, solved=False, has_verified_attempt=True
     )
 
-    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+    plan = build_plan(
+        intent,
+        profile,
+        analysis,
+        hint_progress=progress,
+        structured_input=inp,
+        teaching_mode="challenge",
+    )
 
     assert plan.assistance_level != "full"
     assert "escalated" not in plan.rationale
@@ -490,8 +501,9 @@ def test_build_plan_escalation_denied_when_no_explicit_ask() -> None:
 def test_build_plan_escalation_denied_when_no_verified_attempt() -> None:
     """Condition 3 (demonstrated effort) missing; the other two hold.
 
-    This is also the "just tell me" shortcut (Tests item 5): an explicit ask
-    with no sandbox-verified attempt on record must be refused.
+    Challenge mode only: there an explicit ask with no sandbox-verified attempt
+    on record is refused. Guidance and Balanced count working through every
+    hint as the effort (see `test_escalation_policy`).
     """
     profile = _profile()
     analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
@@ -501,7 +513,14 @@ def test_build_plan_escalation_denied_when_no_verified_attempt() -> None:
         last_level=HintLevel.L3_CONCRETE_IDEA, solved=False, has_verified_attempt=False
     )
 
-    plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
+    plan = build_plan(
+        intent,
+        profile,
+        analysis,
+        hint_progress=progress,
+        structured_input=inp,
+        teaching_mode="challenge",
+    )
 
     assert plan.assistance_level != "full"
     assert "escalated" not in plan.rationale
@@ -528,9 +547,8 @@ def test_hostile_assistance_cap_cannot_unlock_escalation() -> None:
     analysis = ProblemAnalysis(topic="arrays", skill_level=0.5, topic_source="profile_match")
     intent = _intent(Intent.DSA_SOLVE)
     inp = _input(question="Just give me the answer.")
-    progress = HintProgress(
-        last_level=HintLevel.L1_WHAT_TO_TRACK, solved=False, has_verified_attempt=False
-    )
+    # No step served on this problem yet: the planner denies the ask.
+    progress = HintProgress(solved=False, has_verified_attempt=False)
 
     plan = build_plan(intent, profile, analysis, hint_progress=progress, structured_input=inp)
     assert plan.assistance_level != "full"

@@ -38,6 +38,7 @@ reason about (see `app.agents.dsa_solver`'s module docstring), never echoed
 into `DSAResult`'s free-text fields.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -51,17 +52,22 @@ from langgraph.runtime import Runtime
 
 from app.agents.debugger import extract_learner_code
 from app.agents.dsa_solver import (
+    NO_PATTERN,
     DSAAnalysis,
     analyze_dsa_problem,
+    pattern_slugs,
     prompt_hits,
 )
 from app.agents.hint_engine import HintProgress, next_hint
+from app.agents.planner import TopicSource
 from app.execution.synth import VerifiedSolution
 from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
 from app.knowledge.ingest import chunk_corpus, load_corpus
+from app.memory.profile import family_of
 from app.response.corpus_sections import corpus_sections, requested_sections
 from app.schemas.agent_results import DSAResult, HintLevel, HintResult
+from app.schemas.conversation import MessageView
 from app.schemas.execution import (
     ExecutionRequest,
     ExecutionResult,
@@ -107,6 +113,8 @@ class DSAState(TypedDict, total=False):
     context: list[RetrievalHit]
     progress: HintProgress
     ladder_topic: str | None
+    history: list[MessageView]
+    topic_source: TopicSource | None
 
     hint_level: HintLevel | None
     analysis: DSAAnalysis | None
@@ -226,8 +234,57 @@ async def _understand(state: DSAState, runtime: Runtime[GraphContext]) -> DSASta
     if problem is None or problem.is_empty:
         return {"hint_level": level, "analysis": None, "understanding": None}
 
-    analysis = await analyze_dsa_problem(problem, plan, level, context, runtime.context.llm)
-    return {"hint_level": level, "analysis": analysis, "understanding": analysis.understanding}
+    analysis = await analyze_dsa_problem(
+        problem, plan, level, context, runtime.context.llm, state.get("history", [])
+    )
+    update: DSAState = {
+        "hint_level": level,
+        "analysis": analysis,
+        "understanding": analysis.understanding,
+    }
+    topic = resolved_topic(plan.topic, state.get("topic_source"), analysis.pattern_slug)
+    if topic != plan.topic:
+        # The one rewrite of `plan` in this subgraph: every later node (the
+        # rung text, the corpus sections, the turn's own plan) sees the topic
+        # the solver confirmed, not the retrieval guess.
+        update["plan"] = plan.model_copy(update={"topic": topic})
+    return update
+
+
+#: Topic sources that are a guess about THIS turn, open to correction by the
+#: solver (which has actually read the problem). A title match, the learner's
+#: own vocabulary, an explicit hint and the conversation's stored topic are not.
+_GUESSED_TOPIC_SOURCES: Final = frozenset({"retrieval", "unknown"})
+
+
+def resolved_topic(
+    plan_topic: str | None, topic_source: TopicSource | None, solver_slug: str | None
+) -> str | None:
+    """This turn's topic once the solver has read the problem.
+
+    Retrieval over a bare statement is a weak signal: measured, "Partition
+    Labels" (greedy) and "Valid Parenthesis String" both retrieve `trie` at
+    about -4.5, "Jump Game" retrieves `monotonic_stack` -- and that guess then
+    named the pattern card, the cited references and the skill the turn was
+    recorded under. The solver names the pattern from the closed corpus list;
+    a guessed topic gives way to it when the two are in different pattern
+    families. Same family (`bfs` vs `graphs`) keeps the retrieval topic, which
+    is the more specific evidence. "none" drops the guess; no usable answer
+    (the call failed, an unknown slug) leaves the topic exactly as it was.
+    """
+    if topic_source not in _GUESSED_TOPIC_SOURCES or solver_slug is None:
+        return plan_topic
+    slug = solver_slug.strip().lower()
+    if slug == NO_PATTERN:
+        return None
+    if slug not in pattern_slugs():
+        return plan_topic
+    if plan_topic is None or plan_topic == slug:
+        return slug
+    family = family_of(plan_topic)
+    if family is not None and family == family_of(slug):
+        return plan_topic
+    return slug
 
 
 async def _constraints(state: DSAState, runtime: Runtime[GraphContext]) -> DSAState:
@@ -302,15 +359,60 @@ async def _hint(state: DSAState, runtime: Runtime[GraphContext]) -> DSAState:
     progress = state.get("progress", _DEFAULT_PROGRESS)
     context = state.get("context", [])
     ladder_topic = state.get("ladder_topic")
-    return {
-        "hint": next_hint(
-            None,
-            plan,
-            progress,
-            context=_grounding_context(context, ladder_topic),
-            ladder_topic=ladder_topic,
+    hint = next_hint(
+        None,
+        plan,
+        progress,
+        context=_grounding_context(context, ladder_topic),
+        ladder_topic=ladder_topic,
+    )
+    analysis = state.get("analysis")
+    step = _usable_step(analysis.guided_step if analysis is not None else None)
+    if hint is not None and step is not None and not hint.reveals_code:
+        # The rung (level, ceiling, gating) is still decided by `next_hint`;
+        # only its wording is replaced, by a step about THIS problem's own
+        # mechanics instead of the generic template (regression: LeetCode 678
+        # got "pin down the inputs, outputs, and constraints").
+        lead = (
+            _REPLY_LEADS.get((analysis.reply_verdict or "").strip().lower()) if analysis else None
         )
-    }
+        if lead is not None and state.get("history"):
+            step = f"{lead} {step}"
+        hint = hint.model_copy(update={"text": step, "guided": True})
+    return {"hint": hint}
+
+
+#: How the tutor opens when the learner has just answered its question. Fixed
+#: wording chosen by the solver's verdict on their REASONING: a right idea
+#: under the wrong name is credited, never met with "Not quite". Wording only
+#: -- a model's verdict is not evidence and never reaches the learner profile.
+_REPLY_LEADS: Final[Mapping[str, str]] = {
+    "right": "That's right.",
+    "right_idea_wrong_name": "Your reasoning is right -- only the name is different.",
+    "partly": "You're on the right track.",
+    "wrong": "That's not it yet -- let's look at it more concretely.",
+    "dont_know": "That's okay -- let's take a smaller step.",
+}
+
+_MAX_STEP_CHARS: Final = 900
+_STEP_CODE_RE: Final = re.compile(
+    r"```|^\s*(?:def |class |import |from \w+ import |for .+:\s*$|while .+:\s*$|return\b)",
+    re.MULTILINE,
+)
+
+
+def _usable_step(text: str | None) -> str | None:
+    """The solver's guided step, or `None` to keep the template rung.
+
+    Rejected when blank, over-long, or carrying anything code-shaped: a hint
+    rung below L5 must never reveal code, whatever the model returned.
+    """
+    if text is None:
+        return None
+    step = text.strip()
+    if not step or len(step) > _MAX_STEP_CHARS or _STEP_CODE_RE.search(step):
+        return None
+    return step
 
 
 # --------------------------------------------------------------------------
@@ -372,6 +474,9 @@ class DSARunResult:
 
     result: DSAResult
     execution_request: ExecutionRequest | None
+    #: The turn's plan with its topic corrected by the solver, or `None` when
+    #: the topic stands (see `resolved_topic`).
+    plan: TeachingPlan | None = None
 
 
 _LEARNER_RUN_FAILED_MESSAGE: Final = "running your code failed unexpectedly"
@@ -478,10 +583,15 @@ async def run_dsa(
         "context": list(state.retrieved_context),
         "progress": progress,
         "ladder_topic": ladder_topic,
+        "history": list(state.recent_context),
+        "topic_source": state.topic_source,
     }
     final_state = await get_dsa_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         initial, context=runtime.context
     )
+    # `understand` may have corrected a guessed topic (see `resolved_topic`).
+    plan = final_state.get("plan") or state.plan
+    topic_corrected = plan is not None and state.plan is not None and plan.topic != state.plan.topic
 
     learner_code = extract_learner_code(state.structured_input)
     learner_request: ExecutionRequest | None = None
@@ -495,8 +605,21 @@ async def run_dsa(
     # that were in the solver's prompt -- and only when that call ran -- plus
     # the corpus sections quoted whole below. Never "whatever was retrieved".
     analysis_ran = final_state.get("analysis") is not None
-    citations = _citation_labels(prompt_hits(state.retrieved_context)) if analysis_ran else []
-    plan = state.plan
+    cited_hits = prompt_hits(state.retrieved_context) if analysis_ran else []
+    topic_known = state.topic_source in ("conversation", "title") or topic_corrected
+    if topic_known and plan is not None and plan.topic is not None:
+        # The topic is settled (confirmed by the solver, or carried by the
+        # conversation), so a hit retrieved for an unrelated pattern is noise:
+        # citing it would present "Trie - Overview" as a source for a greedy
+        # problem. Same-family hits (`bfs` for a `graphs` topic) still count.
+        family = family_of(plan.topic)
+        cited_hits = [
+            hit
+            for hit in cited_hits
+            if hit.chunk.pattern == plan.topic
+            or (family is not None and family_of(hit.chunk.pattern) == family)
+        ]
+    citations = _citation_labels(cited_hits)
     question = state.structured_input.question if state.structured_input is not None else None
     hint_now = final_state.get("hint")
     # Naming the pattern is itself a hint: allowed past the first rung, or at
@@ -545,6 +668,10 @@ async def run_dsa(
         )
     elif hint is not None and revealed_code is not None:
         hint = hint.model_copy(update={"text": _VERIFIED_REVEAL_TEXT})
+    elif hint is not None and plan is not None:
+        note = _refused_ask_note(plan, hint)
+        if note is not None:
+            hint = hint.model_copy(update={"text": f"{note}\n\n{hint.text}"})
     result = DSAResult(
         topic=final_state.get("topic"),
         pattern=final_state.get("pattern"),
@@ -568,4 +695,32 @@ async def run_dsa(
     # turn's own `verification` shows the sandbox pass the learner can trust.
     solution_request = solution.request if solution is not None else None
     execution_request = learner_request or solution_request
-    return DSARunResult(result=result, execution_request=execution_request)
+    return DSARunResult(
+        result=result,
+        execution_request=execution_request,
+        plan=plan if topic_corrected else None,
+    )
+
+
+def _refused_ask_note(plan: TeachingPlan, hint: HintResult) -> str | None:
+    """Say plainly why an explicit "give me the code" got a hint instead.
+
+    Without this the reply to a refused ask was just another hint, which read
+    as the agent ignoring the request. Fixed text chosen from the plan's own
+    rationale codes; nothing from the learner's message.
+    """
+    rationale = plan.rationale
+    if "escalation_denied_no_explicit_ask" in rationale or "escalated" in rationale:
+        return None
+    del hint  # no hint counts: what comes next depends on the learner, not a quota
+    if "escalation_challenge_mode" in rationale:
+        return (
+            "You asked for the full code. You're in Challenge mode, so I'll hold it until "
+            "you've run an attempt -- paste your code and I'll test it in the sandbox."
+        )
+    if "escalation_denied_ceiling_not_reached" in rationale:
+        return (
+            "You asked for the full code. Take this one step first -- if you still want "
+            "the code after it, just ask and I'll show the tested solution."
+        )
+    return None

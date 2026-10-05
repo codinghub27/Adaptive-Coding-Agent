@@ -67,18 +67,26 @@ def test_guidance_reveals_on_an_explicit_ask_at_the_ceiling() -> None:
     assert _plan("guidance", _AT_CEILING)[0] == "full"
 
 
-def test_no_mode_reveals_before_the_ceiling() -> None:
-    below = HintProgress(last_level=HintLevel.L1_WHAT_TO_TRACK, ceiling=HintLevel.L3_CONCRETE_IDEA)
+def test_no_mode_reveals_on_a_first_message_ask() -> None:
+    """Before any step on the problem, an ask gets one step first -- in every mode."""
     for mode in ("guidance", "balanced", "challenge"):
-        assert _plan(mode, below)[0] != "full"
+        assert _plan(mode, HintProgress())[0] != "full"
 
 
-def test_balanced_needs_a_second_ask_or_a_verified_attempt() -> None:
-    first = _plan("balanced", _AT_CEILING)
-    assert first[0] != "full"
-    assert "escalation_needs_second_ask" in first
-    second = _AT_CEILING.model_copy(update={"asks_at_ceiling": 1})
-    assert _plan("balanced", second)[0] == "full"
+def test_an_explicit_ask_is_honoured_after_one_step_without_a_hint_quota() -> None:
+    """Learner-driven: one hint in, "give me the code" gets the code. Challenge
+    is the learner's own "not yet", so it keeps the full ladder + an attempt."""
+    below = HintProgress(last_level=HintLevel.L0_NUDGE, ceiling=HintLevel.L3_CONCRETE_IDEA)
+    assert _plan("guidance", below)[0] == "full"
+    assert _plan("balanced", below)[0] == "full"
+    challenge = _plan("challenge", below)
+    assert challenge[0] != "full"
+    assert "escalation_challenge_mode" in challenge
+
+
+def test_balanced_reveals_on_the_first_explicit_ask_at_the_ceiling() -> None:
+    """Every hint was served and the learner asked outright: no second ask needed."""
+    assert _plan("balanced", _AT_CEILING)[0] == "full"
     attempted = _AT_CEILING.model_copy(update={"has_verified_attempt": True})
     assert _plan("balanced", attempted)[0] == "full"
 

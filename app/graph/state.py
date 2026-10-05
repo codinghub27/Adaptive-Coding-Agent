@@ -57,7 +57,7 @@ __all__ = [
     "SuiteSource",
 ]
 
-RouteKey = Literal["dsa", "debug", "explain", "practice", "clarify", "grade"]
+RouteKey = Literal["dsa", "debug", "explain", "practice", "clarify", "grade", "meta"]
 
 # Where this turn's `TestSuite` (if any) came from -- see `debug_agent` and the
 # review branch of `explain_agent` in `app.graph.nodes`, and the gating this

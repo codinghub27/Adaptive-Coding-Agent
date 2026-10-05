@@ -627,13 +627,19 @@ def build_plan(
         # AD-4: the teaching mode decides what "enough effort" means. The
         # ceiling + explicit ask are required in every mode; the reveal itself
         # is always the sandbox-verified reference (see `dsa_agent`).
-        repeated_ask = progress.asks_at_ceiling >= 1
-        if teaching_mode == "guidance":
-            effort = True
-        elif teaching_mode == "balanced":
-            effort = verified_attempt or repeated_ask
-        else:
+        # Guidance and Balanced are learner-driven: once the learner has had
+        # at least one step on THIS problem (a hint served, or an attempt run),
+        # an explicit ask for the code is honoured -- no fixed number of hints
+        # stands in the way (owner decision; "3 more hints after this one" read
+        # as the tutor ignoring the request). Only a first-message ask, before
+        # any step at all, gets one step first. Challenge is the learner's own
+        # "don't give me the answer": there the full ladder and a sandbox-run
+        # attempt are still required.
+        if teaching_mode == "challenge":
             effort = verified_attempt
+        else:
+            effort = True
+            ceiling_reached = progress.last_level is not None or verified_attempt
 
         if ceiling_reached and explicit_ask and effort:
             assistance = "full"
@@ -653,8 +659,8 @@ def build_plan(
                 rationale.append("escalation_denied_no_explicit_ask")
             if not effort:
                 rationale.append("escalation_denied_no_verified_attempt")
-                if teaching_mode == "balanced" and ceiling_reached and explicit_ask:
-                    rationale.append("escalation_needs_second_ask")
+            if explicit_ask and teaching_mode == "challenge":
+                rationale.append("escalation_challenge_mode")
 
     if profile.learning_preferences.get("likes_step_by_step", False):
         step_by_step = True

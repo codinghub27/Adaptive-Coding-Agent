@@ -54,7 +54,7 @@ from app.agents.reviewer import review_code
 from app.execution.synth import synthesize_test_suite, verified_reference
 from app.execution.testgen import extract_test_suite
 from app.execution.verification import verify as verify_result
-from app.graph.routing import select_route
+from app.graph.routing import asks_for_guidance, meta_followup, select_route
 from app.graph.state import (
     AgentOutcome,
     AgentState,
@@ -70,6 +70,7 @@ from app.graph.subgraphs.dsa import (
 )
 from app.graph.subgraphs.explain import run_explain
 from app.input.intent import classify_intent as _classify_intent_llm
+from app.input.intent import is_small_talk
 from app.input.normalize import merge_inputs, normalize_text
 from app.input.vision import ImageValidationError, extract_from_image
 from app.knowledge.ingest import load_corpus
@@ -85,9 +86,9 @@ from app.memory.conversation import (
 from app.memory.events import record_event, requested_help_for
 from app.memory.hint_progress import get_hint_progress, get_latest_hint_progress, save_hint_progress
 from app.memory.profile import FAMILY_PREFIX, PRIOR, apply_event, get_profile
-from app.response.format import SAFE_FALLBACK_RESPONSE, SECTION_TITLES
+from app.response.format import SAFE_FALLBACK_RESPONSE, SECTION_TITLES, protect_symbols
 from app.response.generate import generate_response
-from app.schemas.agent_results import ExplainResult, HintLevel
+from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import ExecutionResult, HarnessError, TestSuite, Verdict
 from app.schemas.input import ActiveProblem, CodeBlock, ProblemRelation, StructuredInput
@@ -113,7 +114,7 @@ from app.tutoring.bank import (
     family_patterns,
     named_pattern,
 )
-from app.tutoring.grader import grade_reply
+from app.tutoring.grader import asks_for_help, grade_reply, is_dont_know
 from app.tutoring.misconceptions import detect_in_code, get_misconception, is_catalog_id
 from app.tutoring.progression import requested_difficulty, session_difficulty
 from app.tutoring.turn import (
@@ -690,6 +691,7 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
         state.structured_input,
         state.active_problem,
         state.intent.intent if state.intent is not None else None,
+        answering=_answering_the_tutor(state),
     )
     update: AgentStateUpdate = {"problem_relation": relation, "problem_key": key}
     if relation == "followup" and state.active_problem is not None:
@@ -709,7 +711,44 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
                 source="rule",
                 rationale="explicit solution ask on the conversation's active problem",
             )
+        elif _continues_active_problem(state, question):
+            # "I don't know", or a turn the classifier filed under its catch-all
+            # GENERAL_GUIDANCE without any plan/advice ask: the learner is still
+            # on the conversation's problem, so the tutor takes the next step on
+            # it (one rung more help) instead of a study plan or "could you
+            # confirm?" (regression: LeetCode 678 screenshot, turns 2-4).
+            update["intent"] = IntentResult(
+                intent=Intent.DSA_HINT,
+                confidence=0.7,
+                source="rule",
+                rationale="follow-up on the conversation's active problem",
+            )
     return update
+
+
+def _continues_active_problem(state: AgentState, question: str | None) -> bool:
+    if not question or meta_followup(state) is not None:
+        return False
+    if is_dont_know(question):
+        return True
+    if _answering_the_tutor(state) and not asks_for_help(question):
+        # A reply to the tutor's own question about this problem ("two
+        # pointers?") is an answer to weigh, whatever the classifier called it:
+        # labelled CONCEPT_EXPLANATION it got a lecture on two pointers instead
+        # of the next step on the binary-search problem it was answering.
+        return True
+    intent = state.intent
+    return intent is not None and intent.intent is Intent.GENERAL_GUIDANCE
+
+
+def _answering_the_tutor(state: AgentState) -> bool:
+    """The tutor's last message ended on a question about the active problem
+    and nothing is formally pending (a pending check is graded instead), so
+    this turn is most likely the learner's answer to it."""
+    if state.active_problem is None or state.pending_check is not None:
+        return False
+    last = state.recent_context[-1] if state.recent_context else None
+    return last is not None and last.role == "assistant" and last.content.rstrip().endswith("?")
 
 
 def _needs_solution_intent(state: AgentState, question: str | None) -> bool:
@@ -780,15 +819,63 @@ def problem_key(structured_input: StructuredInput | None) -> str | None:
     return "_p" + hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 
-#: Intents that are never about the conversation's active problem: a study
-#: plan or a request for a NEW practice problem must not inherit the last one.
-_NON_PROBLEM_INTENTS: Final = frozenset({Intent.GENERAL_GUIDANCE, Intent.PRACTICE_REQUEST})
+_TITLE_NUMBER_RE: Final = re.compile(r"^\s*(?:problem\s*)?#?\d+\s*[.):-]\s*", re.IGNORECASE)
+_TITLE_MARKUP_RE: Final = re.compile(r"[*_`#\[\]<>|]")
+_MAX_TITLE_CHARS: Final = 80
+
+
+def problem_title(active: ActiveProblem | None) -> str | None:
+    """The stored problem's title: the first line of its statement.
+
+    A LeetCode page or screenshot leads with "678. Valid Parenthesis String";
+    the vision prompt keeps that line. Display-only learner data, stripped of
+    markdown so it cannot restyle the reply; an over-long first line is prose,
+    not a title, and is cut.
+    """
+    if active is None or not active.problem.problem:
+        return None
+    for line in active.problem.problem.splitlines():
+        cleaned = " ".join(_TITLE_MARKUP_RE.sub("", line).split())
+        if cleaned:
+            if len(cleaned) > _MAX_TITLE_CHARS:
+                return cleaned[:_MAX_TITLE_CHARS].rstrip() + "..."
+            return cleaned
+    return None
+
+
+def _names_active_problem(question: str | None, active: ActiveProblem) -> bool:
+    """`question` names the active problem by its title ("... solve the valid
+    parenthesis string problem"). Checked before the corpus vocabulary, which
+    would otherwise read the same words as a subject of the turn's own."""
+    title = problem_title(active)
+    if not question or title is None or title.endswith("..."):
+        return False
+    name = _TITLE_NUMBER_RE.sub("", title).lower()
+    return len(name.split()) >= 2 and name in " ".join(question.lower().split())
+
+
+def _is_non_problem_turn(intent: Intent | None, question: str | None) -> bool:
+    """A turn that is never about the conversation's active problem: a request
+    for a NEW practice problem, an explicit plan/advice ask, or a bare greeting.
+
+    GENERAL_GUIDANCE alone does not qualify: it is the classifier's catch-all,
+    so "tell me name of that problem" carried it and lost the problem.
+    """
+    if intent is Intent.PRACTICE_REQUEST:
+        return True
+    if intent is Intent.GENERAL_GUIDANCE:
+        if question and is_dont_know(question):
+            return False  # "I don't know where to start" is about the problem
+        return asks_for_guidance(question) or is_small_talk(question)
+    return False
 
 
 def resolve_problem_relation(
     structured_input: StructuredInput | None,
     active: ActiveProblem | None,
     intent: Intent | None = None,
+    *,
+    answering: bool = False,
 ) -> tuple[ProblemRelation, str | None]:
     """How this turn relates to the conversation's active problem, and its ladder key.
 
@@ -819,9 +906,16 @@ def resolve_problem_relation(
         return "new", key
     if active is None or structured_input.code or structured_input.error:
         return "none", None
-    if intent in _NON_PROBLEM_INTENTS:
+    if _is_non_problem_turn(intent, structured_input.question):
         return "none", None
-    if names_corpus_subject(structured_input.question):
+    if _names_active_problem(structured_input.question, active):
+        return "followup", active.key
+    question = structured_input.question
+    if answering and question and not asks_for_help(question):
+        # Naming a technique in reply to the tutor's question IS the answer,
+        # not a new subject ("two pointers?" after "what would you try?").
+        return "followup", active.key
+    if names_corpus_subject(question):
         return "none", None
     return "followup", active.key
 
@@ -1233,6 +1327,11 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     }
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request
+    if run.plan is not None:
+        # The solver corrected a guessed topic: the rest of the turn (the
+        # pattern card, the learning event, the stored active problem) uses it.
+        update["plan"] = run.plan
+        update["topic_source"] = "retrieval"
 
     verdict = run.result.initial_verdict
     ran_this_turn = verdict is not None and verdict.status in ("pass", "fail")
@@ -1771,9 +1870,43 @@ _GREETING_REPLY: Final = (
 )
 
 
+_META_NO_PROBLEM: Final = (
+    "Yes, I can see everything we've said in this conversation -- but no problem has been "
+    "shared in it yet. Paste the statement or a screenshot and we'll start from there."
+)
+
+
+def _meta_reply(state: AgentState) -> str:
+    """Answer a question about the conversation itself from stored state.
+
+    Built from the conversation's active problem (title only, see
+    `problem_title`) and the question already pending -- no model call, so it
+    cannot drift into a study plan or deny having the history it has.
+    """
+    active = state.active_problem
+    title = problem_title(active)
+    if active is None or title is None:
+        return _META_NO_PROBLEM
+    shared = "the screenshot you shared" if active.problem.source == "image" else "what you shared"
+    if meta_followup(state) == "name":
+        lead = f"That's **{title}** -- the problem from {shared} earlier in this conversation."
+    else:
+        lead = (
+            "Yes -- I can see this whole conversation, including "
+            f"{shared}. We're working on **{title}**."
+        )
+    pending = state.pending_check
+    if pending is not None and pending.kind == "question":
+        return f"{lead}\n\nBack to it: {pending.question}"
+    return f"{lead}\n\nShall we keep going -- what would you try first on it?"
+
+
 async def clarify(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
-    """Ask a deterministic clarifying question; never echoes user input."""
+    """Ask a deterministic clarifying question, or answer a question about the
+    conversation (`route == "meta"`); never echoes the learner's message."""
     del runtime
+    if state.route == "meta":
+        return {"agent_output": AgentOutcome(text=_meta_reply(state), topic=None, solved=None)}
     image_failed = any(
         err.node == "understand_input" and err.message == _IMAGE_EXTRACTION_FAILED_MESSAGE
         for err in state.errors
@@ -1821,7 +1954,27 @@ async def final_response(state: AgentState, runtime: Runtime[GraphContext]) -> A
         verification=state.verification,
         fallback_text=state.agent_output.text if state.agent_output is not None else None,
     )
-    return _with_tutoring(state, generated)
+    return _protect_symbols(_with_tutoring(state, generated))
+
+
+def _protect_symbols(update: AgentStateUpdate) -> AgentStateUpdate:
+    """Keep literal `*`, `(`, `_` ... in the reply from being read as markdown
+    (LeetCode 678's `'*'` rendered as an empty pair of quotes)."""
+    generated = update.get("generated_response")
+    if generated is None:
+        return update
+    sections = [s.model_copy(update={"body": protect_symbols(s.body)}) for s in generated.sections]
+    text = protect_symbols(generated.text)
+    update["generated_response"] = generated.model_copy(update={"sections": sections, "text": text})
+    update["response"] = text
+    return update
+
+
+def _guided_hint(state: AgentState) -> bool:
+    """This turn's hint is the tutor's own problem-specific step (it ends with
+    its question), not the generic ladder rung."""
+    result = state.agent_result
+    return isinstance(result, DSAResult) and result.hint is not None and result.hint.guided
 
 
 def _learner_code(state: AgentState) -> str | None:
@@ -1908,6 +2061,24 @@ _VERBOSE_SECTION_KINDS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: Survey sections left out of a full-solution turn unless asked for by
+#: name: the reveal is the insight, the tested code and its cost -- not a
+#: second walk through the brute force and the pattern's textbook page.
+_REVEAL_DROPPED_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "recognition",
+        "intuition",
+        "understanding",
+        "constraints",
+        "brute_force",
+        "why_slow",
+        "common_mistakes",
+        "pseudocode",
+        "next_steps",
+    }
+)
+
+
 def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStateUpdate:
     """Add the tutoring sections to `generated` and decide the next pending check."""
     plan = state.plan
@@ -1951,8 +2122,20 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
             first_turn_on_problem=state.problem_relation == "new",
             topic_trusted=state.topic_source in _TRUSTED_TOPIC_SOURCES,
         )
-    carried: PendingCheck | None = None
+    guided = grade is None and _guided_hint(state)
     if (
+        guided
+        and question is not None
+        and not found
+        and question.question_id != chain_start(problem_text)
+    ):
+        # One question per turn: the guided step already ends with one about
+        # THIS problem, so the pattern's generic recognition question waits.
+        question = None
+    carried: PendingCheck | None = None
+    if route == "meta":
+        carried = pending  # a question about the conversation answers nothing
+    elif (
         question is None
         and grade is None
         and pending is not None
@@ -2021,6 +2204,12 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
             or s.kind in requested
             or (s.kind == "complexity" and keep_complexity)
         ]
+    elif route == "dsa" and generated.reveals_code:
+        base = [s for s in base if s.kind not in _REVEAL_DROPPED_KINDS or s.kind in requested]
+    elif guided and question is None:
+        # Conversational turn: the step and its question, no survey sections
+        # unless the learner asked for them by name.
+        base = [s for s in base if s.kind not in _VERBOSE_SECTION_KINDS or s.kind in requested]
     after = list(extra.after)
     verification_index = next((i for i, s in enumerate(base) if s.kind == "verification"), None)
     if verification_index is not None and exec_lines:
@@ -2030,7 +2219,15 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         )
         after = [s for s in after if s.kind != "execution"]
     sections = [*extra.before, *base, *after]
-    if sections and (extra.before or extra.after):
+    revealed = route == "dsa" and generated.reveals_code
+    if ((guided and question is None) or revealed) and sections:
+        # The guided step (and the line introducing a revealed solution) reads
+        # as the tutor talking, so it carries no "Your next hint" header.
+        text = "\n\n".join(
+            s.body if s.kind == "next_hint" else f"## {s.title}\n\n{s.body}" for s in sections
+        )
+        generated = generated.model_copy(update={"sections": sections, "text": text})
+    elif sections and (extra.before or extra.after):
         text = "\n\n".join(f"## {s.title}\n\n{s.body}" for s in sections)
         generated = generated.model_copy(update={"sections": sections, "text": text})
 
@@ -2451,7 +2648,7 @@ async def update_learner_model(
     agent_output = state.agent_output
     if (
         state.route is not None
-        and state.route != "clarify"
+        and state.route not in ("clarify", "meta")
         and state.intent is not None
         and agent_output is not None
     ):

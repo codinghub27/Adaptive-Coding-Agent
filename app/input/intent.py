@@ -143,6 +143,11 @@ _SMALL_TALK_RE = re.compile(
 )
 
 
+def is_small_talk(text: str | None) -> bool:
+    """A whole message that is only a greeting / acknowledgement ("hi", "thanks")."""
+    return bool(text) and _SMALL_TALK_RE.match(text or "") is not None
+
+
 def rule_intent(inp: StructuredInput) -> IntentResult | None:
     """Deterministic, LLM-free classification for unambiguous cases."""
     has_code = bool(inp.code)

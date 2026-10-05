@@ -65,8 +65,10 @@ MODE_SCAFFOLD_CAP: Final[dict[TeachingMode, AssistanceLevel]] = {
     "challenge": "concept",
 }
 
-#: After this many graded attempts at one question, stop re-asking it.
-MAX_ATTEMPTS: Final = 3
+#: After this many graded attempts at one question, stop re-asking it: the
+#: second miss is taught and the lesson moves on (a third identical "Not
+#: quite" + the same question is a loop, not tutoring).
+MAX_ATTEMPTS: Final = 2
 MAX_ASKED: Final = 60
 MAX_GRADES: Final = 30
 
@@ -207,9 +209,17 @@ def react(
         # The takeaway closes a chain; when the chain ends in a code request it
         # waits for that code instead (shown with the reviewed / verified code).
         closes_chain = spec.next is None and spec.then is None
+        feedback = spec.on_correct
+        if grade.method == "llm_terminology":
+            # Right mechanics under another technique's name: credit the
+            # reasoning, fix the word, and move on -- not "Not quite".
+            feedback = (
+                "Your reasoning is right -- only the name is different. What you described "
+                f"is usually called {_humanize(spec.topic)}."
+            )
         return Reacted(
             "advance",
-            spec.on_correct,
+            feedback,
             None,
             next_pending,
             False,
@@ -218,8 +228,11 @@ def react(
             lesson=spec.lesson if closes_chain else None,
         )
 
-    if attempts + 1 >= MAX_ATTEMPTS:
-        # Third miss on the same question: teach it and move on rather than loop.
+    told_the_answer = grade.grade == "incorrect" and base.startswith(RECOGNITION_PREFIX)
+    if attempts + 1 >= MAX_ATTEMPTS or told_the_answer:
+        # A repeated miss -- or a wrong technique, whose correction already
+        # names the right one -- is taught and the lesson moves on. Asking the
+        # same question again would only invite the answer just given.
         feedback = " ".join(part for part in (spec.on_incorrect, spec.scaffold) if part)
         next_pending = _after_correct(base, pending, before)
         return Reacted("scaffold", feedback, misconception, next_pending, False, before, before)

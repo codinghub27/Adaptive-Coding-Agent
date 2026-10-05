@@ -226,7 +226,10 @@ async def test_each_intent_routes_end_to_end(intent: Intent) -> None:
         chat_content=f'{{"intent": "{intent.value}", "confidence": 0.95, "rationale": "clear"}}'
     )
 
-    result = await run_graph(RawInput(text=_PLAIN_QUESTION), llm=fake)
+    # GENERAL_GUIDANCE is the classifier's catch-all, so a study plan needs an
+    # explicit ask in the text itself; a plain question with that label clarifies.
+    text = "Give me a study plan for interviews" if intent is Intent.GENERAL_GUIDANCE else None
+    result = await run_graph(RawInput(text=text or _PLAIN_QUESTION), llm=fake)
     state = result.state
 
     expected_route = INTENT_ROUTES[intent]

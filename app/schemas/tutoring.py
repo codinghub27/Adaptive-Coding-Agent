@@ -52,6 +52,7 @@ GradeMethod = Literal[
     "concepts",
     "recognition",
     "llm",
+    "llm_terminology",
     "llm_low_confidence",
     "fallback",
 ]

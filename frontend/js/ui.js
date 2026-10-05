@@ -62,7 +62,10 @@ function inline(text) {
   out = out
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/__(.+?)__/g, "<strong>$1</strong>")
-    .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\w)/g, "$1<em>$2</em>")
+    // Emphasis must open on a letter/digit and close after one (or sentence
+    // punctuation). A literal asterisk the text talks ABOUT -- '*' ... '*',
+    // "(*)" -- is not emphasis; pairing those erased both asterisks.
+    .replace(/(^|[^*\w])\*(?=[A-Za-z0-9])([^*\n]+?)(?<=[A-Za-z0-9.!?,:])\*(?!\w)/g, "$1<em>$2</em>")
     .replace(/(^|[^_\w])_(?!\s)([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/ -- /g, " — ")

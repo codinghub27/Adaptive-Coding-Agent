@@ -12,6 +12,7 @@ since `app.graph.nodes` imports `app.response.generate`); `app.graph.nodes`
 re-exports it for backwards compatibility.
 """
 
+import re
 from collections.abc import Mapping
 from typing import Final
 
@@ -30,6 +31,7 @@ __all__ = [
     "DSA_SECTIONS_BY_ASSISTANCE",
     "SAFE_FALLBACK_RESPONSE",
     "SECTION_TITLES",
+    "protect_symbols",
     "render_bullet_list",
     "render_code_block",
     "render_complexity",
@@ -147,6 +149,38 @@ DSA_SECTIONS_BY_ASSISTANCE: Final[Mapping[AssistanceLevel, tuple[ResponseSection
 }
 """Cumulative section tables: each `AssistanceLevel`'s tuple is a superset of
 every level before it in `ASSISTANCE_ORDER` (see `test_format.py`)."""
+
+
+_CODE_SPAN_RE: Final = re.compile(r"(```[\s\S]*?```|`[^`\n]+`)")
+_QUOTES: Final = "'\"\u2018\u2019\u201c\u201d"
+_QUOTED_SYMBOL_RE: Final = re.compile(rf"[{_QUOTES}]([*_()\[\]{{}}<>#~|^\\])[{_QUOTES}]")
+#: A short quoted token with an asterisk in it: "(*)", '**', "a*b".
+_QUOTED_STAR_TOKEN_RE: Final = re.compile(
+    rf"[{_QUOTES}]([^\s`{_QUOTES}]{{0,12}}\*[^\s`{_QUOTES}]{{0,12}})[{_QUOTES}]"
+)
+_BARE_STAR_RE: Final = re.compile(r"(?<=[^\s*])([ \t])\*([ \t])(?=[^\s*])")
+
+
+def protect_symbols(text: str) -> str:
+    """Put literal symbols the prose talks ABOUT into inline code.
+
+    `'*'` twice on one line is, to any markdown renderer, emphasis around
+    everything in between -- so both asterisks vanish. A quoted single symbol
+    (`'*'`, `"("`, `'_'`), a short quoted token holding an asterisk (`"(*)"`)
+    and a free-standing ` * ` become inline code (`` `*` ``, `` `(*)` ``). Existing
+    code spans and fenced blocks are left exactly as they are.
+    """
+    parts = _CODE_SPAN_RE.split(text)
+    for index in range(0, len(parts), 2):
+        part = _QUOTED_SYMBOL_RE.sub(lambda m: f"`{m.group(1)}`", parts[index])
+        # Re-split: the symbols just wrapped are code spans now and must not be
+        # read as the quotes around a longer token.
+        pieces = _CODE_SPAN_RE.split(part)
+        for inner in range(0, len(pieces), 2):
+            pieces[inner] = _QUOTED_STAR_TOKEN_RE.sub(lambda m: f"`{m.group(1)}`", pieces[inner])
+        part = "".join(pieces)
+        parts[index] = _BARE_STAR_RE.sub(lambda m: f"{m.group(1)}`*`{m.group(2)}", part)
+    return "".join(parts)
 
 
 def render_bullet_list(items: list[str]) -> str:

@@ -91,6 +91,9 @@ class HintResult(APIModel):
     is_terminal: bool
     reveals_code: bool
     ceiling: HintLevel
+    #: `text` is the solver's problem-specific guided step (one step, ending
+    #: with its own question) rather than the generic rung template.
+    guided: bool = False
 
     @model_validator(mode="after")
     def _check_ladder_invariants(self) -> "HintResult":
