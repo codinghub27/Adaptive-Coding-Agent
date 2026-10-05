@@ -1,6 +1,9 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # Come back after a Docker Desktop restart or a reboot. Without this the
+    # containers stay "Exited (255)" and the API silently runs without them.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: coding_agent
       POSTGRES_PASSWORD: coding_agent
@@ -17,6 +20,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.19.0
+    restart: unless-stopped
     ports:
       - "6333:6333"
       - "6334:6334"

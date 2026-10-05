@@ -162,7 +162,15 @@ class KnowledgeRetriever:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("knowledge dense retrieval failed: %s", type(exc).__name__)
+            # qdrant-client wraps every transport failure in one
+            # `ResponseHandlingException`; its `source` says which (a refused
+            # connection means Qdrant is not running). Type names only.
+            cause = getattr(exc, "source", None) or exc.__cause__
+            logger.warning(
+                "knowledge dense retrieval failed: %s%s; continuing with keyword search only",
+                type(exc).__name__,
+                f" ({type(cause).__name__})" if cause is not None else "",
+            )
             return []
 
     async def _rerank(
