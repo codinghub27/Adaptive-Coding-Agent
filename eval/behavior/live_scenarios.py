@@ -317,7 +317,7 @@ class Api:
     def __init__(self, base_url: str, timeout: float, pace: float = 0.0) -> None:
         self._client = httpx.Client(base_url=base_url, timeout=timeout)
         self._pace = pace
-        self._headers: dict[str, str] = {}
+        self.headers: dict[str, str] = {}
 
     def new_account(self) -> None:
         account = {
@@ -326,7 +326,7 @@ class Api:
         }
         self._client.post("/auth/register", json=account).raise_for_status()
         token = self._client.post("/auth/login", json=account).json()["access_token"]
-        self._headers = {"Authorization": f"Bearer {token}"}
+        self.headers = {"Authorization": f"Bearer {token}"}
 
     def run(self, scenario: Scenario) -> list[Turn]:
         turns: list[Turn] = []
@@ -336,7 +336,7 @@ class Api:
             if conversation_id:
                 data["conversation_id"] = conversation_id
             started = time.perf_counter()
-            response = self._client.post("/chat", data=data, headers=self._headers)
+            response = self._client.post("/chat", data=data, headers=self.headers)
             response.raise_for_status()
             body: Turn = response.json()
             body["_seconds"] = round(time.perf_counter() - started, 2)
@@ -394,11 +394,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     record: list[dict[str, Any]] = []
     api = Api(args.base_url, args.timeout, args.pace)
     for run in range(1, args.runs + 1):
-        shared_ready = False
+        shared_headers: dict[str, str] | None = None
         for scenario in chosen:
-            if not scenario.shared_account or not shared_ready:
+            # Scenarios 1-5 and 8 are ONE learner; 6 and 7 are strangers. The
+            # shared learner's login is kept aside while a stranger runs.
+            if scenario.shared_account:
+                if shared_headers is None:
+                    api.new_account()
+                    shared_headers = api.headers
+                api.headers = shared_headers
+            else:
                 api.new_account()
-                shared_ready = shared_ready or scenario.shared_account
             try:
                 turns = api.run(scenario)
             except (httpx.HTTPError, KeyError, ValueError) as exc:

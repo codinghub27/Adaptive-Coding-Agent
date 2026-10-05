@@ -1720,6 +1720,14 @@ async def _resolve_test_suite(
         # The statement's own examples are the baseline and are ALWAYS in the
         # suite; cases validated on an earlier turn are added to them.
         extra = cached[0] if cached is not None else []
+        if cached is None and len(extracted.cases) < _MIN_SUITE_CASES:
+            # Two worked examples rarely include an edge case. Top the suite up
+            # ONCE with validated cases and keep them, so the next turn on this
+            # subject needs no model call. If that fails, the examples stand.
+            more = await synthesize_test_suite(inp, ctx.llm, ctx.runner)
+            if more is not None:
+                extra = more.cases
+                await _remember_cases(ctx, key, more.cases, "synthesised")
         return _with_extra_cases(extracted, extra), "extracted"
     if cached is not None:
         entrypoint = select_entrypoint(functions, cached[0])
@@ -1730,6 +1738,10 @@ async def _resolve_test_suite(
         await _remember_cases(ctx, key, tests.cases, "synthesised")
         return tests, "synthesised"
     return None, "none"
+
+
+#: Below this many cases a suite read from worked examples is topped up.
+_MIN_SUITE_CASES: Final = 4
 
 
 async def _cached_cases(
