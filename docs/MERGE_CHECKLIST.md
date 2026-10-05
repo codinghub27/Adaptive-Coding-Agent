@@ -41,8 +41,8 @@ none of rounds 1 to 3 has been ported to it.
    with quota, with the stack and the API up:
 
    ```powershell
-   .env\Scripts\python.exe -m eval.behavior.live_scenarios --runs 5 --pace 12 --base-url http://127.0.0.1:8000
-   .env\Scripts\python.exe -m eval.behavior.replay --pace 10 --base-url http://127.0.0.1:8000
+   .\venv\Scripts\python.exe -m eval.behavior.live_scenarios --runs 5 --pace 12 --base-url http://127.0.0.1:8000
+   .\venv\Scripts\python.exe -m eval.behavior.replay --pace 10 --base-url http://127.0.0.1:8000
    ```
 
    The first exits 1 if any check is below the bar. Do not merge on the
