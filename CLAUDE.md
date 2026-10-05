@@ -90,9 +90,10 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
 
 ## How a turn actually works (corrected 2026-10-05, see `docs/AUDIT_REPORT.md`)
 
-- **Graph order:** `understand_input → classify_intent → load_learner_profile →
+- **Graph order:** `understand_input → load_learner_profile → classify_intent →
   retrieve_knowledge → plan_teaching → route → agent → execute_code → verify →
-  final_response → update_learner_model`. Retrieval runs before planning.
+  final_response → update_learner_model`. The conversation is loaded BEFORE
+  classification; retrieval runs before planning.
 - **Memory is the conversation store, not a LangGraph checkpointer.** The graph
   state is one frozen object per turn. `load_learner_profile` reads the profile,
   last messages, active problem, pending check and session progress from
@@ -104,13 +105,35 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
 - **User code first.** A turn that carries the learner's code and no statement
   is a debug turn whatever the classifier called it. Pasted Python is made
   runnable once, in `understand_input` (`app/input/snippet.py`, `ast` only).
-- **The classifier sees one message.** Follow-up routing is decided by
-  deterministic rules after it (`_problem_update`, `select_route`). A study plan
-  needs an explicit ask in the text.
-- **Showing code.** A reference solution is shown only after it passes in the
-  sandbox. A debug patch is shown when it passed, or when the learner's code
-  failed and the patch then ran cleanly, labelled "executed, not verified".
-  Challenge mode and a client `assistance_cap` always win.
+- **The classifier reads the conversation.** It is shown the active subject,
+  the one before it, the pending question, the learner's skill and the last six
+  messages (`nodes.classifier_context`, sent as delimited data), and returns
+  `refers_to_previous`, `earlier_subject`, `asks_for_code` and
+  `about_conversation` with its label. Those flags are set only on a confident
+  model answer. The phrase lists (`explicit_ask_phrase`, the meta regexes, the
+  corpus-vocabulary check) are the FALLBACK for a rule label, the keyword
+  heuristic or an unsure answer -- do not add phrases to them to fix a
+  misrouted turn; fix what the classifier is shown or told.
+- **Guards that stay deterministic** because they are policy, not reading:
+  Challenge mode, a client `assistance_cap`, an explicit study-plan ask,
+  user-code-first, and `planner.wants_the_code` (the model's "this asks for the
+  code" is believed only for a short message with no learning ask in it -- a
+  wrong yes hands a beginner the answer).
+- **Showing code (owner decisions A-10, A-15).** Outside Challenge mode an
+  explicit ask for the code is never refused. Verification is always attempted;
+  only a sandbox pass may be called checked. Code that could not be verified is
+  still shown, labelled "Not verified in sandbox" with the reason. A debug
+  patch that ran cleanly after the learner's code failed is "executed, not
+  verified". With no sandbox the debugger runs its `ast` checks and ONE model
+  call, labelled "Not executed". An ask for the code with no fix to show
+  returns the learner's own code. Never invent a verdict.
+- **Tests are deterministic where they can be.** A statement's own examples are
+  always in the suite. Sandbox-validated cases are cached per learner and
+  subject (`test_suite_cache`, `app/memory/test_suites.py`) and reused.
+- **Infra.** `docker compose up -d` starts Postgres and Qdrant with
+  `restart: unless-stopped`. If the server logs "knowledge dense retrieval
+  failed: ResponseHandlingException (ConnectError)", Qdrant is not running; the
+  turn continues on keyword search only.
 
 ---
 

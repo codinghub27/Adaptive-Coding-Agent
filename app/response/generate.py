@@ -161,7 +161,7 @@ _PATCH_RAN_CLEAN_NOTE = (
 
 _NOTHING_TO_FIX_NOTE = (
     "You asked for the corrected code: yours passed every test case in the sandbox, so "
-    "there was nothing to fix. It is shown above, tidied and commented."
+    "there was nothing to fix. Your code is shown above."
 )
 _YOUR_CODE_TITLE = "Your code"
 

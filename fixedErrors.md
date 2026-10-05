@@ -319,3 +319,20 @@ Frontend validation: don't allow debug submission without test examples
 - **Fix:** see `docs/AUDIT_REPORT.md`, findings A-01 to A-07, A-13, A-14.
 - **Verification:** `tests/graph/test_code_first_regression.py`, `tests/input/test_snippet.py`; full suite 1867 passed, 2 skipped; pyright strict 0 errors; live session on Groq with the Docker sandbox (working code: 6/6 and "nothing to fix"; broken code: `left -= 1` named, fix verified 6/6).
 - **Status:** fixed
+
+
+### ERR-009 - "knowledge dense retrieval failed: ResponseHandlingException" on every turn
+- **Location:** `docker-compose.yml`, `app/knowledge/retrieve.py`
+- **Severity:** high
+- **Symptom:** After each question the server logged `knowledge dense retrieval failed: ResponseHandlingException`. Answers still came back.
+- **Root cause:** Qdrant was not running. The container had exited with code 255 when Docker Desktop stopped and compose had no restart policy, so it stayed down. `qdrant-client` wraps a refused connection in `ResponseHandlingException`; the retriever caught it, logged the type and carried on with keyword (BM25) search only, so retrieval quality dropped silently for the whole session.
+- **Fix:** `restart: unless-stopped` on Postgres and Qdrant. The log line now names the underlying cause, for example `(ConnectError)`, and says the turn continues on keyword search. `GET /health` reports `qdrant` status.
+- **Verification:** with the containers up, 300 points in `dsa_knowledge`, queries return in under 10 ms; no occurrence of the warning across the live replay and all eight live scenarios.
+- **Status:** fixed
+
+### ERR-010 - Follow-ups read without the conversation; explicit code asks refused; no help without a sandbox
+- **Location:** `app/graph/build.py`, `app/graph/nodes.py`, `app/graph/routing.py`, `app/input/intent.py`, `app/agents/planner.py`, `app/execution/synth.py`, `app/graph/subgraphs/debug.py`, `app/agents/debugger.py`, `app/memory/test_suites.py`
+- **Severity:** critical
+- **Symptom / root cause / fix:** `docs/AUDIT_REPORT.md` section 10 (A-08, A-10, A-15, F1 to F5, A-16 to A-20).
+- **Verification:** `tests/graph/test_conversation_aware_routing.py`; full suite 1885 passed, 2 skipped; pyright strict 0 errors; `eval.behavior.replay` live 126/130 -> 130/130; eight live scenarios in `docs/LIVE_BEHAVIOR.md`.
+- **Status:** fixed

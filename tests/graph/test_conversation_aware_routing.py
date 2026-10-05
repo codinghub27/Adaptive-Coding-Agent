@@ -237,6 +237,9 @@ def test_the_models_code_ask_is_believed_only_for_a_plain_demand() -> None:
     assert not wants_the_code(asked, "Can you help me solve Two Sum? I don't understand it.")
     assert not wants_the_code(asked, "how to solve this prob")
     assert not wants_the_code(asked, "give me step by step to solve the valid parenthesis problem")
+    # Too long for the model's yes alone, but a listed phrase still counts.
+    long_ask = "please fix it and give me the corrected code, I have been at this bug all day long"
+    assert wants_the_code(_intent(Intent.CODE_DEBUG, asks_for_code=True), long_ask, fix=True)
     # The model said no: the phrase list does not overrule it.
     assert not wants_the_code(_intent(asks_for_code=False), "don't give me the code yet")
     # No reading from the model: the phrase lists are the fallback.

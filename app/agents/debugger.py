@@ -560,22 +560,6 @@ def _parse_inferred_approach(content: str) -> str | None:
     return _none_if_blank(parsed.inferred_approach)
 
 
-def _parse_bug_explanation(content: str) -> tuple[str | None, list[int]]:
-    json_str = extract_json_object(content)
-    if json_str is None:
-        return None, []
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError:
-        return None, []
-    try:
-        parsed = _BugExplanationOutput.model_validate(data)
-    except ValidationError:
-        return None, []
-    explanation = _none_if_blank(parsed.bug_explanation)
-    return explanation, (list(parsed.used) if explanation is not None else [])
-
-
 def _parse_patched_code(content: str) -> str | None:
     json_str = extract_json_object(content)
     if json_str is None:
@@ -727,13 +711,19 @@ async def read_code(
     llm: LLMClient,
     references: Sequence[Reference] = (),
     failure_established: bool = True,
+    inferred_approach: str | None = None,
+    name_approach: bool = True,
 ) -> CodeReading:
     """ONE LLM call that both names the learner's approach and explains the
     bug (or reports that none was found). Replaces the separate
     `infer_approach` + `explain_bug` pair on a debug turn: same content, one
-    round trip less. Never raises."""
+    round trip less. `name_approach=False` asks for the explanation alone
+    (`explain_bug`). Never raises."""
     context = _debug_context_block(
-        static_findings=static_findings, failing_case=failing_case, bug_location=bug_location
+        static_findings=static_findings,
+        failing_case=failing_case,
+        bug_location=bug_location,
+        inferred_approach=inferred_approach,
     )
     parts = [_user_input_block(problem)]
     if context:
@@ -741,13 +731,19 @@ async def read_code(
     notes = references_block(references)
     if notes:
         parts.append(notes)
-    system = (_EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM) + _APPROACH_ADDENDUM
+    system = _EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM
+    if name_approach:
+        system += _APPROACH_ADDENDUM
     messages = [
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content="\n".join(parts)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=600)
+        result = await llm.chat(
+            messages,
+            temperature=0.2,
+            max_tokens=600 if name_approach else 500,
+        )
     except LLMError:
         return CodeReading()
     json_str = extract_json_object(result.content)
@@ -787,34 +783,18 @@ async def explain_bug(
     the debug route may cite (ADAPTIVE-upgrade P3). Never raises: degrades to
     `(None, [])` on `LLMError` or an unparseable response.
     """
-    context = _debug_context_block(
+    reading = await read_code(
+        problem,
         static_findings=static_findings,
         failing_case=failing_case,
         bug_location=bug_location,
+        llm=llm,
+        references=references,
+        failure_established=failure_established,
         inferred_approach=inferred_approach,
+        name_approach=False,
     )
-    parts = [_user_input_block(problem)]
-    if context:
-        parts.append(context)
-    notes = references_block(references)
-    if notes:
-        parts.append(notes)
-    messages = [
-        ChatMessage(
-            role="system", content=_EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM
-        ),
-        ChatMessage(role="user", content="\n".join(parts)),
-    ]
-    try:
-        result = await llm.chat(
-            messages,
-            temperature=0.2,
-            max_tokens=500,
-        )
-    except LLMError:
-        return None, []
-    explanation, used = _parse_bug_explanation(result.content)
-    return explanation, cited(references, used)
+    return reading.explanation, reading.citations
 
 
 _PATCH_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (

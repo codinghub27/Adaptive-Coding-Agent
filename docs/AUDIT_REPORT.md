@@ -179,14 +179,14 @@ A finding added while fixing:
 | A-05 | fixed | `5a12e1a`, wired in `f4ea2ac` | New `app/input/snippet.py`, applied once in `understand_input`. `ast` only |
 | A-06 | fixed | `f4ea2ac` | A granted reveal with nothing verified renders the note alone |
 | A-07 | fixed | `2166207` | No fallback to `payload.response` when a hint card shows the text |
-| A-08 | deferred | | See section 7 |
+| A-08 | fixed (round 2) | `7009f51`, `c69e1b7` | See section 10 |
 | A-09 | won't fix | | Owner decision, section 1 |
-| A-10 | deferred | | See section 7 |
+| A-10 | fixed (round 2, owner decision) | `7009f51` | See section 10 |
 | A-11 | fixed | this commit | Run instructions corrected |
 | A-12 | fixed | `957684d` | |
 | A-13 | fixed | `06bc066` | "failed in the sandbox before any test case ran", with the reason |
 | A-14 | fixed | `06bc066` | `_READ_SYSTEM` prompt when no failure is established; no explanation call when the code passed |
-| A-15 | deferred | | See section 7 |
+| A-15 | fixed (round 2, owner decision) | `7009f51` | See section 10 |
 
 Also changed: a debug turn's patch is shown when the learner's code failed in
 the sandbox and the patch then ran to completion with no test cases to judge
@@ -196,6 +196,8 @@ the same title. "what's its name" is recognised as a question about the
 conversation.
 
 ## 7. Deferred, and where the docs disagree
+
+_Superseded on 2026-10-05: A-08, A-10 and A-15 were decided by the owner and done in round 2 (section 10). The text below is the state after round 1._
 
 **A-08, classifier context.** Giving the classifier the conversation means
 reordering two graph nodes and changing the prompt that every routing eval was
@@ -275,3 +277,121 @@ the browser UI (the A-07 change is a one-line guard and has no JS test).
 - `repair_snippet` handles Python only. Other languages pass through untouched.
 - The widened ask phrases are still fixed lists. Phrasings outside them fall
   back to the classifier's label (A-08).
+
+## 10. Round 2 (2026-10-05)
+
+### Git state before the work
+
+`git fetch origin` moved nothing: `git log main..origin/main` is empty, and
+`origin/main` was last pushed on 2026-10-03. Local `main` is 8 commits ahead of
+`origin/main`. `main..experimental` at the start of round 2 was 9 commits: one
+from `fix/conversation-memory-tutor` (`09824d2`, the work that was uncommitted
+when round 1 began) and eight from round 1 (`957684d` to `19c1b23`).
+
+### Owner decisions applied
+
+| Decision | What changed | Commit |
+|---|---|---|
+| A-10: never refuse an explicit code ask | Outside Challenge mode the ask is honoured on any turn. `verified_reference` always tries to verify and returns the candidate either way; an unverified one is shown under "**Not verified in sandbox**" with the reason. AD-4 revised in `docs/features/ADAPTIVE-upgrade.md`, `CLAUDE.md` updated | `7009f51` |
+| A-15: static review with no sandbox | `ast` checks plus ONE model call that reads the code, labelled "Not executed". No patch, no verdict. Nine pinned tests updated | `7009f51` |
+| A-09: no checkpointer | Unchanged | |
+
+### Fixes
+
+| Fix | What changed | Commit |
+|---|---|---|
+| F1 (A-08) | Graph order is now `understand_input -> load_learner_profile -> classify_intent`. The classifier is shown the active subject, the earlier one, the pending question, the learner's skill on the topic and the last six messages, and returns `refers_to_previous`, `earlier_subject`, `asks_for_code`, `about_conversation` with its label. Those flags decide follow-up, meta, subject switch and code ask. The phrase lists from `f4ea2ac` run only when the model gave no confident reading | `7009f51`, `c69e1b7` |
+| F2 | An ask for the code on a stored code subject returns code: the fix when a bug was proven, otherwise the learner's own code, tidied and commented by one model call and re-run in the sandbox. If the tidied version does not hold up, their code is returned as shared | `7009f51` |
+| F3 | The statement's examples are always in the suite. Synthesis stays at temperature 0 with one retry. Sandbox-validated cases are cached in Postgres (`test_suite_cache`, migration `c6d7e8f9a0b1`), keyed by problem title when the statement leads with one, else by a hash, and reused. An attempt pasted for the active problem is judged by that problem's examples | `7009f51` |
+| F4 | The approach and the bug explanation are one call instead of two. A cached suite removes the synthesis call on later turns | `7009f51` |
+| F5 | `CodeBlock.line_offset` records the lines the snippet repair put above the learner's code; the debugger reports line numbers the learner typed | `7009f51` |
+
+Deterministic guards kept, because they are policy: Challenge mode, the client
+assistance cap, the explicit study-plan ask, user-code-first, and
+`planner.wants_the_code`.
+
+### Findings made during round 2
+
+| ID | Sev | Root cause | Fix |
+|---|---|---|---|
+| A-16 | high | The Qdrant container was down for the whole of the owner's session (`Exited (255)` when Docker Desktop stopped; compose had no restart policy). Every turn logged "knowledge dense retrieval failed: ResponseHandlingException" and ran on keyword search only | `restart: unless-stopped` on both services; the log now names the underlying cause and says retrieval continues on keywords. `1acc9dd` |
+| A-17 | high | Since round 1 a follow-up on a code subject carries the stored code, and "this turn has code" blocked grading and meta questions. This was the cause of the two failing examples in the baseline replay | `routing._own_code`. `7009f51` |
+| A-18 | high | The model returned `asks_for_code: true` for a beginner's "help me solve ... I don't understand how to start", and for "give me step by step" one run in two | `planner.wants_the_code`: believed only for a short message with no learning ask. `7009f51`, `c69e1b7` |
+| A-19 | high | Session progress was stored with a computed field that the next read rejected, so the WHOLE record read back empty | `conversation.progress_payload`. `7009f51` |
+| A-20 | medium | `tests/auth/test_tokens.py::test_tampered_signature_is_invalid` checked the last character of the signature but replaced the first, so it failed about one run in 64 | Corrected. `7009f51` |
+
+### Routing accuracy: `eval.behavior.replay`, live
+
+| | Checks | Examples |
+|---|---|---|
+| Before round 2 (`19c1b23`) | 126 / 130 | 3 / 5 |
+| After the first F1 cut | 115 / 130 | 2 / 5 |
+| After round 2 (`c69e1b7`) | 130 / 130 | 5 / 5 |
+
+Before: `adaptive_002` and `adaptive_004` each failed two checks on turn 2, the
+learner's reply to the tutor's question went to the explain agent instead of
+being graded (A-17). The first cut of F1 made it worse: with A-10 applied, the
+model's `asks_for_code` handed the beginner in `adaptive_001` the full solution
+on turn 1 (A-18). The replay is what caught that.
+
+### Latency
+
+Per-node timing from `/chat/stream`; one run each, same messages.
+
+| Turn | Before: calls, time | After: calls, time |
+|---|---|---|
+| Tutor turn 1 (Two Sum, beginner) | 2, 2.9 s | 2, 4.3 s to 34.6 s |
+| Tutor turn 2 (answer graded) | 2, 3.5 s | 1 to 2, 2.4 s to 8.1 s |
+| Tutor turn 3 ("I don't know") | 1, 1.2 s | 1, 2.0 s to 17.5 s |
+| Debug turn (KeyError) | 5, 10.2 s | 4, 10.2 s to 27.0 s |
+| Debug follow-up, suite cached | not possible | 3, 6.9 s to 33.2 s |
+| Code reveal (reference, verified) | 3 | 3 to 4, 12 s to 60 s |
+
+Model calls are what the code controls, and they went down or stayed equal: a
+tutor turn is 1 to 2 calls (target 3 or fewer: met), a debug turn went from 5
+to 4, and to 3 once the suite is cached. Wall-clock time did NOT improve and
+cannot be read as a regression either: the same single classifier call took
+0.8 s in the morning baseline and up to 16.9 s in the afternoon, after several
+hundred calls against the same Groq keys. Where a turn ran unthrottled the
+target holds (tutor turns of 2 to 5 s in scenarios 1, 6 and 7); under
+throttling it does not. A code reveal is the slow turn: reference plus up to
+one repair call plus two sandbox runs.
+
+Not done under F4: classification and relation detection were already one call
+after F1 (the relation comes from the classifier's flags). The classifier
+prompt grew by about 250 tokens.
+
+### Live behaviour
+
+All eight scenarios pass. Transcripts, per-behaviour scoring and the earlier
+failing runs are in `docs/LIVE_BEHAVIOR.md`.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `pytest tests` (Postgres, Qdrant up) | 1885 passed, 2 skipped (opt-in live LLM) |
+| `pyright app tests` (strict) | 0 errors |
+| `ruff check .`, `ruff format --check .` | clean |
+| `alembic upgrade head`, `alembic check` | applied, no pending operations |
+| code-review on `19c1b23..c69e1b7` | 3 findings, all fixed in the commit that follows it: a long message with a listed phrase lost its code ask; the "nothing to fix" note could contradict the label above it; `explain_bug` duplicated `read_code` |
+
+The three review fixes landed after the live scenarios were run. They change `wants_the_code` only for a message that contains a listed phrase, which none of the scenario messages do, so the scenarios were not re-run.
+
+### Remaining risks after round 2
+
+- The classifier's flags are a model's reading and vary between runs on the
+  same message. `wants_the_code` bounds the costly direction (a false "asks for
+  the code"). A false "does not refer to the previous subject" still drops the
+  problem for that turn, except for "I don't know" and replies to the tutor.
+- Latency depends on the provider's throttling far more than on this code.
+- Tree and linked-list problems cannot be run: no test suite is built for code
+  that takes a node (scenario 4 is `inconclusive`).
+- The suite cache is per learner, deliberately, so a first-time learner on a
+  problem without examples still depends on test synthesis succeeding.
+- "Not verified in sandbox" code can be wrong. The label and the real
+  Execution line are the only protection; that is the owner's decision.
+- One earlier subject is remembered, not a history of them.
+- Scenario 8: the profile carries across sessions and is cited, but the level
+  of help did not change because no skill crossed a threshold.
+- Round 2 is two large commits rather than one per fix.

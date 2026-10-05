@@ -415,6 +415,25 @@ passes; `pytest` 1658 passed, 2 skipped.
 **Target (stated first):** full solution reachable per mode; hint_safety 100%;
 0 truncated rungs; 0 cross-topic rungs; revealed code always sandbox-verified.
 
+**AD-4 REVISED 2026-10-05 (owner decision A-10, `docs/AUDIT_REPORT.md`).**
+`docs/target_behavior.md` section 9 wins over the original AD-4 below:
+
+- **Guidance, Balanced:** an explicit ask for the code is honoured on ANY turn,
+  including the first. No ceiling, no hint count, no attempt required.
+- **Challenge:** unchanged (ceiling + explicit ask + sandbox-verified attempt).
+  It is the learner's own "don't give me the answer".
+- **What is revealed:** still only `synth.verified_reference`, and
+  verification is still always attempted. A reference that passes is shown as
+  checked. One that cannot be verified (no sandbox, no usable cases, or it
+  failed them) is STILL shown, under "**Not verified in sandbox**" with the
+  reason, and its real sandbox result (if it ran) is on the Execution line.
+  Only "the model returned no usable code" shows nothing.
+- An explicit ask is recognised by the classifier's `asks_for_code` when it
+  read the turn, guarded by `planner.wants_the_code`; the phrase list is the
+  fallback.
+
+The original text is kept for the record:
+
 **AD-4: escalation policy by teaching mode.** The ceiling and an explicit ask
 are required in every mode; what counts as effort differs:
 - **Guidance:** ceiling + explicit ask.

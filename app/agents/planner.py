@@ -196,12 +196,18 @@ def wants_the_code(intent: IntentResult, question: str | None, *, fix: bool = Fa
     the keyword fallback, an unsure answer) the fixed phrase lists decide.
     """
     text = (question or "").lower()
+    listed = asks_for_fix(text) if fix else explicit_ask_phrase(text)
     if intent.asks_for_code is None:
-        return asks_for_fix(text) if fix else explicit_ask_phrase(text)
+        return listed
     if not intent.asks_for_code:
         return False
     short = len(text.split()) <= _MAX_DEMAND_WORDS
-    return short and _LEARNING_ASK_RE.search(text) is None
+    if short and _LEARNING_ASK_RE.search(text) is None:
+        return True
+    # The model said yes but the message is long or carries a learning ask, so
+    # its "yes" alone is not enough. A fixed phrase in it still is: "please fix
+    # it and give me the corrected code, I have been stuck on this all day".
+    return listed
 
 
 def _explicit_solution_request(

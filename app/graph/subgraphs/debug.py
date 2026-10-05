@@ -286,9 +286,10 @@ _PRESENT_RAN: Final = (
     "Executed in sandbox, not verified: it ran cleanly, but there were no test cases to "
     "check its output against."
 )
-_PRESENT_AS_SHARED: Final = (
-    "This is your code as you shared it (made runnable). The tidied version did not hold "
-    "up in the sandbox, so it is not shown."
+_PRESENT_AS_SHARED: Final = "This is your code as you shared it (made runnable)."
+_PRESENT_TIDY_REJECTED: Final = (
+    "This is your code as you shared it (made runnable). A tidied, commented version was "
+    "written too, but it did not hold up in the sandbox, so it is not shown."
 )
 
 
@@ -322,6 +323,7 @@ async def _present(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     elif initial.category == "no_tests" and verdict.category == "no_tests":
         label = _PRESENT_RAN
     else:
+        update["presented_label"] = _PRESENT_TIDY_REJECTED
         return update
     update["presented_code"] = annotated.code
     update["presented_label"] = label
