@@ -129,7 +129,10 @@ function buildMessage(payload, steps) {
     id: `msg_${crypto.randomUUID()}`,
     role: "agent",
     createdAt: new Date().toISOString(),
-    content: withReferences(answerBody(generated, Boolean(hint), Boolean(question)) || payload.response, generated?.citations),
+    // No fallback to `payload.response` when a hint card is shown: on a turn
+    // whose whole answer is the hint, that text IS the hint, and it rendered
+    // twice (once here, once in the card).
+    content: withReferences(answerBody(generated, Boolean(hint), Boolean(question)) || (hint ? "" : payload.response), generated?.citations),
     concept: buildConcept(payload),
     work: steps.map(({ name, node, durationMs }) => ({ name, node, durationMs, status: "completed" })),
     hint,
