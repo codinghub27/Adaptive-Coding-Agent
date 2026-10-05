@@ -9,7 +9,7 @@ langchain-tavily
 pyjwt
 bcrypt
 python-multipart
-sqlalchemy
+sqlalchemy[asyncio]>=2.0,<2.1
 alembic
 psycopg[binary]
 pydantic
