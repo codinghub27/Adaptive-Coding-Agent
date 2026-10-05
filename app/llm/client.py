@@ -5,6 +5,7 @@ LangChain chat-model integration. Everything else depends on the
 `app.llm.base.LLMClient` protocol.
 """
 
+import asyncio
 import base64
 import logging
 import time
@@ -383,8 +384,30 @@ def _provider_error(provider: str, kind: str, exc: Exception) -> LLMError:
     """The `LLMError` (or `LLMRateLimitError`) to raise for a failed call."""
     message = f"{provider} {kind} call failed: {type(exc).__name__}"
     if is_rate_limit(exc):
-        return LLMRateLimitError(message)
+        return LLMRateLimitError(message, retry_after_s=_retry_after_s(exc))
     return LLMError(message)
+
+
+def _retry_after_s(exc: BaseException) -> float | None:
+    """The provider's `retry-after` in seconds, if the failed response carried
+    one. Only a number is ever taken from the response."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    for _ in range(_MAX_CAUSE_DEPTH):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        headers = getattr(getattr(current, "response", None), "headers", None)
+        value: object = headers.get("retry-after") if headers is not None else None
+        if isinstance(value, str):
+            try:
+                seconds = float(value)
+            except ValueError:
+                seconds = -1.0
+            if 0 <= seconds < 86_400:
+                return seconds
+        current = current.__cause__ or current.__context__
+    return None
 
 
 class LangChainLLMClient:
@@ -506,7 +529,14 @@ class LangChainLLMClient:
 
 #: How long the failover cursor stays on a fallback before re-trying the first
 #: credential (Groq's limits are per minute as well as per day).
-DEFAULT_REWIND_AFTER_S: Final = 300.0
+#: Was 300 s. A per-minute token window has reset long before that, and
+#: re-probing an exhausted key costs one ~60 ms 429, while every turn spent
+#: on the last-resort provider costs tens of seconds (measured: a run that
+#: fell through spent ~90% of its time there).
+DEFAULT_REWIND_AFTER_S: Final = 60.0
+#: The longest `retry-after` worth simply waiting out on the primary
+#: provider before giving the turn to a slower fallback model.
+DEFAULT_MAX_WAIT_S: Final = 15.0
 
 
 class FailoverLLMClient:
@@ -536,9 +566,20 @@ class FailoverLLMClient:
         *,
         rewind_after_s: float = DEFAULT_REWIND_AFTER_S,
         clock: Callable[[], float] = time.monotonic,
+        primary_count: int = 0,
+        max_wait_s: float = DEFAULT_MAX_WAIT_S,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if not clients:
             raise ValueError("FailoverLLMClient requires at least one client")
+        #: The first `primary_count` clients are credentials for the PRIMARY
+        #: model. When every one of them is rate limited and the shortest
+        #: `retry-after` is at most `max_wait_s`, that wait is taken once and
+        #: the call retried there, instead of handing the turn to the fallback
+        #: (a different, slower model). 0 keeps the plain behaviour.
+        self._primary_count = min(max(primary_count, 0), len(clients))
+        self._max_wait_s = max_wait_s
+        self._sleep = sleep
         self._clients = list(clients)
         self._index = 0
         self._rewind_after_s = rewind_after_s
@@ -566,11 +607,25 @@ class FailoverLLMClient:
             self._advanced_at = None
         index = self._index
         start = index
+        waits: dict[int, float] = {}
+        waited = False
         while index < len(self._clients):
             try:
                 result = await call(self._clients[index])
             except LLMRateLimitError as exc:
                 last = exc
+                if index < self._primary_count and exc.retry_after_s is not None:
+                    waits[index] = exc.retry_after_s
+                if index + 1 == self._primary_count and waits and not waited:
+                    soonest = min(waits, key=lambda i: waits[i])
+                    if waits[soonest] <= self._max_wait_s:
+                        # Every primary credential is throttled, one of them
+                        # only briefly: wait it out and stay on the main model.
+                        waited = True
+                        await self._sleep(waits[soonest] + 0.25)
+                        index = soonest
+                        waits = {}
+                        continue
                 index += 1
                 # Stay on the last client once exhausted rather than rewinding
                 # to a key already known to be limited.
@@ -763,7 +818,10 @@ def get_llm_client(
         _build_client(settings, provider, api_key, tracer, index, sdk_retries=sdk_retries)
         for index, (provider, api_key) in enumerate(chain)
     ]
-    main: LLMClient = clients[0] if len(clients) == 1 else FailoverLLMClient(clients)
+    primary_count = sum(1 for provider, _ in chain if provider == chain[0][0])
+    main: LLMClient = (
+        clients[0] if len(clients) == 1 else FailoverLLMClient(clients, primary_count=primary_count)
+    )
     groq_keys = settings.groq_api_keys
     if not (settings.llm_classifier_model and small_task_prompts and groq_keys):
         return main

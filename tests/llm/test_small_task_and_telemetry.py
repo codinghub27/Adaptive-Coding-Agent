@@ -1,14 +1,14 @@
 """The optional classifier model, SDK retries under failover, and HTTP telemetry."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import httpx
 from langchain_groq import ChatGroq
 
 from app.config import Settings
-from app.llm.base import ChatMessage
+from app.llm.base import ChatMessage, ChatResult, LLMRateLimitError
 from app.llm.client import (
     FailoverLLMClient,
     LangChainLLMClient,
@@ -125,3 +125,69 @@ async def test_telemetry_records_metadata_and_never_the_key_or_the_body(tmp_path
     assert isinstance(record["seconds"], float)
     assert "SECRET" not in text
     assert "set-cookie" not in text
+
+
+class _Flaky:
+    """Rate limited `limited` times with the given `retry-after`, then answers."""
+
+    def __init__(self, name: str, *, limited: int, retry_after: float | None) -> None:
+        self.name = name
+        self.limited = limited
+        self.retry_after = retry_after
+        self.calls = 0
+
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        del messages, temperature, max_tokens
+        self.calls += 1
+        if self.calls <= self.limited:
+            raise LLMRateLimitError("groq chat call failed", retry_after_s=self.retry_after)
+        return ChatResult(content=self.name, provider="fake", model="fake")
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        raise NotImplementedError
+
+    async def vision(
+        self, image: bytes, prompt: str, *, mime_type: str = "image/png"
+    ) -> ChatResult:
+        raise NotImplementedError
+
+
+async def test_a_short_throttle_on_every_primary_key_is_waited_out() -> None:
+    """Staying on the main model for a few seconds beats handing the turn to a
+    slower fallback model (measured: a run that fell through spent most of its
+    time there)."""
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    key0 = _Flaky("key0", limited=1, retry_after=30.0)
+    key1 = _Flaky("key1", limited=1, retry_after=2.0)
+    fallback = _Flaky("fallback", limited=0, retry_after=None)
+    client = FailoverLLMClient([key0, key1, fallback], primary_count=2, sleep=sleep)
+
+    result = await client.chat(_ask("x"))
+    assert result.content == "key1"  # the key with the shortest wait, after waiting
+    assert slept == [2.25]
+    assert fallback.calls == 0
+
+
+async def test_a_long_throttle_goes_to_the_fallback_without_waiting() -> None:
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    key0 = _Flaky("key0", limited=9, retry_after=471.0)
+    key1 = _Flaky("key1", limited=9, retry_after=261.0)
+    fallback = _Flaky("fallback", limited=0, retry_after=None)
+    client = FailoverLLMClient([key0, key1, fallback], primary_count=2, sleep=sleep)
+
+    assert (await client.chat(_ask("x"))).content == "fallback"
+    assert slept == []

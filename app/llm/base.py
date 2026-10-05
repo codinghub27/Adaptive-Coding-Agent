@@ -53,7 +53,14 @@ class LLMRateLimitError(LLMError):
     Every other failure stays an `LLMError`: retrying it on another key would
     just repeat it. The same secret-safety rule applies -- the message carries
     only the provider name and the underlying exception's class name.
+
+    `retry_after_s` is the provider's own `retry-after` (seconds), when it
+    sent one: a number, never text from the response.
     """
+
+    def __init__(self, message: str, *, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
 
 @runtime_checkable
