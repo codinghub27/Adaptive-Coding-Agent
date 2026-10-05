@@ -218,7 +218,10 @@ def _issue_token(
         "iat": int(issued_at.timestamp()),
         "exp": int(expires_at.timestamp()),
     }
-    token = jwt.encode(
+    # PyJWT types `key` with classes from the optional `cryptography` package.
+    # Where that is not installed (CI; this project only signs with HS256 and a
+    # string secret) pyright sees the union as partially unknown.
+    token = jwt.encode(  # pyright: ignore[reportUnknownMemberType]
         payload,
         settings.jwt_secret_key.get_secret_value(),
         algorithm=settings.jwt_algorithm,
@@ -269,7 +272,7 @@ def decode_token(token: str, *, expected_type: TokenType, settings: Settings) ->
     spuriously rejected.
     """
     try:
-        payload = jwt.decode(
+        payload = jwt.decode(  # pyright: ignore[reportUnknownMemberType]
             token,
             settings.jwt_secret_key.get_secret_value(),
             algorithms=[settings.jwt_algorithm],

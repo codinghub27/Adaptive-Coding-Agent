@@ -318,7 +318,10 @@ def test_pyjwt_encode_sanity_reference(make_settings: Callable[..., Settings]) -
     settings = make_settings()
     payload = _valid_payload(settings)
     secret = settings.jwt_secret_key.get_secret_value()
-    reference = pyjwt.encode(payload, secret, algorithm="HS256")
+    # See `app.auth.security`: the key type is partially unknown without `cryptography`.
+    reference = pyjwt.encode(  # pyright: ignore[reportUnknownMemberType]
+        payload, secret, algorithm="HS256"
+    )
     ours = _build_token(
         {"alg": "HS256", "typ": "JWT"}, payload, secret=secret.encode("utf-8"), alg="HS256"
     )
