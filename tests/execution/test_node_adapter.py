@@ -195,3 +195,19 @@ async def test_a_wrong_tree_solution_gets_a_real_fail_verdict(runner: SandboxRun
     passed, total, status = await _run(runner, _MAX_PATH_WRONG, "maxPathSum", cases)
     assert (total, status) == (3, "fail")
     assert passed == 2
+
+
+def test_a_named_curated_tree_problem_supplies_its_own_examples() -> None:
+    """Scenario 4: the learner names the problem and pastes only code. The
+    curated statement's examples (with `null`) become the suite, no model."""
+    from app.tutoring.bank import curated_problem_for_text
+
+    curated = curated_problem_for_text("I'm solving Binary Tree Maximum Path Sum.")
+    assert curated is not None
+    problem = StructuredInput(
+        source="text", problem=curated.statement, code=[CodeBlock(content=_MAX_PATH_WRONG)]
+    )
+    suite = extract_test_suite(problem)
+    assert suite is not None
+    assert suite.entrypoint == "maxPathSum"
+    assert [case.expected for case in suite.cases][:2] == [6, 42]

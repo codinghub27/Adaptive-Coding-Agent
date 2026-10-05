@@ -1701,6 +1701,17 @@ async def _resolve_test_suite(
     ctx = runtime.context
     inp = state.structured_input
     extracted = extract_test_suite(inp)
+    if extracted is None and inp is not None and inp.code:
+        # The learner NAMED a curated problem ("I'm solving Binary Tree Maximum
+        # Path Sum") without pasting it: its curated statement carries worked
+        # examples, so the suite is read from those -- no model call, and the
+        # same cases every time. Measured live: this turn depended on test
+        # synthesis succeeding and ended "no test cases" three runs in four.
+        named = curated_problem_for_text(
+            "\n".join(part for part in (inp.problem, inp.question) if part)
+        )
+        if named is not None:
+            extracted = extract_test_suite(inp.model_copy(update={"problem": named.statement}))
     key = subject_key(inp)
     cached = await _cached_cases(ctx, key)
     functions = top_level_functions(extract_learner_code(inp))
