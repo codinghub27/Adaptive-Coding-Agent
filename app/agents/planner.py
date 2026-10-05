@@ -55,6 +55,7 @@ __all__ = [
     "ProblemAnalysis",
     "TopicSource",
     "analyze_problem",
+    "asks_for_fix",
     "build_plan",
     "clamp_assistance",
     "difficulty_for",
@@ -123,14 +124,51 @@ _EXPLICIT_ASK_RE: Final = re.compile(
     r"the answer|"
     r"solve (?:it|this) for me|"
     r"i give up|"
-    r"tell me the answer"
+    r"tell me the answer|"
+    # "give python code", "give correct code of this", "show me the working
+    # solution": up to two describing words between the verb and the noun --
+    # but never a hint/explanation ask, and never the learner's OWN code
+    # ("show my code", "review this code").
+    r"(?:give|show|send|provide)(?: me)?(?: the| a)?"
+    r"(?: (?!hint|nudge|clue|explain|review|test|my|this|that|your|how|where|why|what|"
+    r"when|which|if|whether)\w+){0,2}"
+    r" (?:solution|answer|code|implementation)|"
+    # "i asked for python code", "i want the full code", "i need the solution".
+    r"i (?:asked|am asking|want|need)(?: for)?(?: the| a)?"
+    r"(?: (?!hint|nudge|clue|explain|review|test|help|to|my|this|that|your|how|where|why|"
+    r"what|when|which|if|whether)\w+){0,2}"
+    r" (?:solution|answer|code|implementation)"
     r")\b"
+)
+
+#: "fix this code", "correct it", "where is the bug": on a debugging turn the
+#: corrected implementation is part of what was asked for (target behaviour
+#: section 9, case 5). A fixed phrase list, like `_EXPLICIT_ASK_RE`.
+_FIX_ASK_RE: Final = re.compile(
+    r"\b(?:fix|repair)\b[^.?!\n]{0,30}\b(?:code|it|this|that|bug|error)\b"
+    # "correct" only as a verb with its object: "is my code correct for this
+    # input" and "is it correct that ..." ask for a check, not for the fix.
+    r"|\bcorrect (?:it|this|the code|my code|the bug|the error)\b"
+    r"|\b(?:corrected|fixed|working) (?:code|version|solution|implementation)\b"
+)
+
+#: The debug-route intents (`app.graph.routing.INTENT_ROUTES`), duplicated here
+#: for the same reason as `DSA_ROUTE_INTENTS`.
+DEBUG_ROUTE_INTENTS: Final[frozenset[Intent]] = frozenset(
+    {Intent.CODE_DEBUG, Intent.ERROR_EXPLANATION, Intent.TEST_CASE_ANALYSIS}
 )
 
 
 def explicit_ask_phrase(text: str) -> bool:
     """Whether `text` contains a fixed explicit-solution-ask phrase."""
     return bool(_EXPLICIT_ASK_RE.search(text.lower()))
+
+
+def asks_for_fix(text: str | None) -> bool:
+    """Whether `text` asks for the corrected code on a debugging turn: either a
+    fix ask ("fix this code") or a plain ask for the code ("give full code")."""
+    lowered = (text or "").lower()
+    return bool(_FIX_ASK_RE.search(lowered) or _EXPLICIT_ASK_RE.search(lowered))
 
 
 def _explicit_solution_request(
@@ -661,6 +699,18 @@ def build_plan(
                 rationale.append("escalation_denied_no_verified_attempt")
             if explicit_ask and teaching_mode == "challenge":
                 rationale.append("escalation_challenge_mode")
+
+    # A debugging turn that asks for the fix gets the fix. The patch itself is
+    # still shown only after the sandbox ran it (`app.response.generate`), and
+    # Challenge mode -- the learner's own "don't give me the answer" -- and a
+    # client assistance cap (`clamp_assistance`) both still win.
+    if (
+        intent.intent in DEBUG_ROUTE_INTENTS
+        and teaching_mode != "challenge"
+        and asks_for_fix(structured_input.question if structured_input is not None else None)
+    ):
+        assistance = "full"
+        rationale.append("fix_requested")
 
     if profile.learning_preferences.get("likes_step_by_step", False):
         step_by_step = True

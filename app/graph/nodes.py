@@ -41,6 +41,7 @@ from app.agents.concept import (
 from app.agents.debugger import extract_learner_code
 from app.agents.hint_engine import HintProgress
 from app.agents.planner import (
+    DSA_ROUTE_INTENTS,
     INTENT_DEFAULTS,
     MIN_RETRIEVAL_TOPIC_SCORE,
     TopicSource,
@@ -72,6 +73,7 @@ from app.graph.subgraphs.explain import run_explain
 from app.input.intent import classify_intent as _classify_intent_llm
 from app.input.intent import is_small_talk
 from app.input.normalize import merge_inputs, normalize_text
+from app.input.snippet import is_sample_data, repair_snippet
 from app.input.vision import ImageValidationError, extract_from_image
 from app.knowledge.ingest import load_corpus
 from app.llm.base import LLMError
@@ -189,7 +191,7 @@ async def understand_input(state: AgentState, runtime: Runtime[GraphContext]) ->
     )
 
     if raw.image is None:
-        return {"structured_input": text_result}
+        return {"structured_input": _runnable(text_result)}
 
     try:
         image_result = await extract_from_image(ctx.llm, raw.image, declared_mime=raw.image_mime)
@@ -199,14 +201,33 @@ async def understand_input(state: AgentState, runtime: Runtime[GraphContext]) ->
             error_type=type(exc).__name__,
             message=_IMAGE_EXTRACTION_FAILED_MESSAGE,
         )
-        return {"input": scrubbed_input, "structured_input": text_result, "errors": [error]}
+        return {
+            "input": scrubbed_input,
+            "structured_input": _runnable(text_result),
+            "errors": [error],
+        }
 
     if text_result is not None:
         return {
             "input": scrubbed_input,
-            "structured_input": merge_inputs(image_result, text_result),
+            "structured_input": _runnable(merge_inputs(image_result, text_result)),
         }
-    return {"input": scrubbed_input, "structured_input": image_result}
+    return {"input": scrubbed_input, "structured_input": _runnable(image_result)}
+
+
+def _runnable(structured: StructuredInput | None) -> StructuredInput | None:
+    """`structured` with each Python block repaired into a runnable module
+    (`app.input.snippet`): a paste with a ragged left edge, a bare body or a
+    `class Solution` is otherwise reported as a syntax error and never run."""
+    if structured is None or not structured.code:
+        return structured
+    blocks = [
+        block.model_copy(update={"content": repair_snippet(block.content)})
+        if block.language in (None, "python")
+        else block
+        for block in structured.code
+    ]
+    return structured.model_copy(update={"code": blocks})
 
 
 def _understand_input_fallback(state: AgentState) -> AgentStateUpdate:
@@ -723,7 +744,55 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
                 source="rule",
                 rationale="follow-up on the conversation's active problem",
             )
+        if _code_anchored(state.active_problem) and _code_first(update.get("intent", state.intent)):
+            # The conversation's subject is the learner's own code: "give full
+            # code and tell me where the bug is" is about THAT code, so it is
+            # read and run -- never answered from the hint ladder.
+            update["intent"] = _code_debug_intent("follow-up on the code shared earlier")
+    elif _brings_only_code(state.structured_input) and _code_first(state.intent):
+        # User-code-first (target behaviour section 10): code with no problem
+        # statement is the evidence. "give correct code of this" + code was
+        # labelled DSA_SOLVE and got Hint 1 of 4 with the code never read.
+        update["intent"] = _code_debug_intent("code shared without a problem statement")
     return update
+
+
+#: Labels that send a turn to the hint ladder or the study-plan prompt. On a
+#: turn whose subject is the learner's own code they are a misreading; a
+#: confident ask to EXPLAIN, REVIEW or OPTIMIZE that code is left alone.
+_CODE_FIRST_INTENTS: Final = DSA_ROUTE_INTENTS | {Intent.GENERAL_GUIDANCE}
+
+
+def _code_first(intent: IntentResult | None) -> bool:
+    return intent is None or intent.low_confidence or intent.intent in _CODE_FIRST_INTENTS
+
+
+def _code_debug_intent(rationale: str) -> IntentResult:
+    return IntentResult(
+        intent=Intent.CODE_DEBUG, confidence=0.8, source="rule", rationale=rationale
+    )
+
+
+def _brings_only_code(inp: StructuredInput | None) -> bool:
+    """Code of the learner's own and no problem statement. Example input on
+    its own ("nums = [2, 7, 11, 15]") parses as Python but is not their code."""
+    if inp is None or not inp.code or inp.problem:
+        return False
+    return not all(is_sample_data(block.content) for block in inp.code)
+
+
+def _code_anchored(active: ActiveProblem | None) -> bool:
+    """The conversation's subject is code the learner shared, not a statement."""
+    return active is not None and not active.problem.problem and bool(active.problem.code)
+
+
+def code_key(structured_input: StructuredInput | None) -> str | None:
+    """Key for a conversation whose subject is the learner's code (no statement).
+    A hash of untrusted text, never the text, like `problem_key`."""
+    if structured_input is None or not structured_input.code:
+        return None
+    joined = "\n\n".join(block.content for block in structured_input.code)
+    return "_c" + hashlib.sha256(" ".join(joined.split()).encode()).hexdigest()[:16]
 
 
 def _continues_active_problem(state: AgentState, question: str | None) -> bool:
@@ -929,14 +998,15 @@ def inherit_active_problem(
     statement and constraints from the stored problem. Both halves are
     untrusted learner data and stay in the untrusted slots they came from.
     Stored code is NOT carried over, so a "next hint" never re-runs a stale
-    attempt in the sandbox.
+    attempt in the sandbox -- except when the code IS the subject (no
+    statement was ever shared): then the follow-up is about that code.
     """
     question = structured_input.question if structured_input is not None else None
     language = structured_input.language if structured_input is not None else None
     return active.problem.model_copy(
         update={
             "question": question,
-            "code": [],
+            "code": list(active.problem.code) if _code_anchored(active) else [],
             "error": None,
             "language": language or active.problem.language,
         }
@@ -1876,6 +1946,13 @@ _META_NO_PROBLEM: Final = (
 )
 
 
+_META_CODE_SHARED: Final = (
+    "Yes -- I can see this whole conversation, including the code you shared. You didn't "
+    "give the problem a name, so I only have the code to go on. Shall I walk through "
+    "what it does, or check it for bugs?"
+)
+
+
 def _meta_reply(state: AgentState) -> str:
     """Answer a question about the conversation itself from stored state.
 
@@ -1885,6 +1962,8 @@ def _meta_reply(state: AgentState) -> str:
     """
     active = state.active_problem
     title = problem_title(active)
+    if _code_anchored(active):
+        return _META_CODE_SHARED
     if active is None or title is None:
         return _META_NO_PROBLEM
     shared = "the screenshot you shared" if active.problem.source == "image" else "what you shared"
@@ -1918,7 +1997,10 @@ async def clarify(state: AgentState, runtime: Runtime[GraphContext]) -> AgentSta
     elif state.structured_input is None or state.structured_input.is_empty:
         text = _ASK_FOR_INPUT
     elif state.intent is not None and state.intent.intent not in _INTENT_PHRASES:
-        text = _GREETING_REPLY
+        # Only a greeting gets the greeting: "i asked for python code" was
+        # answered with "Hi! Share a problem statement ...".
+        greeting = is_small_talk(state.structured_input.question)
+        text = _GREETING_REPLY if greeting else _GENERIC_CLARIFY
     elif state.intent is not None:
         phrase = _INTENT_PHRASES[state.intent.intent]
         text = (
@@ -2187,6 +2269,14 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
     )
 
     base: list[ResponseSection] = list(generated.sections)
+    refused_reveal = (
+        route == "dsa" and assistance == "full" and not generated.reveals_code and grade is None
+    )
+    if refused_reveal:
+        # The solution was granted but none could be verified, so none is
+        # shown. Say that and stop: the pattern survey around a one-line
+        # refusal read as an answer to a question nobody asked.
+        base = [s for s in base if s.kind in ("next_hint", "verification") or s.kind in requested]
     if not base and lead is None and grade is None and (extra.before or extra.after):
         kind: ResponseSectionKind = "practice_problem" if route == "practice" else "explanation"
         base = [ResponseSection(kind=kind, title=SECTION_TITLES[kind], body=generated.text)]
@@ -2220,7 +2310,7 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         after = [s for s in after if s.kind != "execution"]
     sections = [*extra.before, *base, *after]
     revealed = route == "dsa" and generated.reveals_code
-    if ((guided and question is None) or revealed) and sections:
+    if ((guided and question is None) or revealed or refused_reveal) and sections:
         # The guided step (and the line introducing a revealed solution) reads
         # as the tutor talking, so it carries no "Your next hint" header.
         text = "\n\n".join(
@@ -2511,6 +2601,29 @@ def _named_curated_problem(state: AgentState) -> ActiveProblem | None:
     return ActiveProblem(problem=problem, key=key, topic=curated.topic)
 
 
+def _shared_code_subject(state: AgentState, topic: str | None) -> ActiveProblem | None:
+    """Code shared with no statement becomes the conversation's subject.
+
+    Without this a code-only conversation remembered nothing: "give full code
+    and tell me where is the bug" one turn after the paste saw no code and no
+    problem. Never replaces a stored STATEMENT (the code may be an attempt at
+    it), and stores nothing when this turn's code is what is already stored.
+    """
+    inp = state.structured_input
+    if state.problem_relation != "none" or state.route not in ("debug", "explain"):
+        return None
+    if not _brings_only_code(inp) or inp is None:
+        return None
+    active = state.active_problem
+    if active is not None and not _code_anchored(active):
+        return None
+    key = code_key(inp)
+    if key is None or (active is not None and active.key == key):
+        return None
+    subject = inp.model_copy(update={"question": None, "error": None})
+    return ActiveProblem(problem=subject, key=key, topic=topic)
+
+
 def active_problem_update(state: AgentState) -> ActiveProblem | None:
     """The active problem to store after this turn, or `None` to leave it as is.
 
@@ -2543,6 +2656,9 @@ def active_problem_update(state: AgentState) -> ActiveProblem | None:
         problem = state.structured_input.model_copy(update={"code": [], "error": None})
         return ActiveProblem(problem=problem, key=state.problem_key, topic=trusted_topic)
     active = state.active_problem
+    shared_code = _shared_code_subject(state, trusted_topic)
+    if shared_code is not None:
+        return shared_code
     if (
         state.problem_relation in ("same", "followup")
         and active is not None

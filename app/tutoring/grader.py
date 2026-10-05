@@ -75,6 +75,11 @@ _HELP_RE: Final = re.compile(
     r"\b(hint|nudge|give (me )?(the )?(full |complete )?(code|solution|answer)|"
     r"show (me )?(the )?(full |complete )?(code|solution|answer)|just tell me|"
     r"(can you|could you|please) (explain|show|give|tell)|what is the answer|"
+    # "give python code", "i asked for the code": a request, never an answer.
+    # Anchored on the imperative / "i asked for" shape so an ANSWER that
+    # mentions the answer ("we need to store the answer") is still graded.
+    r"(give|show|send)( me)?( the| a)?( (?!how|where|why|what|if)\w+){0,2} (code|solution)|"
+    r"i (asked|am asking|want|need)( for)?( the| a)?( (?!to\b)\w+){0,2} (code|solution)|"
     r"^(what is|what's|what are|how do|how does|why does|why do|why is|explain)\b)\b",
     re.IGNORECASE,
 )

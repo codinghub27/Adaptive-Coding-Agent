@@ -98,6 +98,7 @@ _META_NAME_RE: Final = re.compile(
     r"(?i)\b(?:name|title)\b[^.?!\n]{0,40}\b(?:(?:problem|question|screenshot|image|picture)\b|"
     r"(?:it|that|this)\s*[?.!]*$)"
     r"|\b(?:problem|question|screenshot|image|picture)\b[^.?!\n]{0,30}\b(?:name|title|called)\b"
+    r"|\b(?:its|it's|that one's) (?:name|title)\b"
     r"|\b(?:which|what)\s+(?:problem|question)\b[^.?!\n]{0,40}\b(?:working on|solving|shared|"
     r"sent|discussing|talking about|doing)\b"
 )
