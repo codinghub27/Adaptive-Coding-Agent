@@ -347,3 +347,13 @@ Frontend validation: don't allow debug submission without test examples
 - **Verification:** `tests/graph/test_concept_explanations.py`; replay examples `adaptive_006` and `adaptive_007`, 17/17 live.
 - **Status:** fixed
 
+
+### ERR-012 - Follow-ups answered as if nothing had been said
+- **Location:** `app/graph/nodes.py` (`_continues_last_reply`, `_thread_of`, `_concept_answer`, `classifier_context`), `app/agents/concept.py`, `app/input/intent.py`, `app/schemas/tutoring.py`
+- **Severity:** critical
+- **Symptom:** After a stack-and-queue roadmap, "first where should i start" got Hint 2 of 4 on a problem from the day before; "im asking about the roadmap" got a new 22-week plan for all of DSA; plans printed "[14] Stack family".
+- **Root cause:** The only thing a turn could follow up on was the stored problem; a plan or an explanation was never a subject. The explanation and plan prompts received the current message alone. See `docs/AUDIT_REPORT.md` section 13.
+- **Fix:** The conversation records what the last reply was; a follow-up belongs to it and is answered with the recent exchange in the prompt. Plans are scoped to the ask and built from the learner's profile. Replies end on one question; reference numbers are stripped.
+- **Verification:** `tests/graph/test_reply_threads.py`; the reported conversation replayed live, seven turns, all as intended.
+- **Status:** fixed
+

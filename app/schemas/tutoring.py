@@ -133,6 +133,9 @@ class PracticeRecord(APIModel):
     statement: str | None = Field(default=None, max_length=2000)
 
 
+LastThread = Literal["problem", "plan", "explanation"]
+
+
 class SessionProgress(APIModel):
     """What this conversation has shown so far (G5): drives in-session progression."""
 
@@ -154,6 +157,12 @@ class SessionProgress(APIModel):
     #: "where's the mistake?" one turn later still has code to read.
     last_attempt: list[CodeBlock] = Field(default_factory=list[CodeBlock])
     last_attempt_key: str | None = Field(default=None, max_length=32)
+    #: What the tutor's LAST reply was: a step on the conversation's problem,
+    #: a study plan, or a concept explanation. A short follow-up ("where
+    #: should I start?") is about THAT reply, which is not always the stored
+    #: problem -- measured: asked after a roadmap, it got the next hint on a
+    #: problem from the day before.
+    last_thread: LastThread | None = None
 
     @classmethod
     def empty(cls) -> "SessionProgress":

@@ -68,6 +68,9 @@ class IntentResult(APIModel):
     earlier_subject: bool | None = None
     asks_for_code: bool | None = None
     about_conversation: bool | None = None
+    #: The message follows up on the tutor's LAST reply (a study plan or an
+    #: explanation) rather than on the active problem.
+    continues_last_reply: bool | None = None
 
     @computed_field
     @property

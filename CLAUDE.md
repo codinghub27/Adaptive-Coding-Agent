@@ -114,6 +114,13 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   corpus-vocabulary check) are the FALLBACK for a rule label, the keyword
   heuristic or an unsure answer -- do not add phrases to them to fix a
   misrouted turn; fix what the classifier is shown or told.
+- **A follow-up belongs to the tutor's LAST reply.** The conversation records
+  what that reply was (`SessionProgress.last_thread`: a step on the problem, a
+  study plan, an explanation). "Where should I start?" after a roadmap is about
+  the roadmap, not about a problem stored a day earlier. Such a turn is
+  answered by the same agent with the recent exchange in its prompt
+  (`<conversation_so_far>`). An agent that answers a follow-up must be given
+  the conversation; one that is not will answer it as a first message.
 - **Guards that stay deterministic** because they are policy, not reading:
   Challenge mode, a client `assistance_cap`, an explicit study-plan ask,
   user-code-first, and `planner.wants_the_code` (the model's "this asks for the

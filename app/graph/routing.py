@@ -196,6 +196,8 @@ def _guidance_without_ask(state: AgentState) -> bool:
     plan is only ever the answer to an explicit ask (`asks_for_guidance`)."""
     if state.intent is None or state.intent.intent is not Intent.GENERAL_GUIDANCE:
         return False
+    if state.thread_followup:
+        return False  # "make it shorter" after a plan needs no plan word of its own
     inp = state.structured_input
     text = (inp.question or "") if inp is not None else ""
     if inp is not None and (inp.problem or inp.code or inp.error):

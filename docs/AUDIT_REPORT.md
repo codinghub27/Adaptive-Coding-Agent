@@ -728,3 +728,74 @@ outside the hint ladder's gate.
   label, 2 model calls, 3.2 s.
 - `pytest` 1913 passed, 2 skipped; `pyright` strict 0 errors; `ruff` clean.
 
+## 13. Follow-ups belong to the last reply (2026-10-06)
+
+Reported, one conversation: a screenshot problem (LeetCode 678); the next day
+"give roadmap to master stack,queue" got a roadmap; "first where should i
+start" got Hint 2 of 4 on the problem from the day before; "im asking about the
+roadmap" got a new 22-week plan for all of DSA; the plans printed "[14] Stack
+family" and citation brackets. The owner's verdict: not one bad pattern, the
+agent as a whole does not behave as planned.
+
+### The cause is structural, not one rule
+
+Every earlier fix in this report repaired one misreading. They share a cause:
+
+1. **The conversation had one slot.** The only thing a turn could follow up on
+   was the stored problem or code. A plan or an explanation was never a
+   subject, so a follow-up to one fell through to whatever problem was stored,
+   however old.
+2. **Only the hint-ladder agent saw the conversation.** The explanation and
+   study-plan prompts received the current message and nothing else, so
+   "im asking about the roadmap" was answered as a first message.
+3. **The classifier's "refers to previous" meant two things.** "The previous
+   thing" was the active problem in the code and the last reply in the model's
+   reading.
+4. **Plans were built for nobody.** The study-plan prompt had the curriculum
+   but not the learner: no skills, no recurring mistakes, and a rule to use
+   ONLY the curriculum's families, which is how "Union-Find as a group queue"
+   ended up in a queue roadmap.
+
+### What changed
+
+| | Change |
+|---|---|
+| Thread | The conversation records what the tutor's last reply was (`SessionProgress.last_thread`: a step on the problem, a plan, an explanation). A follow-up with no problem or code of its own belongs to that reply. It goes to the stored problem only when the classifier, shown both, says so, or when the message brings a problem or code |
+| Classifier | It is told what the last reply was (`last_reply`) and returns `continues_last_reply`. With no confident reading the default is the last reply, not the older problem |
+| History | A follow-up's agent gets the recent exchange (`<conversation_so_far>`, last four messages) and is told to answer the follow-up in that context instead of restarting |
+| Plans | Scoped to what was asked. Topics the curriculum lacks are covered from the model's own knowledge instead of being mapped onto an unrelated family. The learner's profile (weak, strong and practised topics, recurring mistakes) is in the prompt and the plan says how it was adapted, or what level it assumed |
+| One question | Explanations and plans end on one question ("Your turn"), cut to the first if the model writes several |
+| Markers | Reference numbers, "Family [14]", citation brackets and trailing backslashes are removed from the reply |
+
+### Verification
+
+- `tests/graph/test_reply_threads.py` (7): the reported conversation with the
+  classifier answering as it did live; an explanation follow-up; the plan's
+  profile block; one closing question; marker stripping.
+- Live, the reported conversation plus three more turns, one conversation:
+
+| Turn | Before | Now |
+|---|---|---|
+| 678 problem | hint | hint on the open-count range |
+| give roadmap to master stack,queue | 5-week plan with unrelated families | 2-week plan for stacks and queues, states its assumed level |
+| first where should i start | Hint 2 of 4 on 678 | "First step: Stack fundamentals ..." from the roadmap |
+| im asking about the roadmap | 22-week plan for all of DSA | continues the stack-and-queue roadmap |
+| explain sliding window with examples | (worked) | explanation with run examples |
+| can you give one more example | not tested before | a second sliding-window example |
+| ok back to the parenthesis problem, next hint | not tested before | the next hint on 678 |
+
+- `pytest` 1920 passed, 2 skipped; `pyright` strict 0 errors; `ruff` clean.
+- The five-run reliability measurement and the replay were NOT re-run after
+  this change. It alters routing for every follow-up, so both should be.
+
+### What this does not make true
+
+- One live pass of one conversation is not a pass rate. The classifier's
+  reading still varies between runs.
+- The debugger and the code explainer still do not get the conversation.
+- The reply is still assembled from sections; it reads as a report more than
+  as a tutor talking. Changing that is a redesign of the response layer, not a
+  routing fix.
+- Skill moves only on sandbox evidence and graded answers, so "adapts to you"
+  is slow to become visible (section 11).
+

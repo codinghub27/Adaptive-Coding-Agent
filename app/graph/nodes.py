@@ -24,7 +24,7 @@ import ast
 import hashlib
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import cache
 from types import MappingProxyType
 from typing import Final, Protocol, cast
@@ -127,6 +127,7 @@ from app.schemas.profile import LearnerProfileView
 from app.schemas.response import GeneratedResponse, ResponseSection, ResponseSectionKind
 from app.schemas.tutoring import (
     ExecutionView,
+    LastThread,
     PendingCheck,
     PendingView,
     PracticeRecord,
@@ -293,6 +294,15 @@ def _subject_line(active: ActiveProblem) -> str:
     return f"problem: {title}" if title else "a problem the learner shared"
 
 
+_LAST_REPLY_WORDS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "problem": "a step on the active_subject (the problem or code)",
+        "plan": "a study plan / roadmap",
+        "explanation": "a concept explanation",
+    }
+)
+
+
 def classifier_context(state: AgentState) -> str | None:
     """What the classifier is told about the conversation (A-08), or `None`
     on a first message.
@@ -319,6 +329,8 @@ def classifier_context(state: AgentState) -> str | None:
     if profile is not None and active is not None and active.topic in profile.skill_levels:
         level = profile.skill_levels[active.topic]
         lines.append(f"learner_skill: {level:.2f} on {active.topic} (0 = weak, 1 = strong)")
+    if progress is not None and progress.last_thread is not None:
+        lines.append(f"last_reply: {_LAST_REPLY_WORDS[progress.last_thread]}")
     recent = state.recent_context[-_CONTEXT_MESSAGES:]
     if recent:
         lines.append("recent_messages:")
@@ -812,6 +824,17 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
         update["subject_switched"] = True
         active = earlier
 
+    thread_intent = _continues_last_reply(state, brings_subject)
+    if thread_intent is not None and not update.get("subject_switched"):
+        # The tutor's last reply was a plan or an explanation and this turn
+        # follows up on IT. It is answered in that reply's context -- not as
+        # the next hint on whatever problem the conversation still has stored.
+        update["problem_relation"] = "none"
+        update["problem_key"] = None
+        update["thread_followup"] = True
+        update["intent"] = _relabel(intent, thread_intent, "follow-up on the tutor's last reply")
+        return update
+
     if (
         inp is not None
         and active is not None
@@ -899,6 +922,55 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
     return update
 
 
+_THREAD_INTENTS: Final[Mapping[str, Intent]] = MappingProxyType(
+    {"plan": Intent.GENERAL_GUIDANCE, "explanation": Intent.CONCEPT_EXPLANATION}
+)
+#: Labels a follow-up on a plan/explanation may arrive under without being a
+#: new request of its own: the hint-ladder labels and the catch-all.
+_THREAD_FOLLOWUP_INTENTS: Final = DSA_ROUTE_INTENTS | {
+    Intent.GENERAL_GUIDANCE,
+    Intent.CONCEPT_EXPLANATION,
+}
+
+
+def _continues_last_reply(state: AgentState, brings_subject: bool) -> Intent | None:
+    """The intent to answer this turn under when it follows up on the tutor's
+    last reply (a study plan or a concept explanation), else `None`.
+
+    The classifier's `continues_last_reply` decides when it read the turn.
+    When it gave no confident reading, the turn still belongs to the last
+    reply rather than to an older problem: the most recent thing said is what
+    a short "where should I start?" is about. It goes to the stored problem
+    only when the model, shown both, said so (`refers_to_previous` true and
+    `continues_last_reply` false), or when the turn brings a problem or code.
+    """
+    progress = state.session_progress
+    thread = progress.last_thread if progress is not None else None
+    if thread is None or thread not in _THREAD_INTENTS or brings_subject:
+        return None
+    answer_as = _THREAD_INTENTS[thread]
+    inp = state.structured_input
+    question = inp.question if inp is not None else None
+    if not question or is_small_talk(question):
+        return None
+    intent = state.intent
+    if intent is None:
+        return answer_as
+    if intent.continues_last_reply:
+        return answer_as
+    if intent.about_conversation or intent.earlier_subject:
+        return None
+    if intent.refers_to_previous and intent.continues_last_reply is False:
+        return None  # shown both, the model chose the stored problem
+    if intent.continues_last_reply is False and not intent.low_confidence:
+        return None  # a confident "this is something new"
+    if intent.intent not in _THREAD_FOLLOWUP_INTENTS:
+        return None  # a practice request, a debug ask: its own thing
+    if state.pending_check is not None:
+        return None  # an answer to the tutor's open question is graded
+    return answer_as
+
+
 def _relabel(base: IntentResult | None, intent: Intent, rationale: str) -> IntentResult:
     """A rule's label for this turn that KEEPS what the classifier read from
     the conversation (whether the code was asked for, and so on)."""
@@ -911,6 +983,7 @@ def _relabel(base: IntentResult | None, intent: Intent, rationale: str) -> Inten
         earlier_subject=base.earlier_subject if base is not None else None,
         asks_for_code=base.asks_for_code if base is not None else None,
         about_conversation=base.about_conversation if base is not None else None,
+        continues_last_reply=base.continues_last_reply if base is not None else None,
     )
 
 
@@ -2116,6 +2189,42 @@ async def _run_examples(examples: Sequence[ConceptExample], runner: CodeRunner |
     return "\n\n".join(blocks)
 
 
+def _recent_exchange(state: AgentState) -> list[tuple[str, str]]:
+    """The last few messages, for an agent answering a follow-up on its own
+    last reply. Untrusted learner text and the tutor's earlier replies."""
+    return [(message.role, message.content) for message in state.recent_context[-4:]]
+
+
+_PROFILE_TOPICS: Final = 4
+
+
+def _profile_note(profile: LearnerProfileView | None) -> str | None:
+    """What this learner is strong and weak in, in a few lines, for a study
+    plan. Built only from the tutor's own records (topic slugs, catalog
+    mistake ids): nothing the learner typed. `None` when there is no evidence
+    yet -- a plan for a new learner must say it assumed a level."""
+    if profile is None:
+        return None
+    levels = {
+        topic: level
+        for topic, level in profile.skill_levels.items()
+        if not topic.startswith(FAMILY_PREFIX) and level != PRIOR
+    }
+    strong = sorted((t for t, v in levels.items() if v >= STRONG_SKILL), key=lambda t: -levels[t])
+    weak = sorted((t for t, v in levels.items() if v < WEAK_SKILL), key=lambda t: levels[t])
+    middle = sorted(t for t in levels if t not in strong and t not in weak)
+    lines: list[str] = []
+    if weak:
+        lines.append("weak in: " + ", ".join(weak[:_PROFILE_TOPICS]))
+    if strong:
+        lines.append("strong in: " + ", ".join(strong[:_PROFILE_TOPICS]))
+    if middle:
+        lines.append("some practice in: " + ", ".join(middle[:_PROFILE_TOPICS]))
+    if profile.common_errors:
+        lines.append("recurring mistakes: " + ", ".join(profile.common_errors[:3]))
+    return "\n".join(lines) or None
+
+
 async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> ExplainResult:
     """An answer for a concept question or general guidance.
 
@@ -2143,6 +2252,8 @@ async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> 
         runtime.context.llm,
         guidance=guidance,
         level=None if guidance else _learner_level(state.plan),
+        history=_recent_exchange(state) if state.thread_followup else (),
+        learner_profile=_profile_note(state.profile) if guidance else None,
     )
     if not answer.answer:
         return ExplainResult(answer=None, citations=[])
@@ -2151,8 +2262,10 @@ async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> 
         examples = await _run_examples(answer.examples, runtime.context.runner)
         if examples:
             parts.append(examples)
-    if not answer.grounded and not guidance:
+    if not answer.grounded and not guidance and not state.thread_followup:
         parts.append(_UNGROUNDED_NOTE)
+    if answer.check:
+        parts.append(f"**Your turn:** {answer.check}")
     return ExplainResult(answer="\n\n".join(parts), citations=answer.citations)
 
 
@@ -3006,6 +3119,27 @@ def active_problem_update(state: AgentState) -> ActiveProblem | None:
 _SAVE_TUTORING_FAILED_MESSAGE: Final = "failed to remember this conversation's pending question"
 
 
+def _thread_of(state: AgentState) -> LastThread | None:
+    """What this turn's reply was, for the next turn's follow-up; `None` leaves
+    the stored value alone (a question about the chat, a clarifying question
+    and a greeting are not something a follow-up is about)."""
+    route = state.route
+    intent = state.intent.intent if state.intent is not None else None
+    if route in ("dsa", "debug", "grade", "practice"):
+        return "problem"
+    if route != "explain":
+        return None
+    if intent is Intent.GENERAL_GUIDANCE:
+        return "plan"
+    if intent is Intent.CONCEPT_EXPLANATION and not _own_code_blocks(state):
+        return "explanation"
+    return "problem"  # code explained or reviewed: the subject is that code
+
+
+def _own_code_blocks(state: AgentState) -> bool:
+    return state.structured_input is not None and bool(state.structured_input.code)
+
+
 async def _persist_tutoring_state(state: AgentState, ctx: GraphContext) -> NodeError | None:
     """Store the pending check this turn ends with (NULL clears it) and the
     session progress (ADAPTIVE-tutoring), in a savepoint."""
@@ -3022,6 +3156,9 @@ async def _persist_tutoring_state(state: AgentState, ctx: GraphContext) -> NodeE
     ):
         # A new subject takes over: remember the one it replaces.
         progress = progress.model_copy(update={"earlier_problem": current})
+    thread = _thread_of(state)
+    if thread is not None:
+        progress = progress.model_copy(update={"last_thread": thread})
     own_code = state.structured_input.code if state.structured_input is not None else []
     if own_code and state.problem_key is not None and state.problem_relation in ("new", "same"):
         progress = progress.model_copy(
