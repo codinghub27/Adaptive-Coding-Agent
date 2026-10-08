@@ -266,8 +266,22 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     if verdict is not None and verdict.status == "pass":
         if state.get("wants_code", False):
             return {"bug_explanation": None}  # `_present` names the approach
-        approach = await infer_approach(problem, runtime.context.llm)
-        return {"bug_explanation": None, "inferred_approach": approach}
+        if not (problem.question or "").strip():
+            approach = await infer_approach(problem, runtime.context.llm)
+            return {"bug_explanation": None, "inferred_approach": approach}
+        # The code passed and the learner asked something about it: the same
+        # one call names the approach AND answers the question.
+        answer = await read_code(
+            problem,
+            static_findings=state.get("static_findings", []),
+            failing_case=None,
+            bug_location=None,
+            llm=runtime.context.llm,
+            failure_established=False,
+            turn_context=state.get("turn_context", ""),
+            passed=True,
+        )
+        return {"bug_explanation": answer.explanation, "inferred_approach": answer.approach}
     reading = await read_code(
         problem,
         static_findings=state.get("static_findings", []),

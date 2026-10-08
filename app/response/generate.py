@@ -33,6 +33,7 @@ from app.response.format import (
     render_structure,
     render_verdict,
 )
+from app.response.voice import speak
 from app.schemas.agent_results import (
     AgentResult,
     DebugResult,
@@ -132,7 +133,7 @@ def _render_dsa(
         if teaching and kind not in bodies:
             bodies[cast("ResponseSectionKind", kind)] = (teaching, None)
     if result.code is not None and _may_reveal_code(plan):
-        code_body = render_code_block(result.code)
+        code_body = render_code_block(result.code, language="python")
         if code_body:
             bodies["code"] = (code_body, None)
 
@@ -227,7 +228,10 @@ def _render_debug(
                 + "\n\n_Not executed -- the code sandbox is not available, so this is a"
                 + " reading of your code, not a test of it._"
             )
-        elif result.initial_verdict is None or result.initial_verdict.status != "fail":
+        elif result.initial_verdict is None or result.initial_verdict.status not in (
+            "fail",
+            "pass",
+        ):
             body = (
                 body
                 + "\n\n_Not verified by running your code -- no test cases could be"
@@ -240,7 +244,7 @@ def _render_debug(
 
     ran_clean = _patch_ran_clean(result)
     if result.patched_code is not None and (result.fixed or ran_clean) and _may_reveal_code(plan):
-        patch_section = _section("patch", render_code_block(result.patched_code))
+        patch_section = _section("patch", render_code_block(result.patched_code, language="python"))
         if patch_section is not None:
             sections.append(patch_section)
 
@@ -248,7 +252,10 @@ def _render_debug(
     if result.presented_code is not None and not patch_shown and _may_reveal_code(plan):
         # F2: they asked for the code and there is no fix to show, so THEIR
         # code is handed back -- with what the sandbox knows about it.
-        parts = [result.presented_label or "", render_code_block(result.presented_code)]
+        parts = [
+            result.presented_label or "",
+            render_code_block(result.presented_code, language="python"),
+        ]
         if result.presented_notes:
             parts.append(render_bullet_list(result.presented_notes))
         body = "\n\n".join(part for part in parts if part)
@@ -267,7 +274,16 @@ def _render_debug(
     # One "What the sandbox found" section: their code's verdict, then what
     # (if anything) is known about the fix. Two sections under one title read
     # as two different findings.
-    found = [render_verdict(verdict_for_render)]
+    # A pass is already stated, with its count, by the "Execution" line the
+    # tutoring layer puts on every turn that ran the learner's code; saying it
+    # twice ("passed 6/6 ... confirmed this passes (6/6 cases). all 6 case(s)
+    # passed") read as a log, not as a tutor.
+    passed = verdict_for_render is not None and verdict_for_render.status == "pass"
+    found = (
+        []
+        if passed and result.initial_verdict is not None
+        else [render_verdict(verdict_for_render)]
+    )
     if result.fixed and result.final_verdict is not None:
         found.append(
             f"A fix was found and verified in the sandbox: {result.final_verdict.summary}."
@@ -358,10 +374,6 @@ def _render_review(
     return sections, _review_next_steps(result)
 
 
-def _assemble_text(sections: list[ResponseSection]) -> str:
-    return "\n\n".join(f"## {section.title}\n\n{section.body}" for section in sections)
-
-
 def generate_response(
     *,
     result: AgentResult | None,
@@ -411,7 +423,7 @@ def generate_response(
         any(section.kind in CODE_SECTION_KINDS for section in sections) or hint_reveals_code
     )
 
-    text = _assemble_text(sections)
+    sections, text = speak(sections)
     if not text.strip():
         stripped_fallback = fallback_text.strip() if fallback_text is not None else ""
         text = stripped_fallback if stripped_fallback else SAFE_FALLBACK_RESPONSE

@@ -109,6 +109,7 @@ from app.response.format import (
     render_code_block,
 )
 from app.response.generate import generate_response
+from app.response.voice import speak
 from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel
 from app.schemas.decision import (
     EVIDENCE_LABELS,
@@ -2431,7 +2432,7 @@ async def _run_examples(examples: Sequence[ConceptExample], runner: CodeRunner |
         output = result.stdout.strip()
         if len(output) > _MAX_EXAMPLE_OUTPUT_CHARS:
             output = output[:_MAX_EXAMPLE_OUTPUT_CHARS] + "\n...[truncated]"
-        shown = f"**{title}**\n\n{render_code_block(code)}"
+        shown = f"**{title}**\n\n{render_code_block(code, language='python')}"
         if output:
             shown += f"\n\nOutput (run in the sandbox):\n\n{render_code_block(output)}"
         else:
@@ -2749,7 +2750,15 @@ def _protect_symbols(update: AgentStateUpdate) -> AgentStateUpdate:
     generated = update.get("generated_response")
     if generated is None:
         return update
-    sections = [s.model_copy(update={"body": protect_symbols(s.body)}) for s in generated.sections]
+    sections = [
+        s.model_copy(
+            update={
+                "body": protect_symbols(s.body),
+                "spoken": protect_symbols(s.spoken) if s.spoken is not None else None,
+            }
+        )
+        for s in generated.sections
+    ]
     text = protect_symbols(generated.text)
     update["generated_response"] = generated.model_copy(update={"sections": sections, "text": text})
     update["response"] = text
@@ -3015,16 +3024,17 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         after = [s for s in after if s.kind != "execution"]
     sections = [*extra.before, *base, *after]
     revealed = route == "dsa" and generated.reveals_code
-    if ((guided and question is None) or revealed or refused_reveal) and sections:
-        # The guided step (and the line introducing a revealed solution) reads
-        # as the tutor talking, so it carries no "Your next hint" header.
-        text = "\n\n".join(
-            s.body if s.kind == "next_hint" else f"## {s.title}\n\n{s.body}" for s in sections
+    if sections:
+        # Every reply is spoken (`app.response.voice`): no `##` headers. The
+        # numbered hint card is kept only for a generic ladder rung; the
+        # tutor's own step and a reveal are speech, not "Hint 2 of 4".
+        sections, text = speak(sections)
+        hint_card = any(s.kind == "next_hint" for s in sections) and not (
+            guided or revealed or refused_reveal
         )
-        generated = generated.model_copy(update={"sections": sections, "text": text})
-    elif sections and (extra.before or extra.after):
-        text = "\n\n".join(f"## {s.title}\n\n{s.body}" for s in sections)
-        generated = generated.model_copy(update={"sections": sections, "text": text})
+        generated = generated.model_copy(
+            update={"sections": sections, "text": text, "hint_card": hint_card}
+        )
 
     floor_key: str | None = None
     if state.reaction == "scaffold" and pending is not None:

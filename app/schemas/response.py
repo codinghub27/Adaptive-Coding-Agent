@@ -92,6 +92,10 @@ class ResponseSection(APIModel):
     title: str = Field(min_length=1)
     body: str = Field(min_length=1)
     language: str | None = None
+    #: The section as the tutor says it (`app.response.voice`): the body with
+    #: a lead-in or a short inline label, never a `##` header. A client joins
+    #: these to show the reply.
+    spoken: str | None = None
 
 
 class GeneratedResponse(APIModel):
@@ -107,6 +111,10 @@ class GeneratedResponse(APIModel):
     hint_level: HintLevel | None = None
     hint_ceiling: HintLevel | None = None
     more_help_available: bool = False
+    #: Show the hint as a numbered ladder card ("Hint 2 of 4"). False when the
+    #: step is the tutor's own sentence about this problem, or a reveal: those
+    #: read as speech, and a hint count over them reads as a quota.
+    hint_card: bool = False
     reveals_code: bool = False
     next_steps: list[str] = Field(default_factory=list[str])
     citations: list[str] = Field(default_factory=list[str])

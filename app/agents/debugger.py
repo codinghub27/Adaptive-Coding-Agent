@@ -636,6 +636,22 @@ _READ_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
 )
 
 
+#: The learner's code PASSED and they asked something about it. Before this
+#: a passing run produced one sentence naming the approach and nothing else,
+#: so "is there another method for this program?" was answered with "you are
+#: using two pointers" and a test count (measured live).
+_ANSWER_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
+    "The sandbox ran the learner's code and it PASSED every test case it was checked "
+    "against; that is FACT. Do not look for a bug and never invent one. Answer what the "
+    'learner asked about their code, directly, in 2-6 sentences written TO the learner ("you"). '
+    "If they ask for another way to solve it, name ONE concrete alternative, say in a "
+    "sentence how it works, and compare its time and space cost with theirs; do not write "
+    "its code unless they asked for code. If they ask why it works, about its cost or about "
+    "an edge case, answer that. If the message asks nothing beyond checking the code, say "
+    "in one sentence what makes it correct. Reply with ONLY a single JSON object and nothing "
+    'else: {"bug_explanation": "<your answer>", "used": []}'
+)
+
 _APPROACH_ADDENDUM: Final = (
     ' Also include a third key, "inferred_approach": one sentence written TO the learner '
     '("You are ...") naming the approach their code takes, without judging it.'
@@ -715,6 +731,7 @@ async def read_code(
     inferred_approach: str | None = None,
     name_approach: bool = True,
     turn_context: str = "",
+    passed: bool = False,
 ) -> CodeReading:
     """ONE LLM call that both names the learner's approach and explains the
     bug (or reports that none was found). Replaces the separate
@@ -739,6 +756,8 @@ async def read_code(
     if notes:
         parts.append(notes)
     system = _EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM
+    if passed:
+        system = _ANSWER_SYSTEM
     if name_approach:
         system += _APPROACH_ADDENDUM
     messages = [

@@ -1,4 +1,4 @@
-"""Run the eight live behaviour scenarios N times and report pass rates.
+"""Run the live behaviour scenarios N times and report pass rates.
 
     .\\venv\\Scripts\\python.exe -m eval.behavior.live_scenarios --runs 5 \\
         --base-url http://127.0.0.1:8000
@@ -106,6 +106,75 @@ def learner_verdict(turn: Turn) -> str | None:
 def has(turn: Turn, *needles: str) -> bool:
     lowered = text(turn).lower()
     return any(needle.lower() in lowered for needle in needles)
+
+
+def adaptations(turn: Turn) -> list[str]:
+    return list(turn.get("adaptations") or [])
+
+
+def evidence(turn: Turn) -> str | None:
+    events = turn.get("events") or []
+    return events[-1].get("evidence_source") if events else None
+
+
+def stack_code(turn: Turn) -> bool:
+    """The revealed code keeps a stack: it pushes and pops (or names one)."""
+    lowered = text(turn).lower()
+    return "stack" in lowered and ".append(" in lowered and ".pop(" in lowered
+
+
+def no_guessing(turn: Turn) -> bool:
+    return not has(turn, "it looks like you might want", "could you confirm")
+
+
+def no_refusal(turn: Turn) -> bool:
+    return not has(
+        turn,
+        "did not return usable code",
+        "i won't show code",
+        "the references do not cover",
+        "the provided references",
+        "i can't elaborate",
+    )
+
+
+def one_question(turn: Turn) -> bool:
+    """A tutoring step asks at most two things (one question, maybe a lead-in)."""
+    return text(turn).count("?") <= 2
+
+
+TRAP: Final = (
+    "```python\n"
+    "def trap(height):\n    if not height:\n        return 0\n"
+    "    left, right = 0, len(height) - 1\n    left_max, right_max = 0, 0\n    water = 0\n"
+    "    while left < right:\n        if height[left] < height[right]:\n"
+    "            if height[left] >= left_max:\n                left_max = height[left]\n"
+    "            else:\n                water += left_max - height[left]\n            left += 1\n"
+    "        else:\n            if height[right] >= right_max:\n"
+    "                right_max = height[right]\n            else:\n"
+    "                water += right_max - height[right]\n            right -= 1\n"
+    "    return water\n```"
+)
+MAX_DEPTH: Final = (
+    "I'm solving Maximum Depth of Binary Tree. My code gives the wrong answer. Explain it, "
+    "but don't give me the final code yet.\n\n```python\n"
+    "def maxDepth(root):\n    if root is None:\n        return 0\n"
+    "    left = maxDepth(root.left)\n    right = maxDepth(root.right)\n"
+    "    return max(left, right)\n```"
+)
+TRACEBACK: Final = (
+    "Find the core error and explain it. Don't rewrite everything.\n\n"
+    "Traceback (most recent call last):\n"
+    '  File "app.py", line 18, in <module>\n    result = process_data(user)\n'
+    '  File "app.py", line 11, in process_data\n    print(user["name"])\n'
+    "TypeError: string indices must be integers"
+)
+MAX_PATH: Final = (
+    "Binary Tree Maximum Path Sum\n\nGiven the root of a binary tree, return the maximum "
+    "path sum of any non-empty path.\n\n"
+    "Example 1:\nInput: root = [1,2,3]\nOutput: 6\n\n"
+    "Example 2:\nInput: root = [-10,9,20,null,null,15,7]\nOutput: 42\n\n"
+)
 
 
 def _never_a_study_plan(turns: list[Turn]) -> bool:
@@ -290,6 +359,201 @@ def scenarios() -> list[Scenario]:
             ],
             shared_account=False,
         ),
+        # --- The owner's real conversations (docs/BEHAVIOR_GAP.md, section 2) ---
+        Scenario(
+            "9",
+            "Owner: 678, a roadmap, its follow-ups, then the code",
+            "balanced",
+            [
+                P678,
+                "give roadmap to master stack,queue",
+                "first where should i start",
+                "im asking about the roadmap",
+                "give code the valid paranthesis problem",
+                "give code using stack",
+            ],
+            [
+                ("t1 a step, no code", lambda t: t[0]["route"] == "dsa" and not code_shown(t[0])),
+                ("t2 a plan for stacks and queues", lambda t: has(t[1], "stack", "queue")),
+                (
+                    "t3 follow-up is about the roadmap",
+                    lambda t: t[2]["route"] == "explain" and not has(t[2], "unmatched", "`*`"),
+                ),
+                (
+                    "t3-t4 answered, not a new plan",
+                    lambda t: (
+                        all(len(text(x)) < 2500 for x in t[2:4])
+                        and not any(has(x, "segment tree", "bit manipulation") for x in t[2:4])
+                    ),
+                ),
+                ("t5 code given, no refusal", lambda t: code_shown(t[4]) and no_refusal(t[4])),
+                ("t6 no 'could you confirm'", lambda t: no_guessing(t[5])),
+                ("t6 code given", lambda t: code_shown(t[5]) and no_refusal(t[5])),
+                ("t6 the code uses a stack", lambda t: stack_code(t[5])),
+                ("no study plan unless asked", lambda t: _never_a_study_plan([t[0], *t[4:]])),
+            ],
+            shared_account=False,
+            strict=("t3 follow-up is about the roadmap", "no study plan unless asked"),
+        ),
+        Scenario(
+            "10",
+            "Owner: shared code, asks for the code",
+            "balanced",
+            [
+                "give correct code of this.\nheight = [0,1,0,2,1,0,1,3,2,1,2,1]\n\n" + TRAP,
+                "give python code",
+                "is there another method for this program?",
+            ],
+            [
+                ("t1 the code is read, not hinted at", lambda t: t[0]["route"] == "debug"),
+                ("t1 code given", lambda t: code_shown(t[0]) and no_refusal(t[0])),
+                ("t2 code given", lambda t: code_shown(t[1]) and no_guessing(t[1])),
+                (
+                    "t3 answered about their program",
+                    lambda t: t[2]["route"] != "clarify" and no_guessing(t[2]),
+                ),
+            ],
+            shared_account=False,
+            strict=("t3 answered about their program",),
+        ),
+        Scenario(
+            "11",
+            "Owner: concept explanations and a follow-up",
+            "balanced",
+            [
+                "explain the concept of recursion with examples.",
+                "explain sliding window with examples",
+                "can you give one more example",
+            ],
+            [
+                ("t1 explained, not refused", lambda t: no_refusal(t[0]) and len(text(t[0])) > 600),
+                ("t1 has a run example", lambda t: has(t[0], "run in the sandbox", "```")),
+                ("t2 explained", lambda t: has(t[1], "window") and no_refusal(t[1])),
+                (
+                    "t3 one more example, not the lecture again",
+                    lambda t: t[2]["route"] == "explain" and len(text(t[2])) < len(text(t[1])),
+                ),
+            ],
+            shared_account=False,
+        ),
+        Scenario(
+            "12",
+            "Owner: greetings and a question about the chat get no study plan",
+            "balanced",
+            ["hi agent", P678, "answer this only. what question i gave to u", "hii agent"],
+            [
+                ("no study plan unless asked", lambda t: _never_a_study_plan(t)),
+                ("t1 greeted", lambda t: t[0]["route"] == "clarify"),
+                ("t3 names the problem", lambda t: has(t[2], "Valid Parenthesis String")),
+            ],
+            shared_account=False,
+            strict=("no study plan unless asked",),
+        ),
+        # --- Invariants 7, 8 and 12: the reply changes with the learner ---------
+        Scenario(
+            "13",
+            "Stuck three times: the representation changes",
+            "guidance",
+            [TWO_SUM + "I'm new to DSA. I don't understand how to start.", *(["I don't know"] * 3)],
+            [
+                ("t1 no full code", lambda t: not code_shown(t[0])),
+                ("t2-t3 never the same reply twice", lambda t: len({text(x) for x in t}) == len(t)),
+                (
+                    "a changed representation is announced",
+                    lambda t: any(
+                        "worked example" in " ".join(adaptations(x))
+                        or "drew it out" in " ".join(adaptations(x))
+                        for x in t[1:]
+                    ),
+                ),
+                ("stuck is recorded as evidence", lambda t: any(evidence(x) for x in t[1:])),
+            ],
+            shared_account=False,
+            strict=("t1 no full code",),
+        ),
+        Scenario(
+            "14",
+            "Asking for the code moves the profile, and code is never refused",
+            "balanced",
+            [P678.replace("how to solve this prob", "give me the full code")],
+            [
+                ("code given on the first ask", lambda t: code_shown(t[0]) and no_refusal(t[0])),
+                ("recorded as help needed", lambda t: evidence(t[0]) == "help_needed"),
+                (
+                    "no badge without a reason",
+                    lambda t: bool(t[0].get("adapted")) == bool(adaptations(t[0])),
+                ),
+            ],
+            shared_account=False,
+        ),
+        # --- target_behavior.md section 29, conversations 6 to 10 ---------------
+        Scenario(
+            "15",
+            "Ref 6: buggy code, explain but no final code yet",
+            "balanced",
+            [MAX_DEPTH, "Add 1.", "return 1 + max(left, right)"],
+            [
+                ("t1 their code is read", lambda t: t[0]["route"] == "debug"),
+                ("t1 names the missing node", lambda t: has(t[0], "current node", "1 +", "+ 1")),
+                ("t1 no final code, as asked", lambda t: not code_shown(t[0])),
+                ("t2 no code dumped on a right answer", lambda t: not code_shown(t[1])),
+            ],
+            shared_account=False,
+            strict=("t1 no final code, as asked",),
+        ),
+        Scenario(
+            "16",
+            "Ref 7: independent challenge, algorithm not revealed",
+            "challenge",
+            [
+                "Give me a coding challenge. I want to write it myself. Don't tell me the "
+                "algorithm unless I ask for a hint.",
+                "I'll sort it and count.",
+                "Sorting is O(n log n). Maybe there is an O(n) approach.",
+            ],
+            [
+                ("t1 gives a problem", lambda t: t[0]["route"] == "practice"),
+                ("solution withheld on every turn", lambda t: not any(code_shown(x) for x in t)),
+                ("t2 not rejected", lambda t: not has(t[1], "not quite", "that's not it")),
+            ],
+            shared_account=False,
+            strict=("solution withheld on every turn",),
+        ),
+        Scenario(
+            "17",
+            "Ref 9: a traceback, core error only",
+            "balanced",
+            [
+                TRACEBACK,
+                'I\'m doing:\n\n```python\nuser = input("Enter your name: ")\n'
+                "process_data(user)\n```",
+            ],
+            [
+                ("t1 debug route", lambda t: t[0]["route"] == "debug"),
+                ("t1 names the type mismatch", lambda t: has(t[0], "string", "str")),
+                ("t1 no rewrite", lambda t: not code_shown(t[0])),
+                ("t2 ties it to input()", lambda t: has(t[1], "input")),
+            ],
+            shared_account=False,
+        ),
+        Scenario(
+            "18",
+            "Ref 10: asks for the code after understanding",
+            "balanced",
+            [
+                MAX_PATH + "I tried it and now I understand that the parent can only extend "
+                "one branch. Give me the code and test it.",
+            ],
+            [
+                ("code given on the first ask", lambda t: code_shown(t[0]) and no_refusal(t[0])),
+                (
+                    "a real sandbox verdict",
+                    lambda t: verdict(t[0]).get("status") in ("pass", "fail"),
+                ),
+                ("no forced hint first", lambda t: not has(t[0], "take this one step first")),
+            ],
+            shared_account=False,
+        ),
         Scenario(
             "8",
             "Cross-session, same learner",
@@ -427,6 +691,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "llm_calls": t.get("llm_calls"),
                             "reveals_code": code_shown(t),
                             "grade": grade(t),
+                            "adaptations": adaptations(t),
+                            "evidence": evidence(t),
                             "verification": verdict(t).get("status"),
                             "response": text(t),
                         }

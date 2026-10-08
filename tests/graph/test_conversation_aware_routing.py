@@ -399,7 +399,7 @@ def test_the_learners_own_code_is_handed_back_with_its_label() -> None:
     )
     generated = generate_response(result=result, plan=plan)
     assert generated.reveals_code
-    assert "## Your code" in generated.text
+    assert "Here is your code:" in generated.text
     assert "Verified in sandbox" in generated.text
     assert "def f():" in generated.text
     # Never below `full`: the plan, not the result, decides whether code shows.

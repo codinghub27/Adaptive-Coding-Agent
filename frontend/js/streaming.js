@@ -62,6 +62,9 @@ function buildConcept(payload) {
  */
 function buildHint(generated) {
   if (!generated || generated.hint_level === null || generated.hint_level === undefined) return null;
+  // The server says when a hint is a numbered ladder rung. The tutor's own
+  // step and a revealed solution are speech: no "Hint 2 of 4" over them.
+  if (!generated.hint_card) return null;
   const section = (generated.sections || []).find((item) => item.kind === "next_hint");
   if (!section) return null;
   return {
@@ -96,7 +99,11 @@ function answerBody(generated, hasHintCard, hasQuestionCard = false) {
   // ...and the agent's question to the learner ("Your turn") comes last of all.
   const last = (section) => (section.kind === "check_question" ? 2 : section.kind === "next_steps" ? 1 : 0);
   const ordered = [...rest].sort((a, b) => last(a) - last(b));
-  return ordered.map((section) => `## ${section.title}\n\n${section.body}`).join("\n\n");
+  // `spoken` is the section as the tutor says it (app/response/voice.py):
+  // no "## Title" headers. The titled form is the fallback for an old payload.
+  return ordered
+    .map((section) => section.spoken ?? `## ${section.title}\n\n${section.body}`)
+    .join("\n\n");
 }
 
 /**
