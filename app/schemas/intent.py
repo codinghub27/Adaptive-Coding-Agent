@@ -71,6 +71,10 @@ class IntentResult(APIModel):
     #: The message follows up on the tutor's LAST reply (a study plan or an
     #: explanation) rather than on the active problem.
     continues_last_reply: bool | None = None
+    #: What the learner just showed, in the labels of target behaviour section
+    #: 2.2 (`app.schemas.decision.Evidence`). Set only when the message is a
+    #: response of theirs (an answer, their reasoning) and the model was sure.
+    learner_showed: str | None = None
 
     @computed_field
     @property

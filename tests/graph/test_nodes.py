@@ -21,12 +21,12 @@ from app.graph.nodes import (
     clarify,
     classify_intent,
     debug_agent,
+    decide_turn,
     dsa_agent,
     explain_agent,
     final_response,
     load_learner_profile,
     plan_teaching,
-    route,
     safe_node,
     understand_input,
     update_learner_model,
@@ -59,7 +59,7 @@ _NODE_NAMES: Sequence[str] = (
     "load_learner_profile",
     "plan_teaching",
     "retrieve_knowledge",
-    "route",
+    "decide_turn",
     "dsa_agent",
     "debug_agent",
     "explain_agent",
@@ -740,10 +740,13 @@ def test_fallbacks_has_entry_for_every_node_name() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_route_records_decision_on_state() -> None:
+async def test_decide_turn_records_the_route_and_the_decision() -> None:
     state = _pipeline_state()
-    update = await route(state, _runtime())
+    update = await decide_turn(state, _runtime())
     assert update.get("route") == "dsa"
+    decision = update.get("decision")
+    assert decision is not None
+    assert decision.move == "step"
 
 
 async def test_final_response_uses_agent_output_text() -> None:

@@ -10,6 +10,7 @@ live end-to-end behaviour is measured by `eval.transcript_probes`.
 from app.agents.hint_engine import HintProgress, ladder_ceiling, next_hint
 from app.agents.planner import analyze_problem
 from app.graph.nodes import (
+    _decide,  # pyright: ignore[reportPrivateUsage]
     _retrieve_knowledge_fallback,  # pyright: ignore[reportPrivateUsage]
     active_problem_update,
     inherit_active_problem,
@@ -248,15 +249,16 @@ def test_a_longer_variant_of_the_statement_is_a_new_problem() -> None:
     assert key != _active().key
 
 
-def test_retrieval_fallback_keeps_continuity() -> None:
-    """Qdrant down must not cost the follow-up its problem (safe_node fallback)."""
+def test_the_decision_settles_continuity_before_retrieval() -> None:
+    """Which problem a turn is about is decided by `decide_turn`, before
+    retrieval runs, so Qdrant being down cannot cost a follow-up its problem."""
     state = AgentState(
         input=RawInput(text="give full answer"),
         structured_input=StructuredInput(source="text", question="give full answer"),
         active_problem=_active(),
     )
-    update = _retrieve_knowledge_fallback(state)
-    assert update.get("retrieved_context") == []
+    assert _retrieve_knowledge_fallback(state) == {"retrieved_context": []}
+    update = _decide(state)
     assert update.get("problem_relation") == "followup"
     assert update.get("problem_key") == _active().key
     inherited = update.get("structured_input")
@@ -275,7 +277,7 @@ def test_an_explicit_ask_follow_up_is_classified_as_a_solution_request() -> None
         active_problem=_active(),
         intent=IntentResult(intent=Intent.CONCEPT_EXPLANATION, confidence=0.4, source="llm"),
     )
-    update = _retrieve_knowledge_fallback(state)
+    update = _decide(state)
     intent = update.get("intent")
     assert intent is not None
     assert intent.intent is Intent.DSA_SOLVE
@@ -291,4 +293,4 @@ def test_a_plain_follow_up_keeps_its_own_intent() -> None:
         active_problem=_active(),
         intent=IntentResult(intent=Intent.APPROACH_DISCUSSION, confidence=0.9, source="llm"),
     )
-    assert "intent" not in _retrieve_knowledge_fallback(state)
+    assert "intent" not in _decide(state)

@@ -266,8 +266,11 @@ def test_a_question_about_the_chat_is_meta_by_the_models_reading() -> None:
 def test_the_models_reading_decides_whether_a_turn_is_a_followup() -> None:
     active = ActiveProblem(problem=StructuredInput(source="text", problem=_P678), key="_p1")
     names_a_pattern = StructuredInput(source="text", question="is this a greedy problem?")
-    # Fallback: the corpus vocabulary reads "greedy" as a subject of its own.
-    assert resolve_problem_relation(names_a_pattern, active)[0] == "none"
+    # Fallback, nobody read the turn: mentioning a technique does not drop the
+    # problem on the table. Only a question ABOUT the concept stands alone.
+    assert resolve_problem_relation(names_a_pattern, active)[0] == "followup"
+    its_own = StructuredInput(source="text", question="what is a greedy algorithm?")
+    assert resolve_problem_relation(its_own, active)[0] == "none"
     assert resolve_problem_relation(names_a_pattern, active, refers=True)[0] == "followup"
     plain = StructuredInput(source="text", question="tell me about your day")
     assert resolve_problem_relation(plain, active, refers=False)[0] == "none"

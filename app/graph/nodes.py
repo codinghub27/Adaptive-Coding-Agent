@@ -69,6 +69,7 @@ from app.graph.state import (
     AgentStateUpdate,
     GraphContext,
     NodeError,
+    RouteKey,
     SuiteSource,
 )
 from app.graph.subgraphs.debug import run_debug
@@ -77,8 +78,8 @@ from app.graph.subgraphs.dsa import (
     run_dsa,
 )
 from app.graph.subgraphs.explain import run_explain
+from app.input.intent import asks_about_a_concept, is_small_talk
 from app.input.intent import classify_intent as _classify_intent_llm
-from app.input.intent import is_small_talk
 from app.input.normalize import merge_inputs, normalize_text
 from app.input.snippet import is_sample_data, line_offset, repair_snippet
 from app.input.vision import ImageValidationError, extract_from_image
@@ -109,6 +110,14 @@ from app.response.format import (
 )
 from app.response.generate import generate_response
 from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel
+from app.schemas.decision import (
+    EVIDENCE_LABELS,
+    Evidence,
+    Move,
+    Subject,
+    TurnDecision,
+    scaffold_for,
+)
 from app.schemas.event import LearningEventCreate, slug_tag
 from app.schemas.execution import (
     MAX_TEST_CASES,
@@ -126,6 +135,7 @@ from app.schemas.plan import ASSISTANCE_ORDER, TeachingPlan
 from app.schemas.profile import LearnerProfileView
 from app.schemas.response import GeneratedResponse, ResponseSection, ResponseSectionKind
 from app.schemas.tutoring import (
+    AnswerGrade,
     ExecutionView,
     LastThread,
     PendingCheck,
@@ -163,6 +173,7 @@ __all__ = [
     "classify_intent",
     "clarify",
     "debug_agent",
+    "decide_turn",
     "dsa_agent",
     "execute_code",
     "explain_agent",
@@ -172,7 +183,6 @@ __all__ = [
     "plan_teaching",
     "resolve_hint_progress",
     "retrieve_knowledge",
-    "route",
     "safe_node",
     "should_retrieve",
     "understand_input",
@@ -493,6 +503,7 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         hint_progress=hint_progress,
         structured_input=state.structured_input,
         teaching_mode=state.input.teaching_mode,
+        wants_code=state.decision.wants_code if state.decision is not None else None,
     )
     plan = _apply_scaffold_floor(plan, state)
     plan = clamp_assistance(plan, state.input.assistance_cap)
@@ -729,24 +740,159 @@ async def retrieve_knowledge(state: AgentState, runtime: Runtime[GraphContext]) 
     Never touches `runtime.context.llm`/the LLM budget: retrieval runs
     entirely on local embedding/BM25/rerank models.
 
-    It first settles WHICH problem this turn is about (ADAPTIVE-upgrade P1,
-    `_problem_update`, pure and DB-free so the fallback below keeps it even
-    when retrieval fails). A follow-up retrieves against the conversation's
-    active problem, so its corpus context (hint grounding, citations) is about
-    that problem, not about the words "give full answer"; that retrieval skips
-    the intent gate, since a bare follow-up often classifies low-confidence.
+    WHICH problem this turn is about was settled by `decide_turn`. A follow-up
+    retrieves against the conversation's active problem, so its corpus context
+    (hint grounding, citations) is about that problem, not about the words
+    "give full answer"; that retrieval skips the intent gate, since a bare
+    follow-up often classifies low-confidence.
     """
+    retriever = runtime.context.retriever
+    followup = state.problem_relation == "followup"
+    if retriever is None or not (followup or should_retrieve(state)):
+        return {"retrieved_context": []}
+    query = build_retrieval_query(state)
+    if not query:
+        return {"retrieved_context": []}
+    hits = await retriever.retrieve(query, runtime.context.knowledge_top_k)
+    return {"retrieved_context": hits}
+
+
+# --- decide_turn ---------------------------------------------------------------
+
+
+async def decide_turn(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
+    """Make the ONE tutoring decision for this turn (target behaviour section 26).
+
+    Runs once the message has been classified against the loaded conversation.
+    It settles, in this order and nowhere else: which subject the turn is
+    about (`_problem_update`), which agent handles it (`select_route`), and
+    the `TurnDecision` record -- what the learner showed, what they asked for,
+    and the smallest useful move. Pure and DB-free: no model call, no I/O.
+    """
+    del runtime
+    return _decide(state)
+
+
+def _decide(state: AgentState) -> AgentStateUpdate:
     update = _problem_update(state)
     effective = state.model_copy(update=dict(update))
-    retriever = runtime.context.retriever
-    followup = update.get("problem_relation") == "followup"
-    if retriever is None or not (followup or should_retrieve(effective)):
-        return {**update, "retrieved_context": []}
-    query = build_retrieval_query(effective)
-    if not query:
-        return {**update, "retrieved_context": []}
-    hits = await retriever.retrieve(query, runtime.context.knowledge_top_k)
-    return {**update, "retrieved_context": hits}
+    settled = _settle_unsure_reading(effective)
+    if settled is not None:
+        update["intent"] = settled
+        effective = effective.model_copy(update={"intent": settled})
+    chosen = select_route(effective)
+    update["route"] = chosen
+    update["decision"] = _turn_decision(effective, chosen)
+    return update
+
+
+def _settle_unsure_reading(state: AgentState) -> IntentResult | None:
+    """A label for a turn nobody read with confidence and that nothing in the
+    conversation claims, when the message still says what it wants.
+
+    An unsure reading must not cost the learner a turn of "could you confirm?".
+    A follow-up already went to the conversation (`_problem_update`). What is
+    left here is a message with no subject of its own that names a topic the
+    corpus teaches and is shaped as a question about it: it is answered as a
+    concept question. Anything else unsure is asked about, specifically.
+    """
+    intent = state.intent
+    inp = state.structured_input
+    if intent is None or not intent.low_confidence or inp is None:
+        return None
+    if state.problem_relation != "none" or state.thread_followup:
+        return None
+    question = inp.question
+    if inp.problem or inp.code or inp.error or not question or is_small_talk(question):
+        return None
+    if intent.intent is not Intent.CONCEPT_EXPLANATION:
+        return None
+    if not names_corpus_subject(question) or explicit_ask_phrase(question):
+        return None
+    return _relabel(intent, Intent.CONCEPT_EXPLANATION, "names a topic; no confident reading")
+
+
+_REVIEW_MOVE_INTENTS: Final = frozenset({Intent.CODE_REVIEW, Intent.OPTIMIZATION})
+
+
+def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
+    """The record of this turn's decision, from the settled state and route."""
+    intent = state.intent
+    inp = state.structured_input
+    question = inp.question if inp is not None else None
+    reasons: list[str] = [f"route_{chosen}", f"relation_{state.problem_relation}"]
+
+    subject: Subject
+    if chosen == "meta":
+        subject = "conversation"
+    elif state.subject_switched:
+        subject = "earlier"
+    elif state.thread_followup:
+        subject = "last_reply"
+    elif state.problem_relation in ("same", "followup"):
+        subject = "active"
+    elif (
+        state.problem_relation == "new"
+        or (inp is not None and bool(inp.problem or inp.code or inp.error))
+        or chosen in ("explain", "practice")
+    ):
+        subject = "new"
+    elif chosen == "grade":
+        subject = "active" if state.active_problem is not None else "last_reply"
+    else:
+        subject = "none"
+
+    wants_code = False
+    if intent is not None and chosen in ("dsa", "debug"):
+        wants_code = wants_the_code(intent, question, fix=chosen == "debug")
+
+    move: Move
+    if chosen == "meta":
+        move = "meta"
+    elif chosen == "clarify":
+        move = "greet" if is_small_talk(question) else "clarify"
+    elif chosen == "grade":
+        move = "grade"
+    elif chosen == "practice":
+        move = "practice"
+    elif chosen == "debug":
+        move = "code" if wants_code else "debug"
+    elif chosen == "dsa":
+        move = "code" if wants_code else "step"
+    elif intent is not None and intent.intent in _REVIEW_MOVE_INTENTS:
+        move = "review"
+    elif intent is not None and intent.intent is Intent.GENERAL_GUIDANCE:
+        move = "plan"
+    else:
+        move = "explain"
+
+    evidence: Evidence = "none"
+    if question and is_dont_know(question) and not wants_code:
+        evidence = "stuck"
+    elif intent is not None and intent.learner_showed in EVIDENCE_LABELS and not wants_code:
+        evidence = cast(Evidence, intent.learner_showed)
+    confident = intent is not None and not intent.low_confidence
+    if not confident:
+        reasons.append("unsure_reading")
+    return TurnDecision(
+        subject=subject,
+        evidence=evidence,
+        move=move,
+        scaffold=scaffold_for(evidence),
+        wants_code=wants_code,
+        confident=confident,
+        reasons=reasons,
+    )
+
+
+def _decide_turn_fallback(state: AgentState) -> AgentStateUpdate:
+    del state
+    return {
+        "route": "clarify",
+        "decision": TurnDecision(
+            subject="none", move="clarify", confident=False, reasons=["decision_failed"]
+        ),
+    }
 
 
 def _code_submission_update(state: AgentState) -> AgentStateUpdate | None:
@@ -984,6 +1130,7 @@ def _relabel(base: IntentResult | None, intent: Intent, rationale: str) -> Inten
         asks_for_code=base.asks_for_code if base is not None else None,
         about_conversation=base.about_conversation if base is not None else None,
         continues_last_reply=base.continues_last_reply if base is not None else None,
+        learner_showed=base.learner_showed if base is not None else None,
     )
 
 
@@ -1194,8 +1341,8 @@ def resolve_problem_relation(
       trailing "give full code" that normalization kept inside the statement)
       -- else "new".
     - A turn with no statement AND no code is a "followup" when there is an
-      active problem and the turn names no corpus subject of its own ("give
-      full answer", "next hint", "why does that work?"), versus "what is a
+      active problem and the turn asks no concept question of its own ("give
+      full answer", "next hint", "give code using stack"), versus "what is a
       trie?", which is its own question. Deliberately NOT decided by
       retrieval score: measured, "give full answer" retrieves `heaps` at
       -4.79 (above the -5.0 topic floor) and "hi" retrieves `binary_search`
@@ -1230,7 +1377,13 @@ def resolve_problem_relation(
         # (`refers_to_previous`). The corpus-vocabulary check below is the
         # fallback for a turn it did not read.
         return ("followup", active.key) if refers else ("none", None)
-    if names_corpus_subject(question):
+    # Nobody read this turn with confidence. The conversation keeps it: a
+    # message that only MENTIONS a technique ("give code using stack", "can I
+    # use a dict?") is about the problem on the table. It stands on its own
+    # only when it is also shaped as a question about that concept ("what is a
+    # trie?"). Measured: "give code using stack" on an open problem was dropped
+    # as a new subject and answered "could you confirm?".
+    if names_corpus_subject(question) and asks_about_a_concept(question):
         return "none", None
     return "followup", active.key
 
@@ -1260,23 +1413,10 @@ def inherit_active_problem(
 
 
 def _retrieve_knowledge_fallback(state: AgentState) -> AgentStateUpdate:
-    # Retrieval failed, but which problem this turn is about does not depend on
-    # it: keep continuity (relation, ladder key, inherited statement).
-    return {**_problem_update(state), "retrieved_context": []}
-
-
-# --- route --------------------------------------------------------------------
-
-
-async def route(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
-    """Record the routing decision for this turn on the state."""
-    del runtime
-    return {"route": select_route(state)}
-
-
-def _route_fallback(state: AgentState) -> AgentStateUpdate:
+    # Retrieval failed. Which problem this turn is about was decided before it
+    # (`decide_turn`), so continuity is already on the state.
     del state
-    return {"route": "clarify"}
+    return {"retrieved_context": []}
 
 
 # --- Specialized agents: dsa_agent / debug_agent / explain_agent -----------
@@ -2013,6 +2153,25 @@ def _progression_line(progress: SessionProgress, reason: str, difficulty: str) -
     return None
 
 
+_GRADE_EVIDENCE: Final[Mapping[str, Evidence]] = MappingProxyType(
+    {
+        "correct": "correct",
+        "partial": "partially_correct",
+        "incorrect": "incorrect",
+        "dont_know": "stuck",
+    }
+)
+
+
+def _graded_evidence(grade: AnswerGrade) -> Evidence:
+    """A grade in the section 2.2 labels the turn decision uses."""
+    if grade.method == "llm_terminology":
+        return "terminology_error"
+    if grade.grade == "incorrect" and is_catalog_id(grade.misconception_id):
+        return "conceptual_misconception"
+    return _GRADE_EVIDENCE[grade.grade]
+
+
 async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
     """Grade the learner's reply to the agent's pending question (ADAPTIVE-tutoring G1).
 
@@ -2049,7 +2208,13 @@ async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> Age
         }
     )
     errors = [grade.misconception_id] if is_catalog_id(grade.misconception_id) else []
+    update: AgentStateUpdate = {}
+    if state.decision is not None:
+        # The grader knows what the learner showed better than the first
+        # reading did; the decision record carries the firmer label.
+        update["decision"] = state.decision.with_evidence(_graded_evidence(grade))
     return {
+        **update,
         "answer_grade": grade,
         "reaction": reacted.reaction,
         "grade_feedback": reacted.feedback,
@@ -2359,21 +2524,22 @@ _GENERIC_CLARIFY: Final = (
     "a debugging walkthrough, an explanation, or a code review?"
 )
 
-_INTENT_PHRASES: Final[MappingProxyType[Intent, str]] = MappingProxyType(
-    {
-        Intent.DSA_SOLVE: "solve a DSA problem",
-        Intent.DSA_HINT: "get a hint on a DSA problem",
-        Intent.APPROACH_DISCUSSION: "discuss an approach to a problem",
-        Intent.CODE_DEBUG: "debug your code",
-        Intent.ERROR_EXPLANATION: "understand an error",
-        Intent.TEST_CASE_ANALYSIS: "analyze a failing test case",
-        Intent.CODE_EXPLAIN: "understand what your code does",
-        Intent.CONCEPT_EXPLANATION: "explain a concept",
-        Intent.IMAGE_CODE_ANALYSIS: "analyze code from an image",
-        Intent.CODE_REVIEW: "review your code",
-        Intent.OPTIMIZATION: "optimize your code",
-        Intent.PRACTICE_REQUEST: "practise on a new problem",
-    }
+#: A turn nothing in the conversation claims and nobody could read. The
+#: question says what is MISSING, so the learner's next message can supply it.
+#: (It used to guess a label back at them: "It looks like you might want to
+#: explain a concept. Could you confirm?")
+_NOTHING_TO_ANCHOR: Final = (
+    "I can't tell what that refers to: there is no problem or code from you in this "
+    "conversation yet. Could you paste the problem statement or your code, and say what "
+    "you want with it -- a first step, the bug found, an explanation, or the full code?"
+)
+_WHICH_SUBJECT: Final = (
+    "Is that about **{title}**, which we were working on, or something new? If it's "
+    "new, paste the problem or name the topic and I'll start there."
+)
+_WHICH_SUBJECT_CODE: Final = (
+    "Is that about the code you shared earlier, or something new? If it's new, paste "
+    "the problem or name the topic and I'll start there."
 )
 
 #: A greeting / acknowledgement (low-confidence GENERAL_GUIDANCE) gets an
@@ -2425,6 +2591,18 @@ def _meta_reply(state: AgentState) -> str:
     return f"{lead}\n\nShall we keep going -- what would you try first on it?"
 
 
+def _unanchored_question(state: AgentState) -> str:
+    """What to ask when the turn could not be tied to anything: name the
+    subject the conversation does have, or say that it has none."""
+    active = state.active_problem
+    if _code_anchored(active):
+        return _WHICH_SUBJECT_CODE
+    title = problem_title(active)
+    if title is not None:
+        return _WHICH_SUBJECT.format(title=title)
+    return _NOTHING_TO_ANCHOR
+
+
 async def clarify(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
     """Ask a deterministic clarifying question, or answer a question about the
     conversation (`route == "meta"`); never echoes the learner's message."""
@@ -2441,20 +2619,12 @@ async def clarify(state: AgentState, runtime: Runtime[GraphContext]) -> AgentSta
         text = _IMAGE_UNREADABLE_REPLY
     elif state.structured_input is None or state.structured_input.is_empty:
         text = _ASK_FOR_INPUT
-    elif state.intent is not None and state.intent.intent not in _INTENT_PHRASES:
+    elif is_small_talk(state.structured_input.question):
         # Only a greeting gets the greeting: "i asked for python code" was
         # answered with "Hi! Share a problem statement ...".
-        greeting = is_small_talk(state.structured_input.question)
-        text = _GREETING_REPLY if greeting else _GENERIC_CLARIFY
-    elif state.intent is not None:
-        phrase = _INTENT_PHRASES[state.intent.intent]
-        text = (
-            f"It looks like you might want to {phrase}. Could you confirm, or let me "
-            "know if you'd prefer a hint, a debugging walkthrough, an explanation, or "
-            "a code review?"
-        )
+        text = _GREETING_REPLY
     else:
-        text = _GENERIC_CLARIFY
+        text = _unanchored_question(state)
     return {"agent_output": AgentOutcome(text=text, topic=None, solved=None)}
 
 
@@ -3352,7 +3522,7 @@ FALLBACKS: Final[MappingProxyType[str, Callable[[AgentState], AgentStateUpdate]]
             "load_learner_profile": _load_learner_profile_fallback,
             "plan_teaching": _plan_teaching_fallback,
             "retrieve_knowledge": _retrieve_knowledge_fallback,
-            "route": _route_fallback,
+            "decide_turn": _decide_turn_fallback,
             "dsa_agent": _agent_outcome_fallback,
             "debug_agent": _agent_outcome_fallback,
             "explain_agent": _agent_outcome_fallback,

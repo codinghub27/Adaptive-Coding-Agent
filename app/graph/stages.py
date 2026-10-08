@@ -23,9 +23,9 @@ STAGE_LABELS: Final[Mapping[str, str]] = MappingProxyType(
         "understand_input": "Reading your input",
         "classify_intent": "Working out what you need",
         "load_learner_profile": "Recalling how you learn",
+        "decide_turn": "Deciding how to help",
         "plan_teaching": "Planning how to help",
         "retrieve_knowledge": "Looking up references",
-        "route": "Choosing an approach",
         "dsa_agent": "Working through the problem",
         "debug_agent": "Debugging your code",
         # Also answers concept questions and study-plan requests with no code

@@ -24,6 +24,7 @@ from app.llm.base import LLMClient
 from app.schemas.agent_results import AgentResult
 from app.schemas.base import APIModel
 from app.schemas.conversation import MessageView
+from app.schemas.decision import TurnDecision
 from app.schemas.event import LearningEventCreate
 from app.schemas.execution import ExecutionRequest, ExecutionResult, Verdict
 from app.schemas.input import ActiveProblem, ProblemRelation, StructuredInput
@@ -153,6 +154,9 @@ class AgentState(BaseModel):
     execution_result: ExecutionResult | None = None
     verification: Verdict | None = None
     route: RouteKey | None = None
+    #: The one tutoring decision for this turn (`decide_turn`): what it is
+    #: about, what the learner showed, what to do. Every later node reads it.
+    decision: TurnDecision | None = None
     agent_output: AgentOutcome | None = None
     agent_result: AgentResult | None = None
     suite_source: SuiteSource = "none"
@@ -212,6 +216,7 @@ class AgentStateUpdate(TypedDict, total=False):
     execution_result: ExecutionResult | None
     verification: Verdict | None
     route: RouteKey | None
+    decision: TurnDecision | None
     agent_output: AgentOutcome | None
     agent_result: AgentResult | None
     suite_source: SuiteSource

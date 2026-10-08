@@ -39,6 +39,7 @@ from app.graph.nodes import (
     clarify,
     classify_intent,
     debug_agent,
+    decide_turn,
     dsa_agent,
     execute_code,
     explain_agent,
@@ -48,7 +49,6 @@ from app.graph.nodes import (
     plan_teaching,
     practice_agent,
     retrieve_knowledge,
-    route,
     safe_node,
     understand_input,
     update_learner_model,
@@ -91,9 +91,9 @@ NODE_FUNCTIONS: Final[Mapping[str, Node]] = MappingProxyType(
         "understand_input": understand_input,
         "classify_intent": classify_intent,
         "load_learner_profile": load_learner_profile,
+        "decide_turn": decide_turn,
         "plan_teaching": plan_teaching,
         "retrieve_knowledge": retrieve_knowledge,
-        "route": route,
         "dsa_agent": dsa_agent,
         "debug_agent": debug_agent,
         "explain_agent": explain_agent,
@@ -134,15 +134,18 @@ def build_graph(node_overrides: Mapping[str, Node] | None = None) -> _CompiledGr
     # so a follow-up is read as a follow-up instead of as a first message.
     builder.add_edge("understand_input", "load_learner_profile")
     builder.add_edge("load_learner_profile", "classify_intent")
-    builder.add_edge("classify_intent", "retrieve_knowledge")
+    # ONE decision per turn, made as soon as the message has been read against
+    # the conversation: what the turn is about, what the learner showed, what
+    # to do. Retrieval, the planner and the agents all read it.
+    builder.add_edge("classify_intent", "decide_turn")
+    builder.add_edge("decide_turn", "retrieve_knowledge")
     builder.add_edge("retrieve_knowledge", "plan_teaching")
-    builder.add_edge("plan_teaching", "route")
     # `dict(ROUTE_NODES)` types as `dict[RouteKey, str]`, which pyright treats
     # as an invariant mismatch against `add_conditional_edges`'s
     # `dict[Hashable, str]` param; a comprehension lets bidirectional
     # inference retarget the key type instead.
     path_map: dict[Hashable, str] = {key: value for key, value in ROUTE_NODES.items()}
-    builder.add_conditional_edges("route", route_after, path_map)
+    builder.add_conditional_edges("plan_teaching", route_after, path_map)
     # Every route node runs any code it produced through the sandbox +
     # verifier before responding, except `clarify` (it never runs code) which
     # goes straight to `final_response`. Derived from `ROUTE_NODES` rather

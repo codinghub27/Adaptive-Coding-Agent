@@ -22,11 +22,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.input._text import extract_json_object
 from app.llm.base import ChatMessage, LLMClient, LLMError
+from app.schemas.decision import EVIDENCE_LABELS
 from app.schemas.input import CodeBlock, StructuredInput
 from app.schemas.intent import LOW_CONFIDENCE_THRESHOLD, Intent, IntentResult
 
 __all__ = [
     "INTENT_SYSTEM_PROMPT",
+    "asks_about_a_concept",
     "classify_intent",
     "fallback_intent",
     "names_a_request",
@@ -98,7 +100,8 @@ Reply with ONLY a single JSON object and nothing else, in exactly this shape:
 {"intent": "<ONE_OF_THE_INTENT_NAMES_ABOVE>", "confidence": <number between 0 and 1>, \
 "refers_to_previous": <true|false>, "earlier_subject": <true|false>, \
 "asks_for_code": <true|false>, "about_conversation": <true|false>, \
-"continues_last_reply": <true|false>, "rationale": "<one short sentence>"}
+"continues_last_reply": <true|false>, "learner_showed": "<label>", \
+"rationale": "<one short sentence>"}
 - refers_to_previous: true when the message is about the active_subject (a follow-up, \
 an answer to the tutor, "that problem", "it"); false when it stands on its own or starts \
 something new.
@@ -120,6 +123,14 @@ refers_to_previous false, and use the intent of that reply: GENERAL_GUIDANCE for
 CONCEPT_EXPLANATION for an explanation. The active_subject may be an OLD problem the \
 learner has moved on from: a follow-up belongs to the last reply, not to it, unless the \
 message is clearly about that problem.
+- learner_showed: what the learner just DEMONSTRATED, when the message is their own \
+answer, reasoning or attempt (most often a reply to pending_question or to the tutor's \
+last question). Judge the reasoning, not the vocabulary. One of: "correct"; \
+"terminology_error" (the reasoning is right but a technique or term is misnamed); \
+"partially_correct" (on track, something missing); "conceptual_misconception" (the mental \
+model itself is wrong); "implementation_error" (the idea is right, the code has a bug); \
+"incomplete"; "incorrect"; "stuck" ("I don't know", "no idea", "I don't know how"). Use \
+"none" for a request, a question, a new problem, or anything that is not a response.
 
 Lower the confidence value whenever the request is genuinely ambiguous between two or more \
 intents.
@@ -283,6 +294,7 @@ class _LLMIntentOutput(BaseModel):
     asks_for_code: bool | None = None
     about_conversation: bool | None = None
     continues_last_reply: bool | None = None
+    learner_showed: str | None = None
 
 
 def _parse_llm_output(content: str) -> _LLMIntentOutput | None:
@@ -340,6 +352,13 @@ def _build_user_message(inp: StructuredInput, context: str | None = None) -> str
     return message
 
 
+def _evidence_label(raw: str | None) -> str | None:
+    """`raw` as one of the closed evidence labels, else `None`. The model's
+    own wording never leaves this function."""
+    label = (raw or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return label if label in EVIDENCE_LABELS else None
+
+
 async def _classify_with_llm(
     inp: StructuredInput, client: LLMClient, context: str | None = None
 ) -> IntentResult:
@@ -373,6 +392,7 @@ async def _classify_with_llm(
         asks_for_code=parsed.asks_for_code if sure else None,
         about_conversation=parsed.about_conversation if sure else None,
         continues_last_reply=parsed.continues_last_reply if sure else None,
+        learner_showed=_evidence_label(parsed.learner_showed) if sure else None,
     )
 
 
@@ -473,6 +493,31 @@ def names_a_request(text: str) -> bool:
     ("give me a problem", "hint", "explain", ...)? Deterministic; used to tell
     a bare answer ("7?") from a short request ("another problem")."""
     return _keyword_intent(text.lower(), has_code=False, has_error_field=False) is not None
+
+
+def asks_about_a_concept(text: str | None) -> bool:
+    """Is `text` shaped as a question about a concept ("what is a trie",
+    "explain binary search", "difference between BFS and DFS")? The keyword
+    checklist's own concept and explain vocabulary; used only where no model
+    read the turn, to tell a question that stands alone from a follow-up."""
+    lowered = (text or "").lower().strip()
+    if _POINTS_AT_THE_SUBJECT_RE.search(lowered):
+        # "how do I solve this with two pointers" is about the thing on the
+        # table, whatever technique it names.
+        return False
+    return (
+        _any_keyword(lowered, _CONCEPT_KEYWORDS)
+        or _any_keyword(lowered, _EXPLAIN_KEYWORDS)
+        or _OPENS_AS_A_QUESTION_RE.match(lowered) is not None
+    )
+
+
+#: The grammatical shape of a question that stands on its own, and of one that
+#: points back at the conversation. Shapes, not a vocabulary of requests.
+_OPENS_AS_A_QUESTION_RE: Final = re.compile(r"(what|how|why|when|which|explain|define|describe)\b")
+_POINTS_AT_THE_SUBJECT_RE: Final = re.compile(
+    r"\b(this|that|it|here|above|my (code|solution|attempt|approach)|the problem)\b"
+)
 
 
 def _default_intent(inp: StructuredInput, *, has_code: bool) -> Intent:

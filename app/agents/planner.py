@@ -666,8 +666,15 @@ def build_plan(
     hint_progress: HintProgress | None = None,
     structured_input: StructuredInput | None = None,
     teaching_mode: TeachingMode = DEFAULT_TEACHING_MODE,
+    wants_code: bool | None = None,
 ) -> TeachingPlan:
     """Apply the deterministic rule ladder to produce this turn's `TeachingPlan`.
+
+    `wants_code` is the turn decision's reading of "the learner asked for the
+    code" (`TurnDecision.wants_code`). When given, it is used as is: the
+    planner applies policy (Challenge mode, the ladder) to that ask and does
+    not read the message for it a second time. `None` (no decision on the
+    state) falls back to reading it here.
 
     `hint_progress` and `structured_input` feed only the Packet P3
     escalation rule below (see the block after `capped_initial_assistance`);
@@ -738,7 +745,11 @@ def build_plan(
         # turn's -- the same value `next_hint` will climb to.
         ceiling = base_ladder_ceiling(assistance, progress)
         ceiling_reached = progress.last_level is not None and progress.last_level >= ceiling
-        explicit_ask = _explicit_solution_request(intent, structured_input)
+        explicit_ask = (
+            wants_code
+            if wants_code is not None
+            else _explicit_solution_request(intent, structured_input)
+        )
         verified_attempt = progress.has_verified_attempt
         # AD-4: the teaching mode decides what "enough effort" means. The
         # ceiling + explicit ask are required in every mode; the reveal itself
@@ -788,10 +799,14 @@ def build_plan(
     if (
         intent.intent in DEBUG_ROUTE_INTENTS
         and teaching_mode != "challenge"
-        and wants_the_code(
-            intent,
-            structured_input.question if structured_input is not None else None,
-            fix=True,
+        and (
+            wants_code
+            if wants_code is not None
+            else wants_the_code(
+                intent,
+                structured_input.question if structured_input is not None else None,
+                fix=True,
+            )
         )
     ):
         assistance = "full"

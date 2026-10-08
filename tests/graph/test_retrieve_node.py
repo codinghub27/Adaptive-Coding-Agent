@@ -263,10 +263,6 @@ async def test_retrieve_knowledge_calls_retriever_when_should_retrieve_true() ->
     update = await retrieve_knowledge(state, _runtime(retriever=retriever, knowledge_top_k=3))
 
     assert update == {
-        # ADAPTIVE-upgrade P1: the node also reports how the turn relates to
-        # the conversation's active problem (none here: no statement stored).
-        "problem_relation": "none",
-        "problem_key": None,
         "retrieved_context": [_HIT_1, _HIT_2],
     }
     assert retriever.calls == [("two pointers pattern", 3)]
@@ -282,10 +278,6 @@ async def test_retrieve_knowledge_skips_when_should_retrieve_false() -> None:
     update = await retrieve_knowledge(state, _runtime(retriever=retriever))
 
     assert update == {
-        # ADAPTIVE-upgrade P1: the node also reports how the turn relates to
-        # the conversation's active problem (none here: no statement stored).
-        "problem_relation": "none",
-        "problem_key": None,
         "retrieved_context": [],
     }
     assert retriever.calls == []
@@ -297,10 +289,6 @@ async def test_retrieve_knowledge_none_retriever_returns_empty() -> None:
     update = await retrieve_knowledge(state, _runtime(retriever=None))
 
     assert update == {
-        # ADAPTIVE-upgrade P1: the node also reports how the turn relates to
-        # the conversation's active problem (none here: no statement stored).
-        "problem_relation": "none",
-        "problem_key": None,
         "retrieved_context": [],
     }
 
@@ -415,11 +403,11 @@ def test_graph_has_retrieve_knowledge_edges_and_unchanged_route_targets() -> Non
     drawable = get_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in drawable.edges}
 
-    assert ("classify_intent", "retrieve_knowledge") in edges
+    assert ("classify_intent", "decide_turn") in edges
+    assert ("decide_turn", "retrieve_knowledge") in edges
     assert ("retrieve_knowledge", "plan_teaching") in edges
-    assert ("plan_teaching", "route") in edges
 
-    route_targets = {edge.target for edge in drawable.edges if edge.source == "route"}
+    route_targets = {edge.target for edge in drawable.edges if edge.source == "plan_teaching"}
     assert route_targets == set(ROUTE_NODES.values())
 
 

@@ -312,14 +312,16 @@ async def test_clarify_empty_input_asks_for_problem_code_error() -> None:
     assert MARKER not in outcome.text
 
 
-async def test_clarify_with_intent_mentions_best_guess_phrase() -> None:
+async def test_clarify_says_what_is_missing_instead_of_guessing_a_label() -> None:
     state = _state(structured_input=_input(), intent=_intent(Intent.CODE_DEBUG, 0.9), plan=None)
 
     update = await clarify(state, _runtime())
 
     outcome = update.get("agent_output")
     assert outcome is not None
-    assert "debug your code" in outcome.text
+    assert "It looks like you might want" not in outcome.text
+    assert "no problem or code" in outcome.text
+    assert outcome.text.rstrip().endswith("?")
     assert MARKER not in outcome.text
 
 
@@ -331,7 +333,7 @@ async def test_clarify_generic_variant_when_no_intent_but_has_input() -> None:
     outcome = update.get("agent_output")
     assert outcome is not None
     assert MARKER not in outcome.text
-    assert "hint" in outcome.text
+    assert "problem statement or your code" in outcome.text
 
 
 async def test_clarify_says_the_image_could_not_be_read() -> None:
