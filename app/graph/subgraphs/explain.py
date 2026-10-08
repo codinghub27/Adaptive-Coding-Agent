@@ -51,6 +51,7 @@ from app.graph.state import AgentState, GraphContext
 from app.schemas.agent_results import CodeStructureNode, ExplainResult, LineExplanation
 from app.schemas.execution import ExecutionRequest
 from app.schemas.input import StructuredInput
+from app.tutoring.adaptation import turn_context
 
 __all__ = [
     "ExplainRunResult",
@@ -70,6 +71,9 @@ class ExplainState(TypedDict, total=False):
 
     problem: StructuredInput | None
     code: str | None
+    #: `<tutor_state>` and `<conversation_so_far>` (ending with this turn's own
+    #: question) for the line-explanation prompt.
+    turn_context: str
 
     structure: CodeStructureNode | None
     line_explanations: list[LineExplanation]
@@ -97,7 +101,9 @@ async def _line_explanations(state: ExplainState, runtime: Runtime[GraphContext]
     code = state.get("code")
     if not code:
         return {"line_explanations": []}
-    explanations = await generate_line_explanations(code, runtime.context.llm)
+    explanations = await generate_line_explanations(
+        code, runtime.context.llm, state.get("turn_context", "")
+    )
     return {"line_explanations": explanations}
 
 
@@ -173,9 +179,15 @@ class ExplainRunResult:
 async def run_explain(state: AgentState, runtime: Runtime[GraphContext]) -> ExplainRunResult:
     """Run the explainer subgraph for this turn and map the result back."""
     problem = state.structured_input
+    exchange = [(message.role, message.content) for message in state.recent_context]
+    if problem is not None and problem.question:
+        # The explainer is shown the code line by line; without this it never
+        # saw what the learner asked about that code.
+        exchange.append(("user", problem.question))
     initial: ExplainState = {
         "problem": problem,
         "code": extract_learner_code(problem),
+        "turn_context": turn_context(state.decision, state.adaptation, exchange),
     }
     final_state = await get_explain_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         initial, context=runtime.context

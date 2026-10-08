@@ -67,6 +67,7 @@ from app.schemas.execution import (
     Verdict,
 )
 from app.schemas.input import StructuredInput
+from app.tutoring.adaptation import turn_context
 
 __all__ = [
     "MAX_PATCH_ATTEMPTS",
@@ -103,6 +104,8 @@ class DebugState(TypedDict, total=False):
     wants_code: bool
     #: Lines the snippet repair put above the learner's own first line (F5).
     line_offset: int
+    #: `<tutor_state>` and `<conversation_so_far>` for the explanation prompt.
+    turn_context: str
 
     presented_code: str | None
     presented_label: str | None
@@ -273,6 +276,7 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
         llm=runtime.context.llm,
         references=state.get("references", []),
         failure_established=state.get("has_established_failure", False),
+        turn_context=state.get("turn_context", ""),
     )
     return {
         "bug_explanation": reading.explanation,
@@ -492,6 +496,7 @@ async def _static_review(
             ("common_mistakes", "when_not_to_use"),
         ),
         failure_established=False,
+        turn_context=_turn_context(state),
     )
     result = DebugResult(
         static_findings=findings,
@@ -507,6 +512,13 @@ async def _static_review(
         citations=reading.citations,
     )
     return DebugRunResult(result=result, execution_request=None)
+
+
+def _turn_context(state: AgentState) -> str:
+    """The turn decision, the adaptation and the recent exchange, for the
+    prompt that explains the bug."""
+    recent = [(message.role, message.content) for message in state.recent_context]
+    return turn_context(state.decision, state.adaptation, recent)
 
 
 def _is_fixed(verdict: Verdict | None) -> bool:
@@ -545,6 +557,7 @@ async def run_debug(
         "attempts": 0,
         "wants_code": wants_code,
         "line_offset": offset,
+        "turn_context": _turn_context(state),
         "references": turn_references(
             state.retrieved_context,
             pattern_chunks(state.plan.topic if state.plan is not None else None),

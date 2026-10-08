@@ -72,6 +72,7 @@ from app.schemas.execution import (
     Verdict,
 )
 from app.schemas.input import StructuredInput
+from app.tutoring.adaptation import TURN_CONTEXT_RULE, turn_context
 
 __all__ = [
     "ReviewRunResult",
@@ -355,7 +356,7 @@ _UNTRUSTED_PREAMBLE: Final = (
     "issues a deterministic analysis already found -- do not repeat those, only add genuinely "
     "new observations. Never assert anything about whether the code is correct; that is decided "
     "elsewhere, never by you.\n\n"
-)
+) + TURN_CONTEXT_RULE
 
 _STYLE_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "Review the code for readability and Python best-practices issues not already listed in "
@@ -503,10 +504,13 @@ async def _advisory_findings(
     total_lines: int,
     llm: LLMClient,
     references: Sequence[Reference] = (),
+    context: str = "",
 ) -> tuple[list[ReviewFinding], list[str]]:
     """LLM call #2 (only when there is code): advisory edge_cases/improvements
     findings, and the labels of the trusted reference notes it reported using."""
     user = _review_user_block(problem, code, ())
+    if context:
+        user = f"{context}\n{user}"
     notes = references_block(references)
     if notes:
         user = f"{user}\n{notes}"
@@ -590,8 +594,14 @@ async def review_code(
             pattern_chunks(state.plan.topic if state.plan is not None else None),
             ("common_mistakes", "complexity"),
         )
+        recent = [(message.role, message.content) for message in state.recent_context]
         advisory, citations = await _advisory_findings(
-            problem, code, total_lines, runtime.context.llm, references
+            problem,
+            code,
+            total_lines,
+            runtime.context.llm,
+            references,
+            turn_context(state.decision, state.adaptation, recent),
         )
         findings.extend(advisory)
 
