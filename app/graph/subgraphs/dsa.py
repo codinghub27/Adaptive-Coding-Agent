@@ -384,8 +384,10 @@ async def _hint(state: DSAState, runtime: Runtime[GraphContext]) -> DSAState:
 
 #: How the tutor opens when the learner has just answered its question. Fixed
 #: wording chosen by the solver's verdict on their REASONING: a right idea
-#: under the wrong name is credited, never met with "Not quite". Wording only
-#: -- a model's verdict is not evidence and never reaches the learner profile.
+#: under the wrong name is credited, never met with "Not quite". The verdict
+#: also reaches the learner profile, as SOFT evidence only (`tutor_reply`,
+#: see `app.memory.profile.SOFT_SOURCES`): it can never mark a problem solved
+#: or lift a skill into the hard band. Only the sandbox can.
 _REPLY_LEADS: Final[Mapping[str, str]] = {
     "right": "That's right.",
     "right_idea_wrong_name": "Your reasoning is right -- only the name is different.",
@@ -477,6 +479,10 @@ class DSARunResult:
     #: The turn's plan with its topic corrected by the solver, or `None` when
     #: the topic stands (see `resolved_topic`).
     plan: TeachingPlan | None = None
+    #: The solver's reading of the learner's reply to the tutor's last
+    #: question ("right", "partly", ...), or `None` when the message was not a
+    #: reply. A model's judgement of reasoning: soft evidence, never `solved`.
+    reply_verdict: str | None = None
 
 
 _LEARNER_RUN_FAILED_MESSAGE: Final = "running your code failed unexpectedly"
@@ -707,10 +713,13 @@ async def run_dsa(
     # turn's own `verification` shows the sandbox pass the learner can trust.
     solution_request = solution.request if solution is not None else None
     execution_request = learner_request or solution_request
+    analysis = final_state.get("analysis")
+    verdict = (analysis.reply_verdict or "").strip().lower() if analysis is not None else ""
     return DSARunResult(
         result=result,
         execution_request=execution_request,
         plan=plan if topic_corrected else None,
+        reply_verdict=verdict if verdict in _REPLY_LEADS and state.recent_context else None,
     )
 
 

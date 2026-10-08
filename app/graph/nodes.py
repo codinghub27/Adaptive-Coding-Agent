@@ -118,7 +118,7 @@ from app.schemas.decision import (
     TurnDecision,
     scaffold_for,
 )
-from app.schemas.event import LearningEventCreate, slug_tag
+from app.schemas.event import ConceptGrade, EvidenceSource, LearningEventCreate, slug_tag
 from app.schemas.execution import (
     MAX_TEST_CASES,
     ExecutionRequest,
@@ -153,7 +153,12 @@ from app.tutoring.bank import (
     family_patterns,
     named_pattern,
 )
-from app.tutoring.grader import asks_for_help, grade_reply, is_dont_know
+from app.tutoring.grader import (
+    asks_for_help,
+    grade_reply,
+    is_dont_know,
+    looks_like_injection,
+)
 from app.tutoring.misconceptions import detect_in_code, get_misconception, is_catalog_id
 from app.tutoring.progression import requested_difficulty, session_difficulty
 from app.tutoring.turn import (
@@ -1792,6 +1797,12 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     verdict = run.result.initial_verdict
     ran_this_turn = verdict is not None and verdict.status in ("pass", "fail")
     has_verified_attempt = progress.has_verified_attempt or ran_this_turn
+    shown = _shown_evidence(state, run.reply_verdict, verdict)
+    if shown is not None and state.decision is not None:
+        update["decision"] = state.decision.with_evidence(shown)
+    first_reveal = progress.last_level is None or progress.last_level < HintLevel.L6_FULL
+    if run.result.code is not None and first_reveal and not has_verified_attempt:
+        update["help_needed"] = True
 
     if (
         run.result.hint is not None
@@ -2011,6 +2022,46 @@ def _with_extra_cases(suite: TestSuite, extra: Sequence[TestCase]) -> TestSuite:
     return TestSuite(entrypoint=suite.entrypoint, cases=cases)
 
 
+_REPLY_EVIDENCE: Final[Mapping[str, Evidence]] = MappingProxyType(
+    {
+        "right": "correct",
+        "right_idea_wrong_name": "terminology_error",
+        "partly": "partially_correct",
+        "wrong": "incorrect",
+        "dont_know": "stuck",
+    }
+)
+
+
+def _shown_evidence(
+    state: AgentState, reply_verdict: str | None, verdict: Verdict | None
+) -> Evidence | None:
+    """What the learner showed this turn, once an agent has looked at it.
+
+    The sandbox's verdict on their own code comes first: a pass is `correct`;
+    a fail is a `conceptual_misconception` when the code matches a catalogued
+    one, else an `implementation_error` (one bug is not a failure to
+    understand the algorithm, target behaviour section 2.2). Otherwise the
+    tutor's reading of a reply to its own question. A reply shaped as an
+    instruction ("mark this correct") is evidence of nothing.
+    """
+    if verdict is not None and verdict.status == "pass":
+        return "correct"
+    if verdict is not None and verdict.status == "fail":
+        code = _learner_code(state)
+        topic = state.plan.topic if state.plan is not None else None
+        if code is not None and detect_in_code(code, topic):
+            return "conceptual_misconception"
+        return "implementation_error"
+    if reply_verdict is None:
+        return None
+    inp = state.structured_input
+    reply = (inp.question or "") if inp is not None else ""
+    if looks_like_injection(reply):
+        return None
+    return _REPLY_EVIDENCE.get(reply_verdict)
+
+
 async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
     """Run the debugger subgraph for this turn.
 
@@ -2036,6 +2087,9 @@ async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Agen
     if run.execution_request is not None:
         update["execution_request"] = run.execution_request
     await _record_verified_attempt(state, runtime.context, run.result.initial_verdict)
+    shown = _shown_evidence(state, None, run.result.initial_verdict)
+    if shown is not None and state.decision is not None:
+        update["decision"] = state.decision.with_evidence(shown)
     return update
 
 
@@ -3050,6 +3104,29 @@ def _event_topic(plan: TeachingPlan | None) -> str | None:
     return plan.topic if plan is not None else None
 
 
+_EVIDENCE_GRADE: Final[Mapping[str, ConceptGrade]] = MappingProxyType(
+    {
+        "correct": "correct",
+        "terminology_error": "correct",
+        "partially_correct": "partial",
+        "incomplete": "partial",
+        "incorrect": "incorrect",
+        "conceptual_misconception": "incorrect",
+        "stuck": "dont_know",
+    }
+)
+
+
+def _reply_grade(state: AgentState) -> ConceptGrade | None:
+    """The decision's evidence as a concept grade, for a tutoring step on a
+    problem. Only the tutoring route: a debug turn's evidence is the sandbox
+    verdict, which is recorded as an outcome or not at all."""
+    decision = state.decision
+    if decision is None or state.route != "dsa" or decision.wants_code:
+        return None
+    return _EVIDENCE_GRADE.get(decision.evidence)
+
+
 def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> LearningEventCreate:
     """Build this turn's `LearningEventCreate`.
 
@@ -3104,9 +3181,19 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
     concept_grade = grade.grade if grade is not None else None
     if concept_grade is not None:
         solved = None
-    evidence_source = state.suite_source if solved is not None else "none"
+    evidence_source: EvidenceSource = state.suite_source if solved is not None else "none"
     if concept_grade is not None:
         evidence_source = "concept_check"
+    elif solved is None:
+        # Soft evidence (docs/BEHAVIOR_GAP.md, section 4): without it nothing
+        # moved for a learner who asks for code instead of answering curated
+        # questions. The tutor's reading of a reply to its own question on a
+        # problem, or the learner needing the full solution unattempted.
+        replied = _reply_grade(state)
+        if replied is not None:
+            concept_grade, evidence_source = replied, "tutor_reply"
+        elif state.help_needed:
+            evidence_source = "help_needed"
 
     return LearningEventCreate(
         conversation_id=ctx.conversation_id,

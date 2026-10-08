@@ -27,7 +27,20 @@ __all__ = [
 ]
 
 Difficulty = Literal["easy", "medium", "hard"]
-EvidenceSource = Literal["extracted", "synthesised", "none", "unknown", "concept_check"]
+#: `concept_check`: a graded answer to a curated question. `tutor_reply`: the
+#: tutor's own reading of a reply to its guiding question on a problem.
+#: `help_needed`: the learner needed the full solution on a problem they had
+#: not run an attempt at. The last three are soft evidence: they never set
+#: `solved` and never make a learner "strong" (see `app.memory.profile`).
+EvidenceSource = Literal[
+    "extracted",
+    "synthesised",
+    "none",
+    "unknown",
+    "concept_check",
+    "tutor_reply",
+    "help_needed",
+]
 
 #: A graded conceptual answer (ADAPTIVE-tutoring G2); mirrors
 #: `app.schemas.tutoring.Grade` (kept here to avoid an import cycle).

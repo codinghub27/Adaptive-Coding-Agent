@@ -188,6 +188,10 @@ class AgentState(BaseModel):
     grade_handoff: bool = False
     practice: PracticeRecord | None = None
     submitted_code: bool = False
+    #: The full solution was handed over this turn, for the first time on this
+    #: problem, to a learner who had not run an attempt at it. Soft evidence
+    #: for the learner model (`help_needed`).
+    help_needed: bool = False
     next_pending: PendingCheck | None = None
     next_progress: SessionProgress | None = None
     tutoring: TutoringView | None = None
@@ -235,6 +239,7 @@ class AgentStateUpdate(TypedDict, total=False):
     grade_handoff: bool
     practice: PracticeRecord | None
     submitted_code: bool
+    help_needed: bool
     next_pending: PendingCheck | None
     next_progress: SessionProgress | None
     tutoring: TutoringView | None

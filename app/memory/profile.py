@@ -32,7 +32,7 @@ transaction and must `await session.commit()` (or roll back) themselves.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from functools import cache
 from types import MappingProxyType
@@ -57,6 +57,8 @@ __all__ = [
     "CONCEPT_ALPHA",
     "CONCEPT_CEILING",
     "CONCEPT_SCORES",
+    "HELP_ALPHA",
+    "SOFT_SOURCES",
     "apply_event",
     "concept_update",
     "common_errors_list",
@@ -92,6 +94,25 @@ CONCEPT_CEILING: Final = 0.67
 CONCEPT_SCORES: Final[Mapping[str, float]] = MappingProxyType(
     {"correct": 0.85, "partial": 0.55, "incorrect": 0.2, "dont_know": 0.25}
 )
+
+
+#: EWMA weight of one "needed the full solution" event. Asking for the code
+#: is weak evidence: it says the learner did not get there alone this time,
+#: not that they cannot. Five such problems on a topic take a learner from the
+#: prior to weak (0.5 -> 0.48 -> 0.462 -> 0.446 -> 0.431 -> 0.418); one sandbox
+#: failure does it in one step. Before this, no number moved at all for a
+#: learner who asks for code instead of answering questions: 59 real events,
+#: none carrying evidence (docs/BEHAVIOR_GAP.md, section 4).
+HELP_ALPHA: Final = 0.1
+
+#: Evidence sources that are soft: folded in at a low weight, on the family
+#: estimate first, and never able to lift a skill into the HARD band.
+SOFT_SOURCES: Final = frozenset({"concept_check", "tutor_reply", "help_needed"})
+
+
+def help_update(old: float) -> float:
+    """One "needed the full solution" event folded into a skill estimate."""
+    return round(min(old, smooth(old, FULL_SOLUTION_SCORE, HELP_ALPHA)), 6)
 
 
 def concept_update(old: float, grade: str) -> float:
@@ -176,6 +197,19 @@ def skill_keys(event: LearningEventCreate) -> list[str]:
     return keys
 
 
+def _soft_step(event: LearningEventCreate) -> Callable[[float], float] | None:
+    """The update one soft-evidence event applies to a skill, or `None` when
+    the event is exposure only or carries a sandbox outcome."""
+    if event.solved is not None:
+        return None
+    if event.evidence_source in ("concept_check", "tutor_reply") and event.concept_grade:
+        grade = event.concept_grade
+        return lambda old: concept_update(old, grade)
+    if event.evidence_source == "help_needed":
+        return help_update
+    return None
+
+
 def apply_event(
     skill_levels: Mapping[str, float],
     common_errors: Mapping[str, int],
@@ -196,21 +230,16 @@ def apply_event(
     Returns new dicts; never mutates the inputs.
     """
     new_skills = dict(skill_levels)
-    if (
-        event.solved is None
-        and event.evidence_source == "concept_check"
-        and event.concept_grade is not None
-    ):
-        # Conceptual evidence lands on the FAMILY estimate, and on the topic's
-        # own key only once that key carries real (sandbox) evidence. A single
+    soft = _soft_step(event)
+    if soft is not None:
+        # Soft evidence lands on the FAMILY estimate, and on the topic's own
+        # key only once that key carries real (sandbox) evidence. A single
         # answer must not create a topic key that shadows a stronger family
         # estimate in `skill_for` (measured: it slowed adaptation 9 -> 22 turns).
         for key in skill_keys(event):
             current = new_skills.get(key)
             if key.startswith(FAMILY_PREFIX) or (current is not None and current != PRIOR):
-                new_skills[key] = concept_update(
-                    current if current is not None else PRIOR, event.concept_grade
-                )
+                new_skills[key] = soft(current if current is not None else PRIOR)
             elif current is None:
                 new_skills[key] = PRIOR
     elif event.solved is None:

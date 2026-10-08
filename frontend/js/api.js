@@ -194,7 +194,10 @@ function normalizeStoredMessage(message) {
     // Stored history keeps the rendered text only; the working steps, concept
     // card and hint ladder of a past turn are live-stream decoration and are
     // intentionally not replayed from the database.
-    adapted: message.role === "assistant",
+    // Only what the server recorded for THIS reply. It used to be true for
+    // every stored assistant message, so the badge showed on replies that
+    // nothing about the learner had changed.
+    adapted: Boolean(message.adapted),
   };
 }
 
