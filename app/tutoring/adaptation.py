@@ -31,8 +31,10 @@ from pydantic import Field
 
 from app.schemas.base import APIModel
 from app.schemas.decision import Evidence, TurnDecision
+from app.tutoring.misconceptions import get_misconception
 
 __all__ = [
+    "LINK_PHRASE",
     "Adaptation",
     "Pitch",
     "Representation",
@@ -79,6 +81,15 @@ _REPRESENTATION_RULE: Final[Mapping[Representation, str]] = {
         "and give two options to choose from."
     ),
 }
+#: The exact words a reply uses to link a repeated mistake to the earlier
+#: time. The response layer looks for them before it lets the badge say so.
+LINK_PHRASE: Final = "the same mix-up as before"
+_RECURRING_RULE: Final = (
+    "The learner made this mistake in an earlier conversation. If what they say or write "
+    f'now shows it again, say so in these words -- "this is {LINK_PHRASE}" -- name what was '
+    "mixed up, and then correct it on a small example. If they do not show it, do not "
+    "mention it."
+)
 _WITHHOLD_RULE: Final = (
     "The learner asked NOT to be given the answer. Say what is wrong and why, on a concrete "
     "case, but do NOT state the corrected line, the corrected expression, the name of the "
@@ -191,8 +202,8 @@ def adapt(
         notes.append(_NOTE_SKIP)
     if pitch in _NOTE_PITCH and topic:
         notes.append(_NOTE_PITCH[pitch].format(topic=topic.replace("_", " ")))
-    if recurring:
-        notes.append(_NOTE_RECURRING)
+    # A mistake made before is only a note once the reply has actually linked
+    # to it (`Adaptation.linked_to`): knowing about it changes nothing yet.
     return Adaptation(
         pitch=pitch,
         representation=representation,
@@ -271,6 +282,8 @@ def tutor_state_block(decision: TurnDecision | None, adaptation: Adaptation | No
             lines.append(f"representation: {adaptation.representation}. {rule}")
         if adaptation.skip_ahead:
             lines.append(f"skip_ahead: yes. {_SKIP_RULE}")
-        if adaptation.recurring:
-            lines.append("made_before: " + ", ".join(adaptation.recurring))
+        for item_id in adaptation.recurring:
+            item = get_misconception(item_id)
+            if item is not None:
+                lines.append(f"made_before: {item.name}. {item.correct_model} {_RECURRING_RULE}")
     return "<tutor_state>\n" + "\n".join(lines) + "\n</tutor_state>"

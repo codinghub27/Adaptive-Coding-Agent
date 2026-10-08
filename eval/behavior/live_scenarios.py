@@ -155,6 +155,19 @@ TRAP: Final = (
     "                water += right_max - height[right]\n            right -= 1\n"
     "    return water\n```"
 )
+FRAGMENT: Final = (
+    "fix this code.\nheight = [0,1,0,2,1,0,1,3,2,1,2,1]\nif not height:\n"
+    "            return 0\n\n        left, right = 0, len(height) - 1\n"
+    "        left_max, right_max = 0, 0\n        trapped_water = 0\n\n"
+    "        while left < right:\n            if height[left] < height[right]:\n"
+    "                if height[left] >= left_max:\n                    left_max = height[left]\n"
+    "                else:\n                    trapped_water += left_max - height[left]\n"
+    "                left -= 1\n            else:\n"
+    "                if height[right] >= right_max:\n"
+    "                    right_max = height[right]\n                else:\n"
+    "                    trapped_water += right_max - height[right]\n"
+    "                right += 1\n\n        return trapped_water"
+)
 MAX_DEPTH: Final = (
     "I'm solving Maximum Depth of Binary Tree. My code gives the wrong answer. Explain it, "
     "but don't give me the final code yet.\n\n```python\n"
@@ -572,6 +585,46 @@ def scenarios() -> list[Scenario]:
                 ("no forced hint first", lambda t: not has(t[0], "take this one step first")),
             ],
             shared_account=False,
+        ),
+        Scenario(
+            "19",
+            "Owner: a pasted method body with the pointers moving the wrong way",
+            "balanced",
+            [FRAGMENT],
+            [
+                ("the code is read", lambda t: t[0]["route"] == "debug"),
+                (
+                    "the paste is not blamed",
+                    lambda t: not has(t[0], "indentation", "unindent", "syntax error"),
+                ),
+                (
+                    "the real bug is named",
+                    lambda t: has(t[0], "left -= 1", "right += 1", "left += 1", "right -= 1"),
+                ),
+                ("a real verdict on their code", lambda t: learner_verdict(t[0]) == "fail"),
+            ],
+            shared_account=False,
+        ),
+        Scenario(
+            "20",
+            "Ref 8: the same tree mix-up again, in a new conversation",
+            "balanced",
+            [
+                "Diameter of Binary Tree\n\nGiven the root of a binary tree, return the length "
+                "of the diameter of the tree: the longest path between any two nodes, counted "
+                "in edges.\n\nExample 1:\nInput: root = [1,2,3,4,5]\nOutput: 3\n\n"
+                "I want to solve it myself. What should my recursive function return?",
+                "The node should return the longest path using both children.",
+            ],
+            [
+                ("t1 no code", lambda t: not code_shown(t[0])),
+                ("t2 no code", lambda t: not code_shown(t[1])),
+                (
+                    "t2 linked to the earlier mistake",
+                    lambda t: has(t[1], "as before", "earlier", "previous", "again", "last time"),
+                ),
+                ("t2 says so on the badge", lambda t: bool(adaptations(t[1]))),
+            ],
         ),
         Scenario(
             "8",

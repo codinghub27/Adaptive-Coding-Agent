@@ -18,7 +18,15 @@ from app.schemas.decision import Evidence, TurnDecision, scaffold_for
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
 from app.schemas.tutoring import SessionProgress
-from app.tutoring.adaptation import STRUGGLE, SUCCESS, Adaptation, adapt, streak, tutor_state_block
+from app.tutoring.adaptation import (
+    LINK_PHRASE,
+    STRUGGLE,
+    SUCCESS,
+    Adaptation,
+    adapt,
+    streak,
+    tutor_state_block,
+)
 from app.tutoring.misconceptions import catalog
 from app.tutoring.turn import tutoring_sections
 
@@ -233,3 +241,15 @@ def test_the_learners_own_no_answer_yet_is_in_the_prompt() -> None:
     block = tutor_state_block(decision, _adapt("none", []))
     assert "withhold_answer: yes" in block
     assert "do NOT state the corrected line" in block
+
+
+def test_a_known_mistake_is_not_a_badge_until_the_reply_links_it() -> None:
+    """Knowing about an earlier mistake changes nothing by itself. The prompt
+    carries what it was; the badge says so only once the reply has linked it."""
+    item = catalog()[0]
+    known = _adapt("none", [], recurring=[item.id])
+    assert known.adapted is False
+    block = tutor_state_block(_decision("none"), known)
+    assert f"made_before: {item.name}." in block
+    assert LINK_PHRASE in block
+    assert known.linked_to([item.id]).adapted is True

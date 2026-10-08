@@ -146,7 +146,7 @@ from app.schemas.tutoring import (
     SessionProgress,
     TutoringView,
 )
-from app.tutoring.adaptation import Adaptation, Pitch, adapt, tutor_state_block
+from app.tutoring.adaptation import LINK_PHRASE, Adaptation, Pitch, adapt, tutor_state_block
 from app.tutoring.bank import (
     chain_intro,
     chain_start,
@@ -3268,6 +3268,9 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
     progress_after = _log_evidence(progress_after, state)
     update: AgentStateUpdate = {}
     repeated = [m for m in found if _seen_before(state, found).get(m, 0) > 0]
+    if state.adaptation is not None and LINK_PHRASE in generated.text.lower():
+        # The tutor's own step said it: a mistake from an earlier conversation.
+        repeated = [*repeated, *(m for m in state.adaptation.recurring if m not in repeated)]
     if state.adaptation is not None and repeated:
         update["adaptation"] = state.adaptation.linked_to(repeated)
     return {
