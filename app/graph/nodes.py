@@ -3040,7 +3040,10 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
     found: list[str] = []
     if grade is not None and is_catalog_id(grade.misconception_id) and grade.misconception_id:
         found.append(grade.misconception_id)
-    if learner_code is not None:
+    if learner_code is not None and state.problem_relation != "followup":
+        # Only code this turn brought. A follow-up carries the conversation's
+        # stored code, and finding the same misconception in the same code
+        # again is not the learner making the mistake again.
         topic_hint = plan.topic if plan is not None else None
         found += [m for m in detect_in_code(learner_code, topic_hint) if m not in found]
 
@@ -3267,12 +3270,22 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
     )
     progress_after = _log_evidence(progress_after, state)
     update: AgentStateUpdate = {}
-    repeated = [m for m in found if _seen_before(state, found).get(m, 0) > 0]
-    if state.adaptation is not None and LINK_PHRASE in generated.text.lower():
-        # The tutor's own step said it: a mistake from an earlier conversation.
-        repeated = [*repeated, *(m for m in state.adaptation.recurring if m not in repeated)]
-    if state.adaptation is not None and repeated:
-        update["adaptation"] = state.adaptation.linked_to(repeated)
+    if state.adaptation is not None:
+        # The tutor's own step is where the representation and the skip-ahead
+        # are carried out: the solver's guided step, or a concept answer. Not
+        # the question bank's fixed text, and not a turn that hands over code.
+        by_tutor_step = not generated.reveals_code and (
+            _guided_hint(state) or (route == "explain" and grade is None)
+        )
+        delivered = state.adaptation.as_delivered(by_tutor_step=by_tutor_step)
+        repeated = [m for m in found if _seen_before(state, found).get(m, 0) > 0]
+        if LINK_PHRASE in generated.text.lower():
+            # The step said it: a mistake from an earlier conversation.
+            repeated = [*repeated, *(m for m in delivered.recurring if m not in repeated)]
+        if repeated:
+            delivered = delivered.linked_to(repeated)
+        if delivered != state.adaptation:
+            update["adaptation"] = delivered
     return {
         **update,
         "response": generated.text,

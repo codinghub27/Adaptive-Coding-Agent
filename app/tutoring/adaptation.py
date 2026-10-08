@@ -93,8 +93,9 @@ _RECURRING_RULE: Final = (
 _WITHHOLD_RULE: Final = (
     "The learner asked NOT to be given the answer. Say what is wrong and why, on a concrete "
     "case, but do NOT state the corrected line, the corrected expression, the name of the "
-    "algorithm they have not found yet, or any code. When they propose the fix themselves, "
-    "tell them plainly whether it is right. End by asking them what the change should be."
+    "algorithm they have not found yet, or any code. If their message proposes a fix, do "
+    "not ask again: tell them plainly whether it is right. Only when they have not proposed "
+    "one, end by asking them what the change should be."
 )
 _SKIP_RULE: Final = (
     "The learner answered the last two questions correctly. Do not walk through the next "
@@ -143,6 +144,25 @@ class Adaptation(APIModel):
     @property
     def adapted(self) -> bool:
         return bool(self.notes)
+
+    def as_delivered(self, *, by_tutor_step: bool) -> "Adaptation":
+        """This adaptation as the reply actually carried it out.
+
+        The representation and the skip-ahead are instructions to the tutor's
+        own step. A reply that was not such a step -- fixed text from the
+        question bank, or the full solution -- did not follow them, so it must
+        not be badged as if it had (measured live: "this one is a worked
+        example" over a reply that was the complete code)."""
+        if by_tutor_step:
+            return self
+        dropped = {*_NOTE_REPRESENTATION.values(), _NOTE_SKIP}
+        return self.model_copy(
+            update={
+                "representation": "plain",
+                "skip_ahead": False,
+                "notes": [note for note in self.notes if note not in dropped],
+            }
+        )
 
     def linked_to(self, repeated: Sequence[str]) -> "Adaptation":
         """This adaptation once the reply linked a mistake found THIS turn to

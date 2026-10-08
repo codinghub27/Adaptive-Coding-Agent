@@ -228,9 +228,10 @@ def _render_debug(
                 + "\n\n_Not executed -- the code sandbox is not available, so this is a"
                 + " reading of your code, not a test of it._"
             )
-        elif result.initial_verdict is None or result.initial_verdict.status not in (
-            "fail",
-            "pass",
+        elif (
+            result.initial_verdict is not None
+            and result.initial_verdict.status == "inconclusive"
+            and "keyboard input" not in result.initial_verdict.summary
         ):
             body = (
                 body

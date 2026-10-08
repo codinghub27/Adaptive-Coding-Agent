@@ -562,6 +562,34 @@ def _turn_context(state: AgentState) -> str:
     return turn_context(state.decision, state.adaptation, recent)
 
 
+_THEIR_FIX_IS_RIGHT: Final = (
+    "Yes -- that is the fix. With `{line}` in place your code passes {passed}/{total} "
+    "test cases in the sandbox. Make the change and send it back if you want it run again."
+)
+
+
+def _credit_for_their_fix(
+    message: str | None, patched_code: str | None, verdict: Verdict | None
+) -> str | None:
+    """The sandbox's own answer to a line of code the learner proposes.
+
+    When the line they sent IS a line of the fix that just passed in the
+    sandbox, the verdict on their proposal is a fact, not a model's opinion:
+    it is said in fixed words with the real count. Compared as text with
+    whitespace collapsed; nothing of theirs is executed here."""
+    if not message or patched_code is None or verdict is None or verdict.status != "pass":
+        return None
+    line = " ".join(message.strip().strip("`").split())
+    if not line or "\n" in message.strip() or len(line) > 200:
+        return None
+    patched = {" ".join(row.split()) for row in patched_code.splitlines()}
+    if line not in patched:
+        return None
+    return _THEIR_FIX_IS_RIGHT.format(
+        line=line, passed=verdict.cases_passed, total=verdict.cases_total
+    )
+
+
 _ERROR_NOT_READ: Final = (
     "I could not analyse that error just now. Send it again, with the few lines of code "
     "around the line it names if you can."
@@ -636,11 +664,22 @@ async def run_debug(
     )
 
     final_verdict = final_state.get("final_verdict")
+    is_reply = bool(initial.get("is_reply"))
+    explanation = final_state.get("bug_explanation")
+    credited = _credit_for_their_fix(
+        problem.question if problem is not None else None,
+        final_state.get("patched_code"),
+        final_verdict,
+    )
+    if is_reply and credited is not None:
+        explanation = credited
     result = DebugResult(
-        static_findings=final_state.get("static_findings") or [],
-        inferred_approach=final_state.get("inferred_approach"),
-        failing_case=final_state.get("failing_case"),
-        bug_explanation=final_state.get("bug_explanation"),
+        # On a follow-up the static findings, the approach and the failing
+        # case were all said on the turn before; only the reply is new.
+        static_findings=[] if is_reply else final_state.get("static_findings") or [],
+        inferred_approach=None if is_reply else final_state.get("inferred_approach"),
+        failing_case=None if is_reply else final_state.get("failing_case"),
+        bug_explanation=explanation,
         bug_location=final_state.get("bug_location"),
         patched_code=final_state.get("patched_code"),
         presented_code=final_state.get("presented_code"),

@@ -88,12 +88,36 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
 
 ---
 
-## How a turn actually works (corrected 2026-10-05, see `docs/AUDIT_REPORT.md`)
+## How a turn actually works (corrected 2026-10-09, see `docs/AUDIT_REPORT.md` and
+`docs/BEHAVIOR_GAP.md`)
 
 - **Graph order:** `understand_input → load_learner_profile → classify_intent →
-  retrieve_knowledge → plan_teaching → route → agent → execute_code → verify →
-  final_response → update_learner_model`. The conversation is loaded BEFORE
-  classification; retrieval runs before planning.
+  decide_turn → retrieve_knowledge → plan_teaching → agent → execute_code →
+  verify → final_response → update_learner_model`. The conversation is loaded
+  BEFORE classification; retrieval runs before planning. There is no `route`
+  node.
+- **ONE decision per turn.** `decide_turn` (`nodes._decide`) is the only place
+  that settles what the turn is about, which agent handles it, and the
+  `TurnDecision` record (`app/schemas/decision.py`): `subject`, `evidence`
+  (what the learner showed, target behaviour section 2.2 labels), `move`,
+  `scaffold`, `wants_code`, `withhold`. Retrieval, the planner, every agent
+  prompt, the response layer and the learner model READ it. Do not work any of
+  it out again downstream, and do not add a second place that relabels a turn.
+  `evidence` is refined in place by whoever knows more (the grader, the
+  solver's reading of a reply, the sandbox verdict).
+- **Three rules inside the decision.** (1) An unsure reading never drops the
+  conversation: a message that only mentions a technique stays on the open
+  problem; only a question shaped as a question about a concept stands alone.
+  (2) An agent must have its subject: a solve, hint or debug turn that brings
+  no problem, code or error and was not tied to the conversation is decided
+  again as a follow-up on the conversation's subject; with no subject it is
+  asked about, and the question says what is missing. (3) A response is not a
+  request: a message the model called both an answer and a demand for the code
+  is an answer unless the message itself carries a listed ask.
+- **"Don't give me the code yet"** is the classifier's `no_solution`. It sets
+  `withhold`, caps help at `concept`, forbids stating the fix in the prompt,
+  and holds for that subject (`SessionProgress.withhold_key`) until the code
+  is asked for.
 - **Memory is the conversation store, not a LangGraph checkpointer.** The graph
   state is one frozen object per turn. `load_learner_profile` reads the profile,
   last messages, active problem, pending check and session progress from
@@ -121,6 +145,36 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   answered by the same agent with the recent exchange in its prompt
   (`<conversation_so_far>`). An agent that answers a follow-up must be given
   the conversation; one that is not will answer it as a first message.
+- **Every agent prompt carries the same two blocks**
+  (`app/tutoring/adaptation.py`): the trusted `<tutor_state>` (the decision,
+  the pitch, the representation) and the untrusted `<conversation_so_far>`.
+  The debugger has its own instruction for a reply to an earlier diagnosis
+  (`_REPLY_SYSTEM`), for a question about passing code (`_ANSWER_SYSTEM`) and
+  for an error with no code (`_TRACEBACK_SYSTEM`); a follow-up on an
+  explanation uses the short-answer prompt. A general "answer follow-ups
+  briefly" rule loses to a prompt's main instruction: when a turn is a
+  follow-up, make answering it the main instruction.
+- **The learner model gets evidence from ordinary use.** Besides a sandbox
+  verdict on the learner's own code and a graded curated question there are two
+  soft sources: `tutor_reply` (the tutor's reading of a reply to its own
+  question) and `help_needed` (the full solution handed over, first time on
+  that problem, with no attempt run). Soft evidence lands on the family
+  estimate at a low weight and can never reach the hard band; only the sandbox
+  sets `solved`.
+- **Adaptation is what changes, not a badge.** `adapt()` gives the pitch, the
+  representation (plain → worked example → drawn-out trace → smaller question
+  after repeated struggle, from `SessionProgress.evidence_log`) and skip-ahead
+  after two right answers. `Adaptation.notes` are fixed sentences saying what
+  changed; the API returns them (`adaptations`), they are stored per message
+  (`messages.adaptation`), and the UI shows "Adapted to your level" only with
+  them. A note is added only when the change really happens in the reply: a
+  repeated miss on a curated question is handed to the solver's own step, and
+  a mistake from an earlier conversation counts only once the reply links it.
+- **A reply is spoken.** `app/response/voice.py` renders every section as the
+  tutor would say it: no `##` headers, the sandbox's lines verbatim, one
+  question last. It changes presentation only; which sections a turn may carry
+  is still decided in code before it. The UI joins `section.spoken` and shows
+  the numbered hint card only when `generated.hint_card` is true.
 - **Guards that stay deterministic** because they are policy, not reading:
   Challenge mode, a client `assistance_cap`, an explicit study-plan ask,
   user-code-first, and `planner.wants_the_code` (the model's "this asks for the
@@ -133,7 +187,11 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   patch that ran cleanly after the learner's code failed is "executed, not
   verified". With no sandbox the debugger runs its `ast` checks and ONE model
   call, labelled "Not executed". An ask for the code with no fix to show
-  returns the learner's own code. Never invent a verdict.
+  returns the learner's own code. Never invent a verdict. The revealed code
+  and what is said about it (key idea, cost) come from the SAME model reply
+  (`synth._REFERENCE_SYSTEM`), which also honours an asked-for approach
+  ("using a stack") as a choice of algorithm. A program that waits for
+  `input()` is reported as not run to the end, never as a failure.
 - **Explanations.** Any concept the learner asks about is explained in detail
   with one or two examples that were run in the sandbox first
   (`app/agents/concept.py`). A retrieval hit below `MIN_CONCEPT_TOPIC_SCORE`
@@ -154,7 +212,10 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   `LLM_CLASSIFIER_MODEL` (off) moves classification to a smaller model.
 - **Measuring behaviour.** `eval.behavior.live_scenarios --runs N` gives a pass
   rate per scenario and per check. One live transcript proves little: the
-  classifier's reading varies between runs.
+  classifier's reading varies between runs. Tests with a scripted model prove
+  less: every defect in section 14 of the audit was found by reading one live
+  run of a scenario whose unit tests were green. After changing a prompt or
+  the decision, run the affected scenarios live and READ the replies.
 - **Infra.** `docker compose up -d` starts Postgres and Qdrant with
   `restart: unless-stopped`. If the server logs "knowledge dense retrieval
   failed: ResponseHandlingException (ConnectError)", Qdrant is not running; the

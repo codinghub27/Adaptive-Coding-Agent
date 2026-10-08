@@ -253,3 +253,23 @@ def test_a_known_mistake_is_not_a_badge_until_the_reply_links_it() -> None:
     assert f"made_before: {item.name}." in block
     assert LINK_PHRASE in block
     assert known.linked_to([item.id]).adapted is True
+
+
+def test_a_note_is_kept_only_for_what_the_reply_did() -> None:
+    """Measured live: "this one is a worked example" over a reply that was the
+    full solution, and "I skipped the small steps" over the question bank's
+    fixed text."""
+    planned = _adapt("stuck", ["stuck"])
+    assert planned.adapted is True
+    assert planned.as_delivered(by_tutor_step=True) == planned
+    undone = planned.as_delivered(by_tutor_step=False)
+    assert (undone.representation, undone.adapted) == ("plain", False)
+
+    skipping = _adapt("correct", ["correct"])
+    assert skipping.as_delivered(by_tutor_step=False).skip_ahead is False
+
+    weak = adapt(
+        decision=_decision("stuck"), pitch="beginner", topic="hashing", evidence_log=["stuck"]
+    )
+    kept = weak.as_delivered(by_tutor_step=False)
+    assert len(kept.notes) == 1 and "Starting smaller" in kept.notes[0]  # the pitch is real

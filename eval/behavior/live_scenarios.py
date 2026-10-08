@@ -224,6 +224,10 @@ def scenarios() -> list[Scenario]:
                     "t4 code shown and verified",
                     lambda t: code_shown(t[3]) and verdict(t[3]).get("status") == "pass",
                 ),
+                (
+                    "no badge for what the reply did not do",
+                    lambda t: not any("worked example" in n for n in adaptations(t[3])),
+                ),
             ],
             strict=("t1 no full code",),
         ),
@@ -393,10 +397,10 @@ def scenarios() -> list[Scenario]:
                     lambda t: t[2]["route"] == "explain" and not has(t[2], "unmatched", "`*`"),
                 ),
                 (
-                    "t3-t4 answered, not a new plan",
+                    "t3-t4 answered, not the plan again",
                     lambda t: (
-                        all(len(text(x)) < 2500 for x in t[2:4])
-                        and not any(has(x, "segment tree", "bit manipulation") for x in t[2:4])
+                        all(len(text(x)) < 1300 for x in t[2:4])
+                        and not any(has(x, "week 2", "| day", "segment tree") for x in t[2:4])
                     ),
                 ),
                 ("t5 code given, no refusal", lambda t: code_shown(t[4]) and no_refusal(t[4])),
@@ -526,9 +530,19 @@ def scenarios() -> list[Scenario]:
                 ),
                 (
                     "t2 the right answer is credited",
-                    lambda t: has(t[1], "correct", "right", "exactly", "yes"),
+                    lambda t: (
+                        text(t[1])
+                        .lstrip("*_ ")
+                        .lower()
+                        .startswith(("yes", "correct", "exactly", "that's right", "right"))
+                    ),
+                ),
+                (
+                    "t2 the diagnosis is not repeated",
+                    lambda t: not has(t[1], "it fails on this case"),
                 ),
                 ("t3 their fix line is read as their code", lambda t: t[2]["route"] == "debug"),
+                ("t3 their fix is confirmed", lambda t: has(t[2], "that is the fix", "yes")),
             ],
             shared_account=False,
             strict=("t1 no final code, as asked",),
@@ -565,6 +579,10 @@ def scenarios() -> list[Scenario]:
                 ("t1 names the type mismatch", lambda t: has(t[0], "string", "str")),
                 ("t1 no rewrite", lambda t: not code_shown(t[0])),
                 ("t2 ties it to input()", lambda t: has(t[1], "input")),
+                (
+                    "the sandbox's missing keyboard is not a bug",
+                    lambda t: not any(has(x, "EOFError", "no code was executed") for x in t),
+                ),
             ],
             shared_account=False,
         ),
