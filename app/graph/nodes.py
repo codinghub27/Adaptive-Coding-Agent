@@ -948,6 +948,9 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
             wants_code = False
     withhold = _withhold(state, intent, wants_code)
 
+    # Challenge mode is the learner's own standing "don't give me the answer":
+    # an ask for the code is recorded (`wants_code`) but the move stays a step.
+    challenge = state.input.teaching_mode == "challenge"
     move: Move
     if chosen == "meta":
         move = "meta"
@@ -958,9 +961,9 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
     elif chosen == "practice":
         move = "practice"
     elif chosen == "debug":
-        move = "code" if wants_code else "debug"
+        move = "code" if wants_code and not challenge else "debug"
     elif chosen == "dsa":
-        move = "code" if wants_code else "step"
+        move = "code" if wants_code and not challenge else "step"
     elif intent is not None and intent.intent in _REVIEW_MOVE_INTENTS:
         move = "review"
     elif intent is not None and intent.intent is Intent.GENERAL_GUIDANCE:

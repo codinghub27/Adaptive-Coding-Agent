@@ -117,3 +117,7 @@ def test_a_proposed_line_that_is_the_verified_fix_is_credited_by_the_sandbox() -
     assert _credit_for_their_fix("Add 1.", patched, passed) is None  # words: the tutor answers
     assert _credit_for_their_fix("return 1 + max(left, right)", patched, failed) is None
     assert _credit_for_their_fix("return 1 + max(left, right)", None, passed) is None
+    # A line the failing code already had is not the fix, though the fix kept it.
+    original = patched.replace("return 1 + max(left, right)", "return max(left, right)")
+    assert _credit_for_their_fix("return 0", patched, passed, original) is None
+    assert _credit_for_their_fix("return 1 + max(left, right)", patched, passed, original)

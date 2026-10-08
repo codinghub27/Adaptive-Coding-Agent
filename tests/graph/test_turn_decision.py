@@ -337,3 +337,17 @@ def test_their_own_no_code_yet_outranks_a_models_reading_of_a_short_reply() -> N
     decision = _decision(_state("Add 1.", intent=misread, active=_code_subject(), progress=held))
     assert (decision.wants_code, decision.withhold) == (False, True)
     assert decision.move == "debug"
+
+
+def test_in_challenge_mode_an_ask_for_the_code_is_recorded_but_the_move_is_a_step() -> None:
+    state = _state(
+        "give me the code",
+        intent=_sure(Intent.DSA_SOLVE, refers_to_previous=True, asks_for_code=True),
+        active=_active(),
+    )
+    challenged = state.model_copy(
+        update={"input": RawInput(text="give me the code", teaching_mode="challenge")}
+    )
+    decision = _decision(challenged)
+    assert (decision.wants_code, decision.move) == (True, "step")
+    assert _decision(state).move == "code"

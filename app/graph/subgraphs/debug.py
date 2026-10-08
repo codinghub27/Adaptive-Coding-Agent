@@ -569,7 +569,10 @@ _THEIR_FIX_IS_RIGHT: Final = (
 
 
 def _credit_for_their_fix(
-    message: str | None, patched_code: str | None, verdict: Verdict | None
+    message: str | None,
+    patched_code: str | None,
+    verdict: Verdict | None,
+    original_code: str | None = None,
 ) -> str | None:
     """The sandbox's own answer to a line of code the learner proposes.
 
@@ -583,7 +586,10 @@ def _credit_for_their_fix(
     if not line or "\n" in message.strip() or len(line) > 200:
         return None
     patched = {" ".join(row.split()) for row in patched_code.splitlines()}
-    if line not in patched:
+    unchanged = {" ".join(row.split()) for row in (original_code or "").splitlines()}
+    if line not in patched or line in unchanged:
+        # Not a line of the fix -- or a line their failing code already had,
+        # which the fix merely kept: quoting it back changes nothing.
         return None
     return _THEIR_FIX_IS_RIGHT.format(
         line=line, passed=verdict.cases_passed, total=verdict.cases_total
@@ -670,6 +676,7 @@ async def run_debug(
         problem.question if problem is not None else None,
         final_state.get("patched_code"),
         final_verdict,
+        extract_learner_code(problem),
     )
     if is_reply and credited is not None:
         explanation = credited
