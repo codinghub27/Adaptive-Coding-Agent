@@ -327,3 +327,13 @@ def test_dont_give_me_the_code_yet_is_respected_until_they_ask() -> None:
         )
     )
     assert (asks.withhold, asks.wants_code) == (False, True)
+
+
+def test_their_own_no_code_yet_outranks_a_models_reading_of_a_short_reply() -> None:
+    """Measured live: after "don't give me the final code yet", the learner's
+    answer "Add 1." was read as a demand for the fix and the code was shown."""
+    held = SessionProgress.empty().model_copy(update={"withhold_key": "_c1"})
+    misread = _sure(Intent.CODE_DEBUG, refers_to_previous=True, asks_for_code=True)
+    decision = _decision(_state("Add 1.", intent=misread, active=_code_subject(), progress=held))
+    assert (decision.wants_code, decision.withhold) == (False, True)
+    assert decision.move == "debug"

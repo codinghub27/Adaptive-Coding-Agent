@@ -938,10 +938,14 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
             # the tutor" and "this demands the code"; only a listed phrase in
             # the message itself makes it a demand (a wrong yes hands over
             # the answer).
-            listed = (
-                asks_for_fix(question) if chosen == "debug" else explicit_ask_phrase(question or "")
-            )
-            wants_code = listed
+            wants_code = _listed_ask(question, fix=chosen == "debug")
+        if wants_code and _held_back(state) and not _listed_ask(question, fix=chosen == "debug"):
+            # The learner said "don't give me the code yet" about this subject.
+            # Their own words outrank a model's reading that a later short
+            # message demands it: only an ask in the message itself lifts it.
+            # Measured live: "Add 1." (their answer) was read as "fix it" and
+            # the corrected code was handed over.
+            wants_code = False
     withhold = _withhold(state, intent, wants_code)
 
     move: Move
@@ -984,15 +988,14 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
     )
 
 
-def _withhold(state: AgentState, intent: IntentResult | None, wants_code: bool) -> bool:
-    """Is the answer to be held back this turn because the learner said so?
+def _listed_ask(question: str | None, *, fix: bool) -> bool:
+    """Does the message itself carry a listed ask for the code (or the fix)?"""
+    return asks_for_fix(question) if fix else explicit_ask_phrase(question or "")
 
-    True on the turn they say it, and on later turns about the same subject
-    (`SessionProgress.withhold_key`) until they ask for the code."""
-    if wants_code:
-        return False
-    if intent is not None and intent.no_solution:
-        return True
+
+def _held_back(state: AgentState) -> bool:
+    """Has the learner asked, earlier, not to be given the answer to the
+    subject this turn is about (`SessionProgress.withhold_key`)?"""
     progress = state.session_progress
     key = state.problem_key
     return bool(
@@ -1002,6 +1005,18 @@ def _withhold(state: AgentState, intent: IntentResult | None, wants_code: bool) 
         and progress.withhold_key == key
         and state.problem_relation in ("same", "followup")
     )
+
+
+def _withhold(state: AgentState, intent: IntentResult | None, wants_code: bool) -> bool:
+    """Is the answer to be held back this turn because the learner said so?
+
+    True on the turn they say it, and on later turns about the same subject
+    until they ask for the code."""
+    if wants_code:
+        return False
+    if intent is not None and intent.no_solution:
+        return True
+    return _held_back(state)
 
 
 def _decide_turn_fallback(state: AgentState) -> AgentStateUpdate:
@@ -3279,7 +3294,7 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         )
         delivered = state.adaptation.as_delivered(by_tutor_step=by_tutor_step)
         repeated = [m for m in found if _seen_before(state, found).get(m, 0) > 0]
-        if LINK_PHRASE in generated.text.lower():
+        if LINK_PHRASE in _plain_hyphens(generated.text.lower()):
             # The step said it: a mistake from an earlier conversation.
             repeated = [*repeated, *(m for m in delivered.recurring if m not in repeated)]
         if repeated:
@@ -3294,6 +3309,15 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         "next_pending": question or carried,
         "next_progress": progress_after,
     }
+
+
+_HYPHENS: Final = str.maketrans(dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2212", "-"))
+
+
+def _plain_hyphens(text: str) -> str:
+    """`text` with typographic hyphens and dashes as "-". Models write
+    "mix\u2011up" with a non-breaking hyphen, which no plain search finds."""
+    return text.translate(_HYPHENS)
 
 
 def _seen_before(state: AgentState, found: Sequence[str]) -> dict[str, int]:

@@ -273,3 +273,11 @@ def test_a_note_is_kept_only_for_what_the_reply_did() -> None:
     )
     kept = weak.as_delivered(by_tutor_step=False)
     assert len(kept.notes) == 1 and "Starting smaller" in kept.notes[0]  # the pitch is real
+
+
+def test_the_link_is_found_whatever_hyphen_the_model_typed() -> None:
+    from app.graph.nodes import _plain_hyphens  # pyright: ignore[reportPrivateUsage]
+
+    said = "This is the same mix\u2011up as before: the one-sided return."
+    assert LINK_PHRASE not in said.lower()
+    assert LINK_PHRASE in _plain_hyphens(said.lower())
