@@ -412,6 +412,12 @@ def scenarios() -> list[Scenario]:
                     "t3 answered about their program",
                     lambda t: t[2]["route"] != "clarify" and no_guessing(t[2]),
                 ),
+                (
+                    "t3 names another method",
+                    lambda t: has(
+                        t[2], "another", "alternative", "prefix", "stack", "dynamic", "instead"
+                    ),
+                ),
             ],
             shared_account=False,
             strict=("t3 answered about their program",),
@@ -496,7 +502,20 @@ def scenarios() -> list[Scenario]:
                 ("t1 their code is read", lambda t: t[0]["route"] == "debug"),
                 ("t1 names the missing node", lambda t: has(t[0], "current node", "1 +", "+ 1")),
                 ("t1 no final code, as asked", lambda t: not code_shown(t[0])),
-                ("t2 no code dumped on a right answer", lambda t: not code_shown(t[1])),
+                (
+                    "t1 the fix line is not stated either",
+                    lambda t: not has(t[0], "1 + max(", "max(left, right) + 1"),
+                ),
+                ("t1 asks them to make the fix", lambda t: "?" in text(t[0])),
+                (
+                    "t2 'Add 1.' is about their code",
+                    lambda t: t[1]["route"] == "debug" and not code_shown(t[1]),
+                ),
+                (
+                    "t2 the right answer is credited",
+                    lambda t: has(t[1], "correct", "right", "exactly", "yes"),
+                ),
+                ("t3 their fix line is read as their code", lambda t: t[2]["route"] == "debug"),
             ],
             shared_account=False,
             strict=("t1 no final code, as asked",),

@@ -654,6 +654,28 @@ _ANSWER_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     'else: {"bug_explanation": "<your answer>", "used": []}'
 )
 
+#: The learner is replying about code the tutor has already looked at.
+#: Measured live: "Add 1." (the right fix, in reply to the diagnosis) got the
+#: whole diagnosis again, with the corrected line they had asked not to be
+#: given. The instruction to answer a follow-up briefly was in the shared
+#: context rule, but the main instruction ("explain why the bug happens")
+#: won. Here answering the reply IS the main instruction.
+_REPLY_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
+    "The learner is FOLLOWING UP on code you have already looked at; what you told them is "
+    'in <conversation_so_far>, and their new message is the "question" field of '
+    "<user_input>. Any failure in <debug_context> is established FACT. "
+    "If you have already explained the bug: do NOT explain it again. Respond to what they "
+    "just said. When they propose a fix -- in words or as a line of code -- say plainly "
+    "whether it fixes the bug and why, on the failing case, in 1-3 sentences; if it does, "
+    "tell them to make the change and send the code back so it can be run; if it does not, "
+    "say what is still missing. When they ask a question about the code, answer it. "
+    "If you have NOT explained the bug yet: name it -- quote the one line that is wrong, "
+    "show the value it produces on the failing case, and say what it should be. "
+    'Write TO the learner ("you"); never rewrite their function. '
+    "Reply with ONLY a single JSON object and nothing else: "
+    '{"bug_explanation": "<your reply>", "used": []}'
+)
+
 #: An error or traceback with no code. Before this the debugger had "nothing
 #: to read" and the whole reply was "Correctness could not be checked
 #: (skipped). no code was executed" (measured live; target behaviour section 12).
@@ -749,6 +771,7 @@ async def read_code(
     turn_context: str = "",
     passed: bool = False,
     traceback_only: bool = False,
+    reply: bool = False,
 ) -> CodeReading:
     """ONE LLM call that both names the learner's approach and explains the
     bug (or reports that none was found). Replaces the separate
@@ -773,6 +796,8 @@ async def read_code(
     if notes:
         parts.append(notes)
     system = _EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM
+    if reply:
+        system = _REPLY_SYSTEM
     if passed:
         system = _ANSWER_SYSTEM
     if traceback_only:

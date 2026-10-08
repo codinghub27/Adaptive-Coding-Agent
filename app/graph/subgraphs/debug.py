@@ -107,6 +107,8 @@ class DebugState(TypedDict, total=False):
     line_offset: int
     #: `<tutor_state>` and `<conversation_so_far>` for the explanation prompt.
     turn_context: str
+    #: This turn follows up on code the tutor already looked at.
+    is_reply: bool
 
     presented_code: str | None
     presented_label: str | None
@@ -223,6 +225,7 @@ async def _run_tests(state: DebugState, runtime: Runtime[GraphContext]) -> Debug
         # the learner's code and must not be reported as one (measured live:
         # "It fails on this case: runtime error EOFError on line 1").
         verdict = Verdict(status="inconclusive", category="no_tests", summary=NEEDS_INPUT_SUMMARY)
+        return {"request": None, "result": None, "initial_verdict": verdict}
     return {"request": request, "result": result, "initial_verdict": verdict}
 
 
@@ -281,7 +284,10 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
             turn_context=state.get("turn_context", ""),
             traceback_only=True,
         )
-        return {"bug_explanation": reading.explanation, "inferred_approach": None}
+        return {
+            "bug_explanation": reading.explanation or _ERROR_NOT_READ,
+            "inferred_approach": None,
+        }
     verdict = state.get("initial_verdict")
     if verdict is not None and verdict.status == "pass":
         if state.get("wants_code", False):
@@ -311,6 +317,7 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
         references=state.get("references", []),
         failure_established=state.get("has_established_failure", False),
         turn_context=state.get("turn_context", ""),
+        reply=state.get("is_reply", False),
     )
     return {
         "bug_explanation": reading.explanation,
@@ -555,6 +562,11 @@ def _turn_context(state: AgentState) -> str:
     return turn_context(state.decision, state.adaptation, recent)
 
 
+_ERROR_NOT_READ: Final = (
+    "I could not analyse that error just now. Send it again, with the few lines of code "
+    "around the line it names if you can."
+)
+
 NEEDS_INPUT_SUMMARY: Final = (
     "it waits for keyboard input with input(), which the sandbox does not provide, so it "
     "was not run to the end"
@@ -610,6 +622,9 @@ async def run_debug(
         "wants_code": wants_code,
         "line_offset": offset,
         "turn_context": _turn_context(state),
+        "is_reply": (
+            state.problem_relation == "followup" and bool(state.recent_context) and not wants_code
+        ),
         "references": turn_references(
             state.retrieved_context,
             pattern_chunks(state.plan.topic if state.plan is not None else None),
@@ -638,4 +653,9 @@ async def run_debug(
         citations=final_state.get("citations") or [],
     )
     execution_request = final_state.get("final_request") or final_state.get("request")
+    first_verdict = final_state.get("initial_verdict")
+    if first_verdict is not None and first_verdict.summary == NEEDS_INPUT_SUMMARY:
+        # It waits for keyboard input: running it again would only report the
+        # sandbox's missing keyboard as a failure of a "suggested fix".
+        execution_request = None
     return DebugRunResult(result=result, execution_request=execution_request)

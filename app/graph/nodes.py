@@ -1174,7 +1174,9 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
             update["structured_input"] = update["structured_input"].model_copy(  # type: ignore[union-attr]
                 update={"code": list(attempt)}
             )
-        responds = intent is not None and intent.learner_showed in EVIDENCE_LABELS
+        responds = (
+            intent is not None and intent.learner_showed in EVIDENCE_LABELS
+        ) or is_code_line(question)
         if _code_anchored(active) and (_code_first(update.get("intent", intent)) or responds):
             # The conversation's subject is the learner's own code: "give full
             # code and tell me where the bug is" is about THAT code, so it is
@@ -1235,6 +1237,37 @@ def _continues_last_reply(state: AgentState, brings_subject: bool) -> Intent | N
     if state.pending_check is not None:
         return None  # an answer to the tutor's open question is graded
     return answer_as
+
+
+_CODE_STATEMENTS: Final = (
+    ast.Return,
+    ast.Assign,
+    ast.AugAssign,
+    ast.AnnAssign,
+    ast.If,
+    ast.For,
+    ast.While,
+    ast.FunctionDef,
+)
+
+
+def is_code_line(text: str | None) -> bool:
+    """Is `text` a line (or a few lines) of Python, not prose? Read with `ast`
+    only. "return 1 + max(left, right)" is; "Add 1.", "7?" and a bare name or
+    number are not: a reply that IS code is the learner's edit to their code."""
+    stripped = (text or "").strip().strip("`")
+    if not stripped or len(stripped) > 600:
+        return False
+    try:
+        tree = ast.parse(stripped)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    for node in tree.body:
+        if isinstance(node, _CODE_STATEMENTS):
+            return True
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            return True
+    return False
 
 
 def _relabel(base: IntentResult | None, intent: Intent, rationale: str) -> IntentResult:
@@ -2957,6 +2990,10 @@ _VERBOSE_SECTION_KINDS: Final[frozenset[str]] = frozenset(
 )
 
 
+_ASK_FOR_THE_FIX: Final = (
+    "What would you change to fix that? Tell me the line as you would write it, and I will run it."
+)
+
 #: How `render_verdict` and the debug renderer open a sentence that only
 #: restates a verdict an "Execution" line already gives.
 _VERDICT_RESTATEMENTS: Final = (
@@ -3156,6 +3193,25 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         )
         after = [s for s in after if s.kind != "execution"]
     sections = [*extra.before, *base, *after]
+    ran = _learner_verdict(state)
+    if (
+        route == "debug"
+        and state.decision is not None
+        and state.decision.withhold
+        and sections
+        and not any("?" in s.body for s in sections)
+        and ran is not None
+        and ran.status == "fail"
+    ):
+        # They asked not to be given the fix, so the turn hands it to them:
+        # one question, then wait (target behaviour, reference conversation 6).
+        sections.append(
+            ResponseSection(
+                kind="check_question",
+                title=SECTION_TITLES["check_question"],
+                body=_ASK_FOR_THE_FIX,
+            )
+        )
     revealed = route == "dsa" and generated.reveals_code
     if sections:
         # Every reply is spoken (`app.response.voice`): no `##` headers. The
@@ -3248,12 +3304,17 @@ def _log_evidence(progress: SessionProgress, state: AgentState) -> SessionProgre
         return progress
     opening = state.problem_relation == "new" or not state.recent_context
     same = progress.evidence_key == key and not opening
-    log = list(progress.evidence_log) if same else []
+    if progress.withhold_key is not None and progress.withhold_key == state.problem_key:
+        same = True  # still the subject they asked not to be given the answer to
+    log = list(progress.evidence_log) if progress.evidence_key == key and not opening else []
     if decision.evidence != "none" and not opening:
         log.append(decision.evidence)
     withhold_key = progress.withhold_key if same else None
     if decision.withhold:
-        withhold_key = key
+        # Keyed by the subject as the CONVERSATION stores it, which is what
+        # the next turn's decision can see (`state.problem_key`).
+        stored = active_problem_update(state) or state.active_problem
+        withhold_key = stored.key if stored is not None else key
     elif decision.wants_code:
         withhold_key = None
     if same and log == progress.evidence_log and withhold_key == progress.withhold_key:

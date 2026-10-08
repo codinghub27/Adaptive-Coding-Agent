@@ -320,6 +320,8 @@ def render_execution_line(verdict: Verdict | None, label: str = "") -> str:
             f"{head} ✗ failed -- {verdict.cases_passed}/{verdict.cases_total} test cases "
             "passed in the sandbox"
         )
+    if verdict.status == "inconclusive" and "keyboard input" in verdict.summary:
+        return f"{head} not run to the end -- {verdict.summary}"
     if verdict.status == "inconclusive":
         return f"{head} ran in the sandbox, not verified (no test cases)"
     return f"{head} not executed"
