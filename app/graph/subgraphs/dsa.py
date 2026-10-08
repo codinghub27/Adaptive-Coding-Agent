@@ -115,6 +115,9 @@ class DSAState(TypedDict, total=False):
     ladder_topic: str | None
     history: list[MessageView]
     topic_source: TopicSource | None
+    #: Skip the solver's model call: this turn reveals a reference solution
+    #: that already carries its own key idea and cost.
+    skip_analysis: bool
 
     hint_level: HintLevel | None
     analysis: DSAAnalysis | None
@@ -231,7 +234,9 @@ async def _understand(state: DSAState, runtime: Runtime[GraphContext]) -> DSASta
 
     level = preview.level
     problem = state.get("problem")
-    if problem is None or problem.is_empty:
+    if problem is None or problem.is_empty or state.get("skip_analysis"):
+        # `skip_analysis`: the turn hands over a reference solution that came
+        # with its own key idea and cost, so the solver has nothing to add.
         return {"hint_level": level, "analysis": None, "understanding": None}
 
     analysis = await analyze_dsa_problem(
@@ -527,6 +532,8 @@ _UNVERIFIED_REVEAL_TEXT: Final = (
     "Here is a full solution. **Not verified in sandbox**: {reason}. Treat it as a draft -- "
     "trace it on the examples yourself before you rely on it."
 )
+_UNCHECKED_REASON: Final = "no test cases could be built to check it against"
+_NOTHING_ABOUT: Final = VerifiedSolution(code="", request=None, verdict=None, verified=False)
 _NO_SOLUTION_TEXT: Final = (
     "You asked for the full solution and I tried to write one, but the model did not "
     "return usable code this time. Ask again and I'll retry -- or paste your attempt and "
@@ -587,6 +594,7 @@ async def run_dsa(
     to `None` (a caller that doesn't pass one just gets the pre-Packet-P5b
     behaviour: `plan.topic` alone, no corpus-direct grounding fallback).
     """
+    question = state.structured_input.question if state.structured_input is not None else None
     initial: DSAState = {
         "problem": state.structured_input,
         "plan": state.plan,
@@ -595,6 +603,11 @@ async def run_dsa(
         "ladder_topic": ladder_topic,
         "history": list(state.recent_context),
         "topic_source": state.topic_source,
+        # A reference that explains itself needs no second model call, unless
+        # the learner also asked for sections only the solver writes.
+        "skip_analysis": solution is not None
+        and solution.approach is not None
+        and not requested_sections(question),
     }
     final_state = await get_dsa_graph().ainvoke(  # pyright: ignore[reportUnknownMemberType]
         initial, context=runtime.context
@@ -630,7 +643,6 @@ async def run_dsa(
             or (family is not None and family_of(hit.chunk.pattern) == family)
         ]
     citations = _citation_labels(cited_hits)
-    question = state.structured_input.question if state.structured_input is not None else None
     hint_now = final_state.get("hint")
     # Naming the pattern is itself a hint: allowed past the first rung, or at
     # L0 when the topic is confident rather than a retrieval guess (code review
@@ -662,6 +674,19 @@ async def run_dsa(
     # "Not verified in sandbox". The solver LLM's own `code` is never used.
     hint = final_state.get("hint")
     at_full = hint is not None and hint.level >= HintLevel.L6_FULL
+    solver_code = final_state.get("code")
+    if solution is None and at_full and reveal_requested and solver_code:
+        # No reference could be produced (the model call failed twice). The
+        # learner asked for the code and outside Challenge mode that ask is
+        # never refused (A-10): the solver's own solution is shown instead,
+        # as what it is -- code nothing checked.
+        solution = VerifiedSolution(
+            code=solver_code,
+            request=ExecutionRequest(code=solver_code),
+            verdict=None,
+            verified=False,
+            reason=_UNCHECKED_REASON,
+        )
     revealed_code = solution.code if solution is not None and at_full else None
     if hint is not None and at_full and revealed_code is None:
         # Nothing verified, nothing shown -- so the turn must not COUNT as a
@@ -690,6 +715,9 @@ async def run_dsa(
         note = _refused_ask_note(plan, hint)
         if note is not None:
             hint = hint.model_copy(update={"text": f"{note}\n\n{hint.text}"})
+    # What is said ABOUT the code comes with the code (same model reply), so
+    # the two cannot describe different algorithms.
+    about = solution if solution is not None and revealed_code is not None else _NOTHING_ABOUT
     result = DSAResult(
         topic=final_state.get("topic"),
         pattern=final_state.get("pattern"),
@@ -698,17 +726,16 @@ async def run_dsa(
         constraints=final_state.get("constraints") or [],
         brute_force=final_state.get("brute_force"),
         why_slow=final_state.get("why_slow"),
-        key_insight=final_state.get("key_insight"),
+        key_insight=about.approach or final_state.get("key_insight"),
         pseudocode=final_state.get("pseudocode"),
         code=revealed_code,
-        complexity_time=final_state.get("complexity_time"),
-        complexity_space=final_state.get("complexity_space"),
+        complexity_time=about.complexity_time or final_state.get("complexity_time"),
+        complexity_space=about.complexity_space or final_state.get("complexity_space"),
         common_mistakes=final_state.get("common_mistakes") or [],
         citations=citations,
         teaching_sections={s.kind: s.body for s in teaching},
         initial_verdict=initial_verdict,
     )
-    del reveal_requested  # the hint level already carries the decision
     # The verified reference runs again through execute_code -> verify, so the
     # turn's own `verification` shows the sandbox pass the learner can trust.
     solution_request = solution.request if solution is not None else None
