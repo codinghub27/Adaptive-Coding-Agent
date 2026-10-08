@@ -34,6 +34,7 @@ clearly-delimited data to reason about, never echoed into `DebugResult`'s
 free-text fields.
 """
 
+import ast
 import re
 from dataclasses import dataclass
 from functools import cache
@@ -217,6 +218,11 @@ async def _run_tests(state: DebugState, runtime: Runtime[GraphContext]) -> Debug
     request = ExecutionRequest(code=code, tests=state.get("tests"))
     result = await _run_in_sandbox(request, runtime)
     verdict = _in_learner_lines(verify(result, request), state.get("line_offset", 0))
+    if verdict.status == "fail" and verdict.error_type == "EOFError" and reads_keyboard(code):
+        # The sandbox has no keyboard. `input()` failing there is not a bug in
+        # the learner's code and must not be reported as one (measured live:
+        # "It fails on this case: runtime error EOFError on line 1").
+        verdict = Verdict(status="inconclusive", category="no_tests", summary=NEEDS_INPUT_SUMMARY)
     return {"request": request, "result": result, "initial_verdict": verdict}
 
 
@@ -260,8 +266,22 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     if problem is None or problem.is_empty:
         return {"bug_explanation": None, "inferred_approach": None}
     if not state.get("code"):
-        # Nothing to read: without code there is no bug to describe.
-        return {"bug_explanation": None, "inferred_approach": None}
+        if not (problem.error or problem.question):
+            return {"bug_explanation": None, "inferred_approach": None}
+        # No code, but an error or a traceback: that is read on its own
+        # (target behaviour section 12), never answered with "no code was
+        # executed".
+        reading = await read_code(
+            problem,
+            static_findings=[],
+            failing_case=None,
+            bug_location=None,
+            llm=runtime.context.llm,
+            failure_established=False,
+            turn_context=state.get("turn_context", ""),
+            traceback_only=True,
+        )
+        return {"bug_explanation": reading.explanation, "inferred_approach": None}
     verdict = state.get("initial_verdict")
     if verdict is not None and verdict.status == "pass":
         if state.get("wants_code", False):
@@ -533,6 +553,24 @@ def _turn_context(state: AgentState) -> str:
     prompt that explains the bug."""
     recent = [(message.role, message.content) for message in state.recent_context]
     return turn_context(state.decision, state.adaptation, recent)
+
+
+NEEDS_INPUT_SUMMARY: Final = (
+    "it waits for keyboard input with input(), which the sandbox does not provide, so it "
+    "was not run to the end"
+)
+
+
+def reads_keyboard(code: str) -> bool:
+    """Does `code` call the built-in `input()`? Read with `ast`, never run."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return "input(" in code
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "input"
+        for node in ast.walk(tree)
+    )
 
 
 def _is_fixed(verdict: Verdict | None) -> bool:

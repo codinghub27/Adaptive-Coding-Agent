@@ -101,7 +101,7 @@ Reply with ONLY a single JSON object and nothing else, in exactly this shape:
 "refers_to_previous": <true|false>, "earlier_subject": <true|false>, \
 "asks_for_code": <true|false>, "about_conversation": <true|false>, \
 "continues_last_reply": <true|false>, "learner_showed": "<label>", \
-"rationale": "<one short sentence>"}
+"no_solution": <true|false>, "rationale": "<one short sentence>"}
 - refers_to_previous: true when the message is about the active_subject (a follow-up, \
 an answer to the tutor, "that problem", "it"); false when it stands on its own or starts \
 something new.
@@ -130,7 +130,11 @@ last question). Judge the reasoning, not the vocabulary. One of: "correct"; \
 "partially_correct" (on track, something missing); "conceptual_misconception" (the mental \
 model itself is wrong); "implementation_error" (the idea is right, the code has a bug); \
 "incomplete"; "incorrect"; "stuck" ("I don't know", "no idea", "I don't know how"). Use \
-"none" for a request, a question, a new problem, or anything that is not a response.
+"none" for a request, a question, a new problem, or anything that is not a response. A \
+message that is a response is never also asks_for_code.
+- no_solution: true only when the learner explicitly asks NOT to be given the answer, the \
+fix or the code ("don't give me the final code yet", "I want to solve it myself", "no \
+spoilers", "don't tell me the algorithm"). Otherwise false.
 
 Lower the confidence value whenever the request is genuinely ambiguous between two or more \
 intents.
@@ -295,6 +299,7 @@ class _LLMIntentOutput(BaseModel):
     about_conversation: bool | None = None
     continues_last_reply: bool | None = None
     learner_showed: str | None = None
+    no_solution: bool | None = None
 
 
 def _parse_llm_output(content: str) -> _LLMIntentOutput | None:
@@ -393,6 +398,7 @@ async def _classify_with_llm(
         about_conversation=parsed.about_conversation if sure else None,
         continues_last_reply=parsed.continues_last_reply if sure else None,
         learner_showed=_evidence_label(parsed.learner_showed) if sure else None,
+        no_solution=parsed.no_solution if sure else None,
     )
 
 

@@ -50,6 +50,7 @@ from app.agents.planner import (
     WEAK_SKILL,
     TopicSource,
     analyze_problem,
+    asks_for_fix,
     build_plan,
     clamp_assistance,
     explicit_ask_phrase,
@@ -132,7 +133,7 @@ from app.schemas.execution import (
 from app.schemas.input import ActiveProblem, CodeBlock, ProblemRelation, StructuredInput
 from app.schemas.intent import Intent, IntentResult
 from app.schemas.knowledge import RetrievalHit
-from app.schemas.plan import ASSISTANCE_ORDER, TeachingPlan
+from app.schemas.plan import ASSISTANCE_ORDER, AssistanceLevel, TeachingPlan
 from app.schemas.profile import LearnerProfileView
 from app.schemas.response import GeneratedResponse, ResponseSection, ResponseSectionKind
 from app.schemas.tutoring import (
@@ -514,11 +515,20 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     )
     plan = _apply_scaffold_floor(plan, state)
     plan = clamp_assistance(plan, state.input.assistance_cap)
+    if state.decision is not None and state.decision.withhold:
+        # "Don't give me the code yet" is the learner's own cap for this
+        # subject: ideas and questions, no pseudocode and no code.
+        plan = clamp_assistance(plan, WITHHOLD_CAP)
     return {
         "plan": plan,
         "topic_source": analysis.topic_source,
         "adaptation": _adaptation(state, plan),
     }
+
+
+#: The most help a turn may give while the learner has asked not to be given
+#: the answer.
+WITHHOLD_CAP: Final[AssistanceLevel] = "concept"
 
 
 def _evidence_key(state: AgentState, plan: TeachingPlan | None) -> str | None:
@@ -534,7 +544,8 @@ def _adaptation(state: AgentState, plan: TeachingPlan) -> Adaptation:
     log: list[str] = []
     if progress is not None and key is not None and progress.evidence_key == key:
         log = list(progress.evidence_log)
-    if state.problem_relation == "new":
+    first_turn = state.problem_relation == "new" or not state.recent_context
+    if first_turn:
         log = []
     return adapt(
         decision=state.decision,
@@ -542,6 +553,7 @@ def _adaptation(state: AgentState, plan: TeachingPlan) -> Adaptation:
         topic=plan.topic,
         evidence_log=log,
         recurring=surfaced_misconceptions(plan.watch_errors, plan.topic, ()),
+        first_turn=first_turn,
     )
 
 
@@ -811,6 +823,9 @@ async def decide_turn(state: AgentState, runtime: Runtime[GraphContext]) -> Agen
 def _decide(state: AgentState) -> AgentStateUpdate:
     update = _problem_update(state)
     effective = state.model_copy(update=dict(update))
+    anchored = _anchor_on_the_conversation(state, effective)
+    if anchored is not None:
+        update, effective = anchored, state.model_copy(update=dict(anchored))
     settled = _settle_unsure_reading(effective)
     if settled is not None:
         update["intent"] = settled
@@ -819,6 +834,44 @@ def _decide(state: AgentState) -> AgentStateUpdate:
     update["route"] = chosen
     update["decision"] = _turn_decision(effective, chosen)
     return update
+
+
+#: Labels whose agent works ON something: a problem to step through, code or
+#: an error to read. With nothing of the kind in hand there is nothing to do.
+_NEEDS_A_SUBJECT: Final = DSA_ROUTE_INTENTS | DEBUG_ROUTE_INTENTS
+
+
+def _anchor_on_the_conversation(
+    original: AgentState, settled: AgentState
+) -> AgentStateUpdate | None:
+    """An agent must have its subject.
+
+    A turn labelled "solve", "hint" or "debug" that brings no problem, code or
+    error of its own, and that was NOT tied to the conversation, leaves its
+    agent with nothing to work on. Measured live: after a debugging reply the
+    learner answered "Add 1."; it was read as a new solve request with no
+    problem, and the tutor wrote and "verified" a function that adds one.
+    Earlier, "give code for that" got "you did not provide a problem".
+
+    When the conversation has a subject, such a turn is about it, whatever was
+    said about `refers_to_previous`: the decision is made again with that
+    reading. With no subject at all the turn is left to be asked about.
+    """
+    intent = settled.intent
+    inp = settled.structured_input
+    if intent is None or inp is None or original.active_problem is None:
+        return None
+    if settled.problem_relation != "none" or settled.thread_followup or settled.subject_switched:
+        return None
+    if inp.problem or inp.code or inp.error or intent.intent not in _NEEDS_A_SUBJECT:
+        return None
+    if original.intent is None or not inp.question or is_small_talk(inp.question):
+        return None
+    reread = original.intent.model_copy(
+        update={"refers_to_previous": True, "continues_last_reply": False}
+    )
+    update = _problem_update(original.model_copy(update={"intent": reread}))
+    return update if update.get("problem_relation") == "followup" else None
 
 
 def _settle_unsure_reading(state: AgentState) -> IntentResult | None:
@@ -880,6 +933,16 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
     wants_code = False
     if intent is not None and chosen in ("dsa", "debug"):
         wants_code = wants_the_code(intent, question, fix=chosen == "debug")
+        if wants_code and intent.learner_showed in EVIDENCE_LABELS:
+            # A response is not a request. The model said both "this answers
+            # the tutor" and "this demands the code"; only a listed phrase in
+            # the message itself makes it a demand (a wrong yes hands over
+            # the answer).
+            listed = (
+                asks_for_fix(question) if chosen == "debug" else explicit_ask_phrase(question or "")
+            )
+            wants_code = listed
+    withhold = _withhold(state, intent, wants_code)
 
     move: Move
     if chosen == "meta":
@@ -915,8 +978,29 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
         move=move,
         scaffold=scaffold_for(evidence),
         wants_code=wants_code,
+        withhold=withhold,
         confident=confident,
         reasons=reasons,
+    )
+
+
+def _withhold(state: AgentState, intent: IntentResult | None, wants_code: bool) -> bool:
+    """Is the answer to be held back this turn because the learner said so?
+
+    True on the turn they say it, and on later turns about the same subject
+    (`SessionProgress.withhold_key`) until they ask for the code."""
+    if wants_code:
+        return False
+    if intent is not None and intent.no_solution:
+        return True
+    progress = state.session_progress
+    key = state.problem_key
+    return bool(
+        progress is not None
+        and progress.withhold_key is not None
+        and key is not None
+        and progress.withhold_key == key
+        and state.problem_relation in ("same", "followup")
     )
 
 
@@ -1090,7 +1174,8 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
             update["structured_input"] = update["structured_input"].model_copy(  # type: ignore[union-attr]
                 update={"code": list(attempt)}
             )
-        if _code_anchored(active) and _code_first(update.get("intent", intent)):
+        responds = intent is not None and intent.learner_showed in EVIDENCE_LABELS
+        if _code_anchored(active) and (_code_first(update.get("intent", intent)) or responds):
             # The conversation's subject is the learner's own code: "give full
             # code and tell me where the bug is" is about THAT code, so it is
             # read and run -- never answered from the hint ladder.
@@ -1166,6 +1251,7 @@ def _relabel(base: IntentResult | None, intent: Intent, rationale: str) -> Inten
         about_conversation=base.about_conversation if base is not None else None,
         continues_last_reply=base.continues_last_reply if base is not None else None,
         learner_showed=base.learner_showed if base is not None else None,
+        no_solution=base.no_solution if base is not None else None,
     )
 
 
@@ -2293,22 +2379,37 @@ async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> Age
     )
     errors = [grade.misconception_id] if is_catalog_id(grade.misconception_id) else []
     update: AgentStateUpdate = {}
+    handoff, feedback, next_pending = reacted.handoff, reacted.feedback, reacted.next_pending
     if state.decision is not None:
         # The grader knows what the learner showed better than the first
         # reading did; the decision record carries the firmer label.
-        update["decision"] = state.decision.with_evidence(_graded_evidence(grade))
+        decided = state.decision.with_evidence(_graded_evidence(grade))
+        update["decision"] = decided
+        adaptation = _adaptation(state.model_copy(update={"decision": decided}), plan)
+        update["adaptation"] = adaptation
+        if (
+            adaptation.representation != "plain"
+            and state.active_problem is not None
+            and not handoff
+        ):
+            # A repeated miss gets a DIFFERENT presentation, and only the
+            # tutor's own step can produce one: the bank's scaffold is fixed
+            # text and re-asks the same question (measured live: the same
+            # reply twice under a badge claiming it had been "drawn out").
+            # The grade stands; the next step is the solver's.
+            handoff, feedback, next_pending = True, "", None
     return {
         **update,
         "answer_grade": grade,
         "reaction": reacted.reaction,
-        "grade_feedback": reacted.feedback,
+        "grade_feedback": feedback,
         "grade_lesson": reacted.lesson,
         "assistance_before": reacted.assistance_before,
-        "grade_handoff": reacted.handoff,
-        "next_pending": reacted.next_pending,
+        "grade_handoff": handoff,
+        "next_pending": next_pending,
         "plan": plan,
         "agent_output": AgentOutcome(
-            text=reacted.feedback or "Thanks -- let's keep going.",
+            text=feedback or "Thanks -- let's keep going.",
             topic=topic,
             solved=None,
             hints_used=0,
@@ -2856,6 +2957,21 @@ _VERBOSE_SECTION_KINDS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: How `render_verdict` and the debug renderer open a sentence that only
+#: restates a verdict an "Execution" line already gives.
+_VERDICT_RESTATEMENTS: Final = (
+    "The sandbox still found a failure.",
+    "The sandbox confirmed this passes",
+    "A fix was found and verified in the sandbox",
+)
+
+
+#: The pattern survey: what a hint turn never carries unless asked for by name.
+_SURVEY_SECTION_KINDS: Final[frozenset[str]] = frozenset(
+    {"recognition", "intuition", "understanding", "constraints", "common_mistakes", "next_steps"}
+)
+
+
 #: Survey sections left out of a full-solution turn unless asked for by
 #: name: the reveal is the insight, the tested code and its cost -- not a
 #: second walk through the brute force and the pattern's textbook page.
@@ -2969,8 +3085,11 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         and question.question_id == chain_start(problem_text)
     ):
         lead = chain_intro(problem_text)
+    # When the solver wrote the step that follows a graded reply, it opens with
+    # its own line about that reply; the grader's lead would say it twice.
+    spoken_by_solver = grade is not None and state.grade_handoff and _guided_hint(state)
     extra = tutoring_sections(
-        grade=grade,
+        grade=None if spoken_by_solver else grade,
         feedback=state.grade_feedback or "",
         misconceptions=found,
         surfaced=surfaced,
@@ -3014,12 +3133,26 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         # Conversational turn: the step and its question, no survey sections
         # unless the learner asked for them by name.
         base = [s for s in base if s.kind not in _VERBOSE_SECTION_KINDS or s.kind in requested]
+    elif route == "dsa":
+        # A generic ladder rung (the solver gave no usable step): the rung
+        # alone. The pattern's textbook page under it is a dump of retrieved
+        # material nobody asked for (target behaviour section 25).
+        base = [s for s in base if s.kind not in _SURVEY_SECTION_KINDS or s.kind in requested]
     after = list(extra.after)
     verification_index = next((i for i, s in enumerate(base) if s.kind == "verification"), None)
     if verification_index is not None and exec_lines:
         section = base[verification_index]
+        # The Execution lines ARE the verdict, in the verifier's own wording.
+        # A sentence restating the same verdict under them ("The sandbox still
+        # found a failure ...", "A fix was found and verified ...") is dropped;
+        # anything else the section says is kept.
+        notes = [
+            part
+            for part in section.body.split("\n\n")
+            if part.strip() and not part.startswith(_VERDICT_RESTATEMENTS)
+        ]
         base[verification_index] = section.model_copy(
-            update={"body": "\n\n".join([*exec_lines, section.body])}
+            update={"body": "\n\n".join([*exec_lines, *notes])}
         )
         after = [s for s in after if s.kind != "execution"]
     sections = [*extra.before, *base, *after]
@@ -3113,14 +3246,24 @@ def _log_evidence(progress: SessionProgress, state: AgentState) -> SessionProgre
     decision = state.decision
     if key is None or decision is None:
         return progress
-    same = progress.evidence_key == key and state.problem_relation != "new"
+    opening = state.problem_relation == "new" or not state.recent_context
+    same = progress.evidence_key == key and not opening
     log = list(progress.evidence_log) if same else []
-    if decision.evidence != "none":
+    if decision.evidence != "none" and not opening:
         log.append(decision.evidence)
-    if same and log == progress.evidence_log:
+    withhold_key = progress.withhold_key if same else None
+    if decision.withhold:
+        withhold_key = key
+    elif decision.wants_code:
+        withhold_key = None
+    if same and log == progress.evidence_log and withhold_key == progress.withhold_key:
         return progress
     return progress.model_copy(
-        update={"evidence_log": log[-_MAX_EVIDENCE_LOG:], "evidence_key": key}
+        update={
+            "evidence_log": log[-_MAX_EVIDENCE_LOG:],
+            "evidence_key": key,
+            "withhold_key": withhold_key,
+        }
     )
 
 

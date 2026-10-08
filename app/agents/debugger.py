@@ -642,14 +642,30 @@ _READ_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
 #: using two pointers" and a test count (measured live).
 _ANSWER_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "The sandbox ran the learner's code and it PASSED every test case it was checked "
-    "against; that is FACT. Do not look for a bug and never invent one. Answer what the "
-    'learner asked about their code, directly, in 2-6 sentences written TO the learner ("you"). '
+    "against; that is FACT. Do not look for a bug and never invent one. The learner's "
+    'message is the "question" field of <user_input>: answer THAT question about their code, '
+    'directly, in 2-6 sentences written TO the learner ("you"). Do not answer by repeating '
+    "that the code is correct. "
     "If they ask for another way to solve it, name ONE concrete alternative, say in a "
     "sentence how it works, and compare its time and space cost with theirs; do not write "
     "its code unless they asked for code. If they ask why it works, about its cost or about "
     "an edge case, answer that. If the message asks nothing beyond checking the code, say "
     "in one sentence what makes it correct. Reply with ONLY a single JSON object and nothing "
     'else: {"bug_explanation": "<your answer>", "used": []}'
+)
+
+#: An error or traceback with no code. Before this the debugger had "nothing
+#: to read" and the whole reply was "Correctness could not be checked
+#: (skipped). no code was executed" (measured live; target behaviour section 12).
+_TRACEBACK_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
+    "The learner shared an error or a traceback but NOT the code. Read it: name the "
+    "exception, the file and line that failed and the expression on it, and say what the "
+    "error means about the actual type or value involved. Give the most likely root cause. "
+    "Do not invent code you cannot see and do not rewrite their program. If the traceback "
+    "is not enough to establish where the bad value comes from, say exactly what is missing "
+    "and ask for ONLY that (for example, the lines where the value is created). Write TO the "
+    'learner ("you") in 2-5 sentences. Reply with ONLY a single JSON object and nothing '
+    'else: {"bug_explanation": "<your reading>", "used": []}'
 )
 
 _APPROACH_ADDENDUM: Final = (
@@ -732,6 +748,7 @@ async def read_code(
     name_approach: bool = True,
     turn_context: str = "",
     passed: bool = False,
+    traceback_only: bool = False,
 ) -> CodeReading:
     """ONE LLM call that both names the learner's approach and explains the
     bug (or reports that none was found). Replaces the separate
@@ -758,6 +775,8 @@ async def read_code(
     system = _EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM
     if passed:
         system = _ANSWER_SYSTEM
+    if traceback_only:
+        system, name_approach = _TRACEBACK_SYSTEM, False
     if name_approach:
         system += _APPROACH_ADDENDUM
     messages = [

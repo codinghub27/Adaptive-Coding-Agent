@@ -104,6 +104,9 @@ class TurnDecision(APIModel):
     scaffold: Scaffold = "same"
     #: The learner asked to be given the code (or the fix) now.
     wants_code: bool = False
+    #: The learner asked NOT to be given the answer ("don't give me the final
+    #: code yet"). It holds for the subject until they ask for the code.
+    withhold: bool = False
     #: The message was read with confidence (a model's confident answer or a
     #: deterministic rule). `False` means the conversation decided, not the
     #: wording.

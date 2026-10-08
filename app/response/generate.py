@@ -299,6 +299,16 @@ def _render_debug(
         # than leave the request unanswered. Not on an unproven run -- there
         # the reading above may have named a bug, and this would contradict it.
         found.append(_NOTHING_TO_FIX_NOTE)
+    if (
+        verdict_for_render is not None
+        and verdict_for_render.status == "skipped"
+        and result.bug_explanation
+        and not result.not_executed
+    ):
+        # Nothing was run because there was no code to run (an error or a
+        # traceback on its own). "Correctness could not be checked (skipped).
+        # no code was executed" under the reading of it is noise.
+        found = []
     verdict_section = _section("verification", "\n\n".join(part for part in found if part))
     if verdict_section is not None:
         sections.append(verdict_section)

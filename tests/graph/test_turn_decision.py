@@ -235,3 +235,95 @@ def test_a_pending_question_makes_a_reply_a_graded_answer() -> None:
         _state("7?", intent=_unsure(Intent.GENERAL_GUIDANCE), active=_active(), pending=pending)
     )
     assert decision.move == "grade"
+
+
+_SHARED = "def maxDepth(root):\n    if root is None:\n        return 0\n    return 0\n"
+
+
+def _code_subject() -> ActiveProblem:
+    return ActiveProblem(
+        problem=StructuredInput(
+            source="text", code=[CodeBlock(content=_SHARED, language="python")]
+        ),
+        key="_c1",
+        topic="trees",
+    )
+
+
+def test_an_agent_must_have_its_subject() -> None:
+    """Measured live: after a debugging reply the learner answered "Add 1.".
+    It was read as a new request to solve something, with nothing to solve,
+    and the tutor wrote and "verified" a function that adds one."""
+    misread = _sure(Intent.DSA_SOLVE, refers_to_previous=False, asks_for_code=True)
+    update = _decide(_state("Add 1.", intent=misread, active=_code_subject()))
+
+    assert update.get("problem_relation") == "followup"
+    assert update.get("route") == "debug"  # the subject is their code
+    inherited = update.get("structured_input")
+    assert inherited is not None
+    assert inherited.code and inherited.code[0].content == _SHARED
+    assert inherited.question == "Add 1."
+
+
+def test_with_no_subject_at_all_the_turn_is_asked_about() -> None:
+    misread = _sure(Intent.DSA_HINT, refers_to_previous=False)
+    update = _decide(_state("give me the next hint", intent=misread))
+    assert update.get("problem_relation") == "none"
+
+
+def test_a_concept_question_is_left_alone_by_the_subject_rule() -> None:
+    update = _decide(
+        _state(
+            "what is a trie?",
+            intent=_sure(Intent.CONCEPT_EXPLANATION, refers_to_previous=False),
+            active=_active(),
+        )
+    )
+    assert update.get("route") == "explain"
+    assert update.get("problem_relation") == "none"
+
+
+def test_a_response_is_not_a_demand_for_the_code() -> None:
+    both = _sure(
+        Intent.DSA_HINT, refers_to_previous=True, asks_for_code=True, learner_showed="correct"
+    )
+    decision = _decision(_state("add one to it", intent=both, active=_active()))
+    assert decision.wants_code is False
+    assert decision.move == "step"
+    assert decision.evidence == "correct"
+    # A listed phrase in the message itself is still a demand.
+    asked = _decision(_state("give me the code", intent=both, active=_active()))
+    assert asked.wants_code is True
+
+
+def test_a_reply_about_shared_code_goes_to_the_debugger() -> None:
+    reply = _sure(Intent.CODE_EXPLAIN, refers_to_previous=True, learner_showed="correct")
+    update = _decide(_state("return 1 + max(left, right)", intent=reply, active=_code_subject()))
+    assert update.get("route") == "debug"
+
+
+def test_dont_give_me_the_code_yet_is_respected_until_they_ask() -> None:
+    said = _sure(Intent.CODE_DEBUG, no_solution=True)
+    first = _decision(_state("explain it but no final code yet", intent=said, code=_SHARED))
+    assert first.withhold is True
+
+    held = SessionProgress.empty().model_copy(update={"withhold_key": "_c1"})
+    later = _decision(
+        _state(
+            "is it the base case?",
+            intent=_sure(Intent.CODE_DEBUG, refers_to_previous=True),
+            active=_code_subject(),
+            progress=held,
+        )
+    )
+    assert later.withhold is True
+
+    asks = _decision(
+        _state(
+            "ok give me the code",
+            intent=_sure(Intent.CODE_DEBUG, refers_to_previous=True, asks_for_code=True),
+            active=_code_subject(),
+            progress=held,
+        )
+    )
+    assert (asks.withhold, asks.wants_code) == (False, True)

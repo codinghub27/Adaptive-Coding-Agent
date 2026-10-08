@@ -169,6 +169,9 @@ class SessionProgress(APIModel):
     #: skip steps after repeated success (`app.tutoring.adaptation`).
     evidence_log: list[str] = Field(default_factory=list[str])
     evidence_key: str | None = Field(default=None, max_length=96)
+    #: The subject (`evidence_key`) on which the learner asked not to be given
+    #: the answer. Cleared when they ask for the code or move to a new subject.
+    withhold_key: str | None = Field(default=None, max_length=96)
 
     @classmethod
     def empty(cls) -> "SessionProgress":

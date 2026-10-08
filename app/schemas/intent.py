@@ -75,6 +75,8 @@ class IntentResult(APIModel):
     #: 2.2 (`app.schemas.decision.Evidence`). Set only when the message is a
     #: response of theirs (an answer, their reasoning) and the model was sure.
     learner_showed: str | None = None
+    #: The learner asked NOT to be given the answer, the fix or the code.
+    no_solution: bool | None = None
 
     @computed_field
     @property

@@ -5,11 +5,15 @@ planned at skill 0.50, nothing in any reply changed because of who the learner
 was, and "Adapted to your level" was shown on every stored reply.
 """
 
+from datetime import UTC, datetime
+from uuid import uuid4
+
 from app.graph.nodes import (
     _adaptation,  # pyright: ignore[reportPrivateUsage]
     _log_evidence,  # pyright: ignore[reportPrivateUsage]
 )
 from app.graph.state import AgentState, RawInput
+from app.schemas.conversation import MessageView
 from app.schemas.decision import Evidence, TurnDecision, scaffold_for
 from app.schemas.plan import TeachingPlan
 from app.schemas.profile import LearnerProfileView
@@ -54,9 +58,10 @@ def test_with_no_evidence_nothing_is_adapted_and_no_badge_shows() -> None:
 
 
 def test_repeated_struggle_changes_the_representation_not_the_wording() -> None:
-    """Section 18: explanation -> example -> visual -> simpler question -> pseudocode."""
-    seen = [_adapt("stuck", ["stuck"] * n).representation for n in range(5)]
-    assert seen == ["worked_example", "diagram", "simpler_question", "pseudocode", "pseudocode"]
+    """Section 18: explanation -> example -> visual -> simpler question. Pseudocode
+    and code are the hint ladder's own rungs, not a restyling of a hint."""
+    seen = [_adapt("stuck", ["stuck"] * n).representation for n in range(4)]
+    assert seen == ["worked_example", "diagram", "simpler_question", "simpler_question"]
     second = _adapt("incorrect", ["stuck"])
     assert second.adapted is True
     assert "drew it out" in second.notes[0]
@@ -102,6 +107,17 @@ def test_the_prompt_block_carries_the_decision_and_the_instruction() -> None:
     assert tutor_state_block(None, None) == ""
 
 
+_EARLIER = MessageView(
+    id=uuid4(),
+    conversation_id=uuid4(),
+    seq=1,
+    role="assistant",
+    content="What number do you need with 2 to make 9?",
+    intent=None,
+    created_at=datetime.now(UTC),
+)
+
+
 def _state(
     *,
     evidence: Evidence,
@@ -111,6 +127,7 @@ def _state(
 ) -> AgentState:
     return AgentState(
         input=RawInput(text="x"),
+        recent_context=[_EARLIER] if relation != "new" else [],
         decision=_decision(evidence),
         session_progress=progress,
         problem_key="_p1",
@@ -190,3 +207,29 @@ def test_linking_a_repeat_is_itself_an_adaptation() -> None:
     assert adaptation.adapted is True
     assert adaptation.recurring == ["trees.returnable_vs_global_path"]
     assert adaptation.linked_to(["trees.returnable_vs_global_path"]).notes == adaptation.notes
+
+
+def test_not_knowing_how_to_start_is_not_a_failed_step() -> None:
+    """Measured live: a first message "I don't understand how to start" was
+    badged "You were stuck on the last step" when there had been no step."""
+    opening = _state(evidence="stuck", relation="new")
+    assert opening.plan is not None
+    adaptation = _adaptation(opening, opening.plan)
+    assert adaptation.representation == "plain"
+    assert adaptation.adapted is False
+    assert _log_evidence(SessionProgress.empty(), opening).evidence_log == []
+    direct = adapt(
+        decision=_decision("stuck"),
+        pitch="intermediate",
+        topic="hashing",
+        evidence_log=[],
+        first_turn=True,
+    )
+    assert direct.struggles == 0
+
+
+def test_the_learners_own_no_answer_yet_is_in_the_prompt() -> None:
+    decision = _decision("none").model_copy(update={"withhold": True})
+    block = tutor_state_block(decision, _adapt("none", []))
+    assert "withhold_answer: yes" in block
+    assert "do NOT state the corrected line" in block
