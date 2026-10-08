@@ -21,6 +21,9 @@ class LearnerProfileView(APIModel):
     skill_levels: dict[str, float]
     learning_preferences: dict[str, bool]
     common_errors: list[str]
+    #: How many times each recorded mistake has been seen, so a repeat can be
+    #: told from a first occurrence (target behaviour section 19).
+    common_error_counts: dict[str, int] = Field(default_factory=dict[str, int])
     #: Topics to work on next, weakest first -- derived server-side by
     #: `app.memory.profile.suggested_focus`. The frontend renders this; it never
     #: computes the learner model itself.

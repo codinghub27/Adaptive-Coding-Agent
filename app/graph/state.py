@@ -46,6 +46,7 @@ from app.schemas.tutoring import (
     SessionProgress,
     TutoringView,
 )
+from app.tutoring.adaptation import Adaptation
 
 __all__ = [
     "AgentOutcome",
@@ -157,6 +158,9 @@ class AgentState(BaseModel):
     #: The one tutoring decision for this turn (`decide_turn`): what it is
     #: about, what the learner showed, what to do. Every later node reads it.
     decision: TurnDecision | None = None
+    #: How this turn is fitted to this learner (`app.tutoring.adaptation`), and
+    #: the fixed sentences that say so. Set by `plan_teaching`.
+    adaptation: Adaptation | None = None
     agent_output: AgentOutcome | None = None
     agent_result: AgentResult | None = None
     suite_source: SuiteSource = "none"
@@ -221,6 +225,7 @@ class AgentStateUpdate(TypedDict, total=False):
     verification: Verdict | None
     route: RouteKey | None
     decision: TurnDecision | None
+    adaptation: Adaptation | None
     agent_output: AgentOutcome | None
     agent_result: AgentResult | None
     suite_source: SuiteSource

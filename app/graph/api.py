@@ -28,7 +28,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agents.planner import plan_adapted
 from app.auth.deps import get_current_user
 from app.config import Settings
 from app.db.session import get_session
@@ -94,9 +93,10 @@ class ChatResponse(APIModel):
     #: Per-topic skill change this turn produced, for the UI to surface.
     #: Computed server-side; the frontend renders it and never derives it.
     skill_deltas: dict[str, float] = Field(default_factory=dict[str, float])
-    #: True only when the plan deviated from the default BECAUSE of the
-    #: learner's profile evidence (F9): never on a fresh account at PRIOR.
+    #: True only when something in the reply changed BECAUSE of this learner;
+    #: `adaptations` says what, in fixed sentences. No sentence, no badge.
     adapted: bool = False
+    adaptations: list[str] = Field(default_factory=list[str])
     errors: list[NodeError]
     llm_calls: int
     generated: GeneratedResponse | None
@@ -243,7 +243,8 @@ def _to_chat_response(result: GraphRunResult, conversation_id: UUID | None) -> C
         generated=state.generated_response,
         conversation_id=conversation_id,
         skill_deltas=dict(result.state.skill_deltas),
-        adapted=plan_adapted(state.plan),
+        adapted=state.adaptation is not None and state.adaptation.adapted,
+        adaptations=list(state.adaptation.notes) if state.adaptation is not None else [],
         tutoring=state.tutoring,
     )
 

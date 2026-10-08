@@ -11,6 +11,7 @@ and returned verbatim, never truncated, and never interpreted as instructions.
 """
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
@@ -98,6 +99,7 @@ async def add_turn(
     role: Role,
     content: str,
     intent: Intent | None = None,
+    adaptation: Sequence[str] | None = None,
 ) -> MessageView:
     """Append a message to a conversation, assigning the next sequence number.
 
@@ -118,6 +120,7 @@ async def add_turn(
         role=role,
         content=content,
         intent=intent.value if intent is not None else None,
+        adaptation=list(adaptation) if adaptation else None,
     )
     session.add(message)
     await session.flush()

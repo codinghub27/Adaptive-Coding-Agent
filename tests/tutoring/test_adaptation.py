@@ -1,0 +1,192 @@
+"""What changes in a reply because of the learner (target behaviour 17-22).
+
+Measured (docs/BEHAVIOR_GAP.md, section 4): every one of 48 real turns was
+planned at skill 0.50, nothing in any reply changed because of who the learner
+was, and "Adapted to your level" was shown on every stored reply.
+"""
+
+from app.graph.nodes import (
+    _adaptation,  # pyright: ignore[reportPrivateUsage]
+    _log_evidence,  # pyright: ignore[reportPrivateUsage]
+)
+from app.graph.state import AgentState, RawInput
+from app.schemas.decision import Evidence, TurnDecision, scaffold_for
+from app.schemas.plan import TeachingPlan
+from app.schemas.profile import LearnerProfileView
+from app.schemas.tutoring import SessionProgress
+from app.tutoring.adaptation import STRUGGLE, SUCCESS, Adaptation, adapt, streak, tutor_state_block
+from app.tutoring.misconceptions import catalog
+from app.tutoring.turn import tutoring_sections
+
+
+def _decision(evidence: Evidence = "none", *, wants_code: bool = False) -> TurnDecision:
+    return TurnDecision(
+        subject="active",
+        evidence=evidence,
+        move="code" if wants_code else "step",
+        scaffold=scaffold_for(evidence),
+        wants_code=wants_code,
+    )
+
+
+def _adapt(evidence: Evidence, log: list[str], **kwargs: object) -> Adaptation:
+    return adapt(
+        decision=_decision(evidence),
+        pitch="intermediate",
+        topic="hashing",
+        evidence_log=log,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_a_request_neither_extends_nor_breaks_a_streak() -> None:
+    assert streak(["stuck", "incorrect"], "none", STRUGGLE) == 2
+    assert streak(["stuck"], "stuck", STRUGGLE) == 2
+    assert streak(["stuck", "correct"], "stuck", STRUGGLE) == 1
+    assert streak(["correct"], "terminology_error", SUCCESS) == 2
+
+
+def test_with_no_evidence_nothing_is_adapted_and_no_badge_shows() -> None:
+    adaptation = _adapt("none", [])
+    assert adaptation.representation == "plain"
+    assert adaptation.notes == []
+    assert adaptation.adapted is False
+
+
+def test_repeated_struggle_changes_the_representation_not_the_wording() -> None:
+    """Section 18: explanation -> example -> visual -> simpler question -> pseudocode."""
+    seen = [_adapt("stuck", ["stuck"] * n).representation for n in range(5)]
+    assert seen == ["worked_example", "diagram", "simpler_question", "pseudocode", "pseudocode"]
+    second = _adapt("incorrect", ["stuck"])
+    assert second.adapted is True
+    assert "drew it out" in second.notes[0]
+
+
+def test_two_right_answers_skip_the_small_steps() -> None:
+    assert _adapt("correct", []).skip_ahead is False
+    after_two = _adapt("correct", ["correct"])
+    assert after_two.skip_ahead is True
+    assert after_two.representation == "plain"
+    assert any("skipped the small steps" in note for note in after_two.notes)
+    # A miss in between starts the count again.
+    assert _adapt("correct", ["correct", "incorrect"]).skip_ahead is False
+
+
+def test_a_code_ask_is_not_restyled() -> None:
+    adaptation = adapt(
+        decision=_decision("none", wants_code=True),
+        pitch="intermediate",
+        topic="hashing",
+        evidence_log=["stuck", "stuck"],
+    )
+    assert adaptation.representation == "plain"
+    assert adaptation.skip_ahead is False
+
+
+def test_the_pitch_follows_the_skill_estimate_and_says_so() -> None:
+    weak = adapt(decision=_decision(), pitch="beginner", topic="two_pointers", evidence_log=[])
+    assert weak.adapted is True
+    assert "two pointers" in weak.notes[0]
+    strong = adapt(decision=_decision(), pitch="advanced", topic="graphs", evidence_log=[])
+    assert "Skipping the basics" in strong.notes[0]
+
+
+def test_the_prompt_block_carries_the_decision_and_the_instruction() -> None:
+    adaptation = _adapt("stuck", ["stuck"])
+    block = tutor_state_block(_decision("stuck"), adaptation)
+    assert block.startswith("<tutor_state>") and block.endswith("</tutor_state>")
+    assert "learner_showed: stuck" in block
+    assert "scaffolding: up" in block
+    assert "representation: diagram" in block
+    assert "draw it" in block
+    assert tutor_state_block(None, None) == ""
+
+
+def _state(
+    *,
+    evidence: Evidence,
+    progress: SessionProgress | None = None,
+    skill: float = 0.5,
+    relation: str = "followup",
+) -> AgentState:
+    return AgentState(
+        input=RawInput(text="x"),
+        decision=_decision(evidence),
+        session_progress=progress,
+        problem_key="_p1",
+        problem_relation=relation,  # type: ignore[arg-type]
+        profile=LearnerProfileView.empty(),
+        plan=TeachingPlan(
+            difficulty="medium",
+            assistance_level="concept",
+            solution_strategy="socratic_hints",
+            topic="hashing",
+            skill_level=skill,
+        ),
+    )
+
+
+def test_the_log_carries_what_was_shown_from_one_turn_to_the_next() -> None:
+    progress = SessionProgress.empty()
+    for evidence in ("stuck", "none", "incorrect"):
+        state = _state(evidence=evidence, progress=progress)  # type: ignore[arg-type]
+        progress = _log_evidence(progress, state)
+    assert progress.evidence_log == ["stuck", "incorrect"]
+    assert progress.evidence_key == "_p1"
+
+    third = _state(evidence="stuck", progress=progress)
+    assert third.plan is not None
+    adaptation = _adaptation(third, third.plan)
+    assert adaptation.struggles == 3
+    assert adaptation.representation == "simpler_question"
+
+
+def test_a_new_problem_starts_a_new_log() -> None:
+    progress = SessionProgress.empty().model_copy(
+        update={"evidence_log": ["stuck", "stuck"], "evidence_key": "_p1"}
+    )
+    fresh = _state(evidence="none", progress=progress, relation="new")
+    assert fresh.plan is not None
+    assert _adaptation(fresh, fresh.plan).representation == "plain"
+    assert _log_evidence(progress, fresh).evidence_log == []
+
+
+def test_a_weak_and_a_strong_learner_are_pitched_differently() -> None:
+    weak = _state(evidence="none", skill=0.2)
+    strong = _state(evidence="none", skill=0.9)
+    assert weak.plan is not None and strong.plan is not None
+    assert _adaptation(weak, weak.plan).pitch == "beginner"
+    assert _adaptation(strong, strong.plan).pitch == "advanced"
+    middle = _state(evidence="none")
+    assert middle.plan is not None
+    assert _adaptation(middle, middle.plan).adapted is False
+
+
+def test_a_repeated_misconception_is_linked_to_the_earlier_time() -> None:
+    """Section 19: correct normally, then link it, then a mini-lesson."""
+    item = catalog()[0]
+
+    def body(times: int) -> str:
+        sections = tutoring_sections(
+            grade=None,
+            feedback="",
+            misconceptions=[item.id],
+            surfaced=[],
+            execution_lines=[],
+            question=None,
+            seen_before={item.id: times},
+        )
+        return sections.before[0].body
+
+    first, second, third = body(0), body(1), body(2)
+    assert "before" not in first.split(item.name)[0]
+    assert "same mix-up you ran into before" in second
+    assert "third time" in third and "Try this" in third
+    assert item.name in first and item.name in second and item.name in third
+
+
+def test_linking_a_repeat_is_itself_an_adaptation() -> None:
+    adaptation = _adapt("none", []).linked_to(["trees.returnable_vs_global_path"])
+    assert adaptation.adapted is True
+    assert adaptation.recurring == ["trees.returnable_vs_global_path"]
+    assert adaptation.linked_to(["trees.returnable_vs_global_path"]).notes == adaptation.notes

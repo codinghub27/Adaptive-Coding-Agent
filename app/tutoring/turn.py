@@ -13,7 +13,7 @@ the misconception catalog, or fixed copy below). Learner text never flows in.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -341,8 +341,29 @@ def _section(kind: ResponseSectionKind, body: str) -> ResponseSection | None:
     return ResponseSection(kind=kind, title=SECTION_TITLES[kind], body=body)
 
 
-def _misconception_body(item: Misconception) -> str:
-    return f"**{item.name}.** {item.correct_model}\n\n**Small example:** {item.example}"
+#: Second occurrence: say so (target behaviour section 19). Third and later:
+#: the reusable rule as a mini-lesson, and one small thing to try.
+_SEEN_BEFORE: Final = (
+    "This is the same mix-up you ran into before, so it is worth fixing for good this time."
+)
+_SEEN_OFTEN: Final = (
+    "This is the third time this one has come up, so here is the rule to keep, and a "
+    "quick exercise on it."
+)
+_TRY_THIS: Final = (
+    "**Try this:** take the small example above, change one value in it, and say what the "
+    "result is before you run anything."
+)
+
+
+def _misconception_body(item: Misconception, times_before: int = 0) -> str:
+    body = f"**{item.name}.** {item.correct_model}\n\n**Small example:** {item.example}"
+    if times_before == 1:
+        return f"{_SEEN_BEFORE}\n\n{body}"
+    if times_before >= 2:
+        rule = f"\n\n**The rule:** {item.lesson}" if item.lesson else ""
+        return f"{_SEEN_OFTEN}\n\n{body}{rule}\n\n{_TRY_THIS}"
+    return body
 
 
 @dataclass(slots=True)
@@ -363,8 +384,13 @@ def tutoring_sections(
     question: PendingCheck | None,
     lead: str | None = None,
     lesson: str | None = None,
+    seen_before: Mapping[str, int] | None = None,
 ) -> TutoringSections:
-    """Render the tutoring sections (all agent-authored text)."""
+    """Render the tutoring sections (all agent-authored text).
+
+    `seen_before` is how many times the learner has shown each misconception
+    BEFORE this turn (from their profile): a repeat is linked to the earlier
+    time instead of being corrected as if it were new."""
     out = TutoringSections()
     if lead:
         section = _section("lead", lead)
@@ -378,7 +404,8 @@ def tutoring_sections(
     for misconception_id in misconceptions:
         item = get_misconception(misconception_id)
         if item is not None:
-            section = _section("misconception", _misconception_body(item))
+            times = (seen_before or {}).get(misconception_id, 0)
+            section = _section("misconception", _misconception_body(item, times))
             if section is not None:
                 out.before.append(section)
     if surfaced:

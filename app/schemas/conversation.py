@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, computed_field
 
 from app.schemas.base import APIModel
 from app.schemas.intent import Intent
@@ -73,4 +73,12 @@ class MessageView(APIModel):
     role: Role
     content: str
     intent: Intent | None
+    #: What changed in this reply because of the learner; empty or absent when
+    #: nothing did. The "Adapted to your level" badge is `adapted`, never more.
+    adaptation: list[str] | None = None
     created_at: datetime
+
+    @computed_field
+    @property
+    def adapted(self) -> bool:
+        return bool(self.adaptation)

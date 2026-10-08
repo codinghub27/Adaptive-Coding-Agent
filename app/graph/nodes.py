@@ -144,6 +144,7 @@ from app.schemas.tutoring import (
     SessionProgress,
     TutoringView,
 )
+from app.tutoring.adaptation import Adaptation, Pitch, adapt, tutor_state_block
 from app.tutoring.bank import (
     chain_intro,
     chain_start,
@@ -512,7 +513,35 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     )
     plan = _apply_scaffold_floor(plan, state)
     plan = clamp_assistance(plan, state.input.assistance_cap)
-    return {"plan": plan, "topic_source": analysis.topic_source}
+    return {
+        "plan": plan,
+        "topic_source": analysis.topic_source,
+        "adaptation": _adaptation(state, plan),
+    }
+
+
+def _evidence_key(state: AgentState, plan: TeachingPlan | None) -> str | None:
+    """The subject this turn's evidence is logged under: the problem, else the
+    topic. A new subject starts a new log."""
+    return state.problem_key or (plan.topic if plan is not None else None)
+
+
+def _adaptation(state: AgentState, plan: TeachingPlan) -> Adaptation:
+    """What changes this turn because of this learner (target behaviour 17-22)."""
+    progress = state.session_progress
+    key = _evidence_key(state, plan)
+    log: list[str] = []
+    if progress is not None and key is not None and progress.evidence_key == key:
+        log = list(progress.evidence_log)
+    if state.problem_relation == "new":
+        log = []
+    return adapt(
+        decision=state.decision,
+        pitch=cast(Pitch, _learner_level(plan)),
+        topic=plan.topic,
+        evidence_log=log,
+        recurring=surfaced_misconceptions(plan.watch_errors, plan.topic, ()),
+    )
 
 
 def _apply_scaffold_floor(plan: TeachingPlan, state: AgentState) -> TeachingPlan:
@@ -2349,6 +2378,11 @@ def _is_concept_question(state: AgentState) -> bool:
     return inp is not None and not inp.problem and not inp.code
 
 
+def _tutor_state(state: AgentState) -> str:
+    """The trusted `<tutor_state>` block for this turn's agent prompt."""
+    return tutor_state_block(state.decision, state.adaptation)
+
+
 def _learner_level(plan: TeachingPlan | None) -> str:
     """The learner's standing on this turn's topic, in the words the concept
     prompts use. With no topic the skill is the prior, i.e. intermediate."""
@@ -2473,6 +2507,7 @@ async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> 
         level=None if guidance else _learner_level(state.plan),
         history=_recent_exchange(state) if state.thread_followup else (),
         learner_profile=_profile_note(state.profile) if guidance else None,
+        tutor_state=_tutor_state(state),
     )
     if not answer.answer:
         return ExplainResult(answer=None, citations=[])
@@ -2935,6 +2970,7 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         lead=lead,
         lesson=state.grade_lesson
         or (pending.lesson if state.submitted_code and pending is not None else None),
+        seen_before=_seen_before(state, found),
     )
 
     base: list[ResponseSection] = list(generated.sections)
@@ -3030,13 +3066,52 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         floor_key=floor_key,
         floor=assistance if floor_key is not None else None,
     )
+    progress_after = _log_evidence(progress_after, state)
+    update: AgentStateUpdate = {}
+    repeated = [m for m in found if _seen_before(state, found).get(m, 0) > 0]
+    if state.adaptation is not None and repeated:
+        update["adaptation"] = state.adaptation.linked_to(repeated)
     return {
+        **update,
         "response": generated.text,
         "generated_response": generated,
         "tutoring": view,
         "next_pending": question or carried,
         "next_progress": progress_after,
     }
+
+
+def _seen_before(state: AgentState, found: Sequence[str]) -> dict[str, int]:
+    """How often the learner showed each of `found` before this turn: the
+    profile's count (other conversations), or once if only this conversation
+    has seen it."""
+    counts = state.profile.common_error_counts if state.profile is not None else {}
+    earlier = state.session_progress.misconceptions if state.session_progress else []
+    return {m: counts.get(m, 0) or (1 if m in earlier else 0) for m in found}
+
+
+_MAX_EVIDENCE_LOG: Final = 8
+
+
+def _log_evidence(progress: SessionProgress, state: AgentState) -> SessionProgress:
+    """Append what the learner showed this turn to the subject's evidence log.
+
+    Read back by `_adaptation` on the next turn. A request (nothing shown)
+    leaves the log alone; a different subject starts a new one.
+    """
+    key = _evidence_key(state, state.plan)
+    decision = state.decision
+    if key is None or decision is None:
+        return progress
+    same = progress.evidence_key == key and state.problem_relation != "new"
+    log = list(progress.evidence_log) if same else []
+    if decision.evidence != "none":
+        log.append(decision.evidence)
+    if same and log == progress.evidence_log:
+        return progress
+    return progress.model_copy(
+        update={"evidence_log": log[-_MAX_EVIDENCE_LOG:], "evidence_key": key}
+    )
 
 
 def _final_response_fallback(state: AgentState) -> AgentStateUpdate:
@@ -3269,7 +3344,12 @@ async def _persist_turns(state: AgentState, ctx: GraphContext) -> NodeError | No
             )
             if state.response is not None:
                 await add_turn(
-                    ctx.session, ctx.user_id, ctx.conversation_id, "assistant", state.response
+                    ctx.session,
+                    ctx.user_id,
+                    ctx.conversation_id,
+                    "assistant",
+                    state.response,
+                    adaptation=state.adaptation.notes if state.adaptation is not None else None,
                 )
     except Exception as exc:
         return NodeError(

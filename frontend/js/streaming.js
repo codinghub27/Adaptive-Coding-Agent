@@ -149,6 +149,8 @@ function buildMessage(payload, steps) {
     // Server-computed (app/graph/api.py): true only when profile evidence
     // actually changed the plan. Never assumed by the client.
     adapted: Boolean(payload.adapted),
+    // The fixed sentences saying what changed for this learner.
+    adaptations: payload.adaptations || [],
   };
 }
 

@@ -1,5 +1,20 @@
 import { icon, sectionStyle, stageIcon } from "./icons.js";
 
+/** The "Adapted to your level" badge, shown only with the server's own
+ *  reasons for it. Hovering lists what changed because of the learner. */
+function adaptedMarkup(message) {
+  const notes = Array.isArray(message.adaptations) ? message.adaptations : [];
+  if (!message.adapted || !notes.length) return "";
+  return `<span class="adapted-label" title="${escapeHtml(notes.join(" "))}">${icon("sparkle")}Adapted to your level</span>`;
+}
+
+/** What changed in this reply because of the learner, as the server wrote it. */
+function adaptationMarkup(message) {
+  const notes = Array.isArray(message.adaptations) ? message.adaptations : [];
+  if (!message.adapted || !notes.length) return "";
+  return `<p class="adaptation-notes">${notes.map((note) => escapeHtml(note)).join(" ")}</p>`;
+}
+
 const escapeHtml = (value = "") =>
   String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]);
 
@@ -383,10 +398,11 @@ export function messageMarkup(message) {
   }
   return `<article class="message agent" data-id="${escapeHtml(message.id)}">
     ${AVATAR}
-    <div class="message-body"><div class="message-meta"><strong>Adaptive</strong><span>${time}</span>${message.adapted ? `<span class="adapted-label">${icon("sparkle")}Adapted to your level</span>` : ""}</div>
+    <div class="message-body"><div class="message-meta"><strong>Adaptive</strong><span>${time}</span>${adaptedMarkup(message)}</div>
       ${workMarkup(message.work || [])}
       ${conceptMarkup(message.concept)}
       <div class="agent-content">${renderMarkdown(message.content)}</div>
+      ${adaptationMarkup(message)}
       ${skillDeltaMarkup(message.skillDeltas)}
       ${hintMarkup(message.hint, message.id, message.topic)}
       ${questionMarkup(message.question)}

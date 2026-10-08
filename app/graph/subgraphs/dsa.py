@@ -78,6 +78,7 @@ from app.schemas.execution import (
 from app.schemas.input import StructuredInput
 from app.schemas.knowledge import KnowledgeChunk, RetrievalHit
 from app.schemas.plan import TeachingPlan
+from app.tutoring.adaptation import tutor_state_block
 
 __all__ = [
     "DSARunResult",
@@ -118,6 +119,8 @@ class DSAState(TypedDict, total=False):
     #: Skip the solver's model call: this turn reveals a reference solution
     #: that already carries its own key idea and cost.
     skip_analysis: bool
+    #: The trusted `<tutor_state>` block: the turn decision and the adaptation.
+    tutor_state: str
 
     hint_level: HintLevel | None
     analysis: DSAAnalysis | None
@@ -240,7 +243,13 @@ async def _understand(state: DSAState, runtime: Runtime[GraphContext]) -> DSASta
         return {"hint_level": level, "analysis": None, "understanding": None}
 
     analysis = await analyze_dsa_problem(
-        problem, plan, level, context, runtime.context.llm, state.get("history", [])
+        problem,
+        plan,
+        level,
+        context,
+        runtime.context.llm,
+        state.get("history", []),
+        tutor_state=state.get("tutor_state", ""),
     )
     update: DSAState = {
         "hint_level": level,
@@ -603,6 +612,7 @@ async def run_dsa(
         "ladder_topic": ladder_topic,
         "history": list(state.recent_context),
         "topic_source": state.topic_source,
+        "tutor_state": tutor_state_block(state.decision, state.adaptation),
         # A reference that explains itself needs no second model call, unless
         # the learner also asked for sections only the solver writes.
         "skip_analysis": solution is not None

@@ -198,6 +198,7 @@ function normalizeStoredMessage(message) {
     // every stored assistant message, so the badge showed on replies that
     // nothing about the learner had changed.
     adapted: Boolean(message.adapted),
+    adaptations: message.adaptation || [],
   };
 }
 

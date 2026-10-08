@@ -346,6 +346,7 @@ def to_view(profile: LearnerProfile, now: datetime | None = None) -> LearnerProf
         family_levels=families,
         learning_preferences=profile.learning_preferences,
         common_errors=common_errors_list(profile.common_errors),
+        common_error_counts=dict(profile.common_errors),
         suggested_focus=suggested_focus(evidence),
         current_focus=recent[-1][1] if recent else None,
     )

@@ -163,6 +163,12 @@ class SessionProgress(APIModel):
     #: problem -- measured: asked after a roadmap, it got the next hint on a
     #: problem from the day before.
     last_thread: LastThread | None = None
+    #: What the learner showed on recent turns of ONE subject (`evidence_key`),
+    #: oldest first, in the section 2.2 labels. Requests are not logged. It is
+    #: what lets the tutor change representation after repeated struggle and
+    #: skip steps after repeated success (`app.tutoring.adaptation`).
+    evidence_log: list[str] = Field(default_factory=list[str])
+    evidence_key: str | None = Field(default=None, max_length=96)
 
     @classmethod
     def empty(cls) -> "SessionProgress":

@@ -162,7 +162,13 @@ def store(monkeypatch: pytest.MonkeyPatch) -> _Store:
         return list(memory.messages[-10:])
 
     async def add_turn(
-        session: Any, user_id: UUID, cid: UUID, role: str, content: str, intent: Any = None
+        session: Any,
+        user_id: UUID,
+        cid: UUID,
+        role: str,
+        content: str,
+        intent: Any = None,
+        adaptation: Any = None,
     ) -> MessageView:
         view = MessageView(
             id=uuid4(),
@@ -171,6 +177,7 @@ def store(monkeypatch: pytest.MonkeyPatch) -> _Store:
             role=cast("Any", role),
             content=content,
             intent=intent,
+            adaptation=list(adaptation) if adaptation else None,
             created_at=datetime.now(UTC),
         )
         memory.messages.append(view)
