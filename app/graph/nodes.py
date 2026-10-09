@@ -82,7 +82,12 @@ from app.graph.subgraphs.explain import run_explain
 from app.input.intent import asks_about_a_concept, is_small_talk
 from app.input.intent import classify_intent as _classify_intent_llm
 from app.input.normalize import merge_inputs, normalize_text
-from app.input.snippet import is_sample_data, line_offset, repair_snippet
+from app.input.snippet import (
+    is_sample_data,
+    line_offset,
+    repair_snippet,
+    submission_interface,
+)
 from app.input.vision import ImageValidationError, extract_from_image
 from app.knowledge.ingest import load_corpus
 from app.llm.base import LLMError
@@ -147,7 +152,15 @@ from app.schemas.tutoring import (
     SessionProgress,
     TutoringView,
 )
-from app.tutoring.adaptation import LINK_PHRASE, Adaptation, Pitch, adapt, tutor_state_block
+from app.tutoring.adaptation import (
+    LINK_PHRASE,
+    STRUGGLE,
+    Adaptation,
+    Pitch,
+    adapt,
+    conversation_block,
+    tutor_state_block,
+)
 from app.tutoring.bank import (
     chain_intro,
     chain_start,
@@ -555,7 +568,23 @@ def _adaptation(state: AgentState, plan: TeachingPlan) -> Adaptation:
         evidence_log=log,
         recurring=surfaced_misconceptions(plan.watch_errors, plan.topic, ()),
         first_turn=first_turn,
+        pattern_gap=_pattern_gap_count(state) >= PATTERN_GAP_AFTER,
     )
+
+
+#: The learner's own difficulty, as recorded on their profile: not knowing
+#: which technique a new problem calls for. Counted like any recorded mistake.
+GAP_PATTERN: Final = "gap.pattern_recognition"
+#: The skill-map key a turn about pattern recognition is recorded under when
+#: it has no corpus topic of its own.
+PATTERN_TOPIC: Final = "pattern_recognition"
+#: Times seen before the tutor treats it as a recurring gap.
+PATTERN_GAP_AFTER: Final = 2
+
+
+def _pattern_gap_count(state: AgentState) -> int:
+    profile = state.profile
+    return profile.common_error_counts.get(GAP_PATTERN, 0) if profile is not None else 0
 
 
 def _apply_scaffold_floor(plan: TeachingPlan, state: AgentState) -> TeachingPlan:
@@ -1965,7 +1994,15 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
     # solution. If none can be verified this turn, nothing is revealed.
     solution = None
     if state.plan is not None and state.plan.assistance_level == "full" and not progress.solved:
-        solution = await verified_reference(state.structured_input, ctx.llm, ctx.runner)
+        solution = await verified_reference(
+            state.structured_input,
+            ctx.llm,
+            ctx.runner,
+            interface=_submission_interface(state),
+            conversation=conversation_block(
+                [(m.role, m.content) for m in state.recent_context if m.role == "user"]
+            ),
+        )
     run = await run_dsa(
         state,
         runtime,
@@ -2035,6 +2072,25 @@ async def dsa_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentS
             pass
 
     return update
+
+
+def _submission_interface(state: AgentState) -> str | None:
+    """The class/method (or function) shape the learner's own code for THIS
+    problem has, so the solution handed to them can be submitted as is: from
+    code in this message, else from their latest attempt at the problem."""
+    inp = state.structured_input
+    own = "\n\n".join(block.content for block in inp.code) if inp is not None else ""
+    found = submission_interface(own) if own.strip() else None
+    progress = state.session_progress
+    if (
+        found is None
+        and progress is not None
+        and progress.last_attempt
+        and progress.last_attempt_key is not None
+        and progress.last_attempt_key == state.problem_key
+    ):
+        found = submission_interface("\n\n".join(b.content for b in progress.last_attempt))
+    return found
 
 
 def _refused_ask_at_ceiling(state: AgentState) -> int:
@@ -2534,9 +2590,14 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     ):
         # A concept question or general guidance with no code to explain:
         # answer it FROM the corpus and cite only what the answer used (P3, B1).
-        result = await _concept_answer(state, runtime)
+        result, about_patterns = await _concept_answer(state, runtime)
         if result.answer:
-            return {"agent_output": result.to_outcome(), "agent_result": result}
+            outcome = result.to_outcome()
+            if about_patterns:
+                # "How do I find the pattern?" is itself evidence of where the
+                # learner gets stuck; it is counted on their profile.
+                outcome = outcome.model_copy(update={"errors": [*outcome.errors, GAP_PATTERN]})
+            return {"agent_output": outcome, "agent_result": result}
         # Nothing to ground on (no relevant hit, no known topic): fall back to
         # the explainer rather than answering with nothing (code review P3).
 
@@ -2658,7 +2719,9 @@ def _profile_note(profile: LearnerProfileView | None) -> str | None:
     return "\n".join(lines) or None
 
 
-async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> ExplainResult:
+async def _concept_answer(
+    state: AgentState, runtime: Runtime[GraphContext]
+) -> tuple[ExplainResult, bool]:
     """An answer for a concept question or general guidance.
 
     General guidance (a study plan) is grounded in the curriculum built from
@@ -2690,7 +2753,7 @@ async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> 
         tutor_state=_tutor_state(state),
     )
     if not answer.answer:
-        return ExplainResult(answer=None, citations=[])
+        return ExplainResult(answer=None, citations=[]), False
     parts = [answer.answer]
     if answer.examples:
         examples = await _run_examples(answer.examples, runtime.context.runner)
@@ -2700,7 +2763,10 @@ async def _concept_answer(state: AgentState, runtime: Runtime[GraphContext]) -> 
         parts.append(_UNGROUNDED_NOTE)
     if answer.check:
         parts.append(f"**Your turn:** {answer.check}")
-    return ExplainResult(answer="\n\n".join(parts), citations=answer.citations)
+    return (
+        ExplainResult(answer="\n\n".join(parts), citations=answer.citations),
+        answer.pattern_recognition,
+    )
 
 
 # --- execute_code -------------------------------------------------------------
@@ -3324,6 +3390,12 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
             _guided_hint(state) or (route == "explain" and grade is None)
         )
         delivered = state.adaptation.as_delivered(by_tutor_step=by_tutor_step)
+        opening = state.problem_relation == "new" or not state.recent_context
+        missed = state.decision is not None and state.decision.evidence in STRUGGLE
+        if by_tutor_step and missed and not opening:
+            # The agent that read the message found a miss the first reading
+            # had not ("could not understand"); it was told what to switch to.
+            delivered = delivered.after_a_miss()
         repeated = [m for m in found if _seen_before(state, found).get(m, 0) > 0]
         if LINK_PHRASE in _plain_hyphens(generated.text.lower()):
             # The step said it: a mistake from an earlier conversation.
@@ -3487,6 +3559,38 @@ def _reply_grade(state: AgentState) -> ConceptGrade | None:
     return _EVIDENCE_GRADE.get(decision.evidence)
 
 
+_FENCED_CODE_RE: Final = re.compile(r"```[\w+-]*\n(.*?)```", re.DOTALL)
+#: Share of the learner's code lines that must appear in code the tutor wrote
+#: for the submission to count as the tutor's.
+_TUTORS_CODE_SHARE: Final = 0.6
+_MIN_CODE_LINES: Final = 3
+
+
+def _code_lines(code: str) -> list[str]:
+    """Lines that carry code, whitespace collapsed; comments and blanks dropped."""
+    rows = (" ".join(row.split()) for row in without_type_hints(code).splitlines())
+    return [row for row in rows if row and not row.startswith("#")]
+
+
+def _is_the_tutors_code(state: AgentState) -> bool:
+    """Is the code in this turn mostly code the tutor itself wrote earlier in
+    the conversation (an example or a solution the learner pasted back)?"""
+    code = _learner_code(state)
+    if code is None:
+        return False
+    theirs = _code_lines(code)
+    if len(theirs) < _MIN_CODE_LINES:
+        return False
+    written: set[str] = set()
+    for message in state.recent_context:
+        if message.role == "assistant":
+            for block in _FENCED_CODE_RE.findall(message.content):
+                written.update(_code_lines(block))
+    if not written:
+        return False
+    return sum(row in written for row in theirs) / len(theirs) >= _TUTORS_CODE_SHARE
+
+
 def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> LearningEventCreate:
     """Build this turn's `LearningEventCreate`.
 
@@ -3519,6 +3623,11 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
     )
     if state.suite_source == "synthesised" and not has_problem_statement:
         solved = None
+    if solved is not None and _is_the_tutors_code(state):
+        # Measured live: the learner pasted the tutor's own example back with
+        # an error message; it failed its tests and THEIR skill dropped 0.12.
+        # How code the tutor wrote behaves says nothing about the learner.
+        solved = None
     # `pattern` becomes a second skill key (see `app.memory.profile.skill_keys`)
     # and is LLM-authored like `topic` was, so it is kept only when this turn's
     # retrieval vouches for it.
@@ -3532,6 +3641,15 @@ def _build_learning_event(state: AgentState, ctx: GraphContext, topic: str) -> L
     # Misconceptions this turn found (catalog ids only -- `tutoring` is built
     # from the closed catalog) are counted in `common_errors` (G3).
     errors = list(agent_output.errors)
+    opening = state.problem_relation == "new"
+    if (
+        opening
+        and state.decision is not None
+        and state.decision.evidence == "stuck"
+        and GAP_PATTERN not in errors
+    ):
+        # "I don't know how to start" on a new problem: the same gap.
+        errors.append(GAP_PATTERN)
     if state.tutoring is not None:
         errors += [m for m in state.tutoring.misconceptions if is_catalog_id(m) and m not in errors]
     # A graded conceptual answer is `concept_check` evidence (G2): weighted by
@@ -3879,6 +3997,8 @@ async def update_learner_model(
         event: LearningEventCreate | None = None
         try:
             topic = _event_topic(state.plan) or _misconception_topic(state)
+            if topic is None and GAP_PATTERN in agent_output.errors:
+                topic = PATTERN_TOPIC
             if topic is not None:
                 event = _build_learning_event(state, ctx, topic)
         except Exception as exc:

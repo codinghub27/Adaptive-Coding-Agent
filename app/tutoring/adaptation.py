@@ -66,9 +66,12 @@ SKIP_AFTER: Final = 2
 
 _REPRESENTATION_RULE: Final[Mapping[Representation, str]] = {
     "worked_example": (
-        "The learner was stuck on the last step. Do NOT restate it. Work ONE concrete "
-        "example with real values from this problem, one move at a time, and stop one move "
-        "short so they can make the last one."
+        "The learner did not follow the last explanation. Do NOT rephrase it and do NOT ask "
+        "the same question again. Say the core idea in ONE simple sentence. Then take the "
+        "smallest input that shows it (two to four elements or characters), write it out "
+        "with its indices, and walk it one move at a time, giving the exact positions and "
+        "values compared at each move. Every index and value must agree with that input. "
+        "Stop one move short and ask ONE question about that move only."
     ),
     "diagram": (
         "The learner has now missed twice in a row. Change the representation: draw it. "
@@ -120,6 +123,33 @@ _NOTE_REPRESENTATION: Final[Mapping[Representation, str]] = {
     "simpler_question": "Still stuck, so the question is smaller this time.",
 }
 _NOTE_SKIP: Final = "Two right in a row, so I skipped the small steps."
+_NOTE_PATTERN_GAP: Final = (
+    "You have said before that finding the pattern is the hard part, so we start there."
+)
+#: Target behaviour 2 of the pattern brief: recognising a pattern is a skill
+#: with steps, not a list of techniques to remember.
+_PATTERN_GAP_RULE: Final = (
+    "This learner repeatedly gets stuck on WHICH technique fits. Do not name the technique "
+    "first. Have them do the first steps of the decision process themselves: what is the "
+    "input and the required output, and which property of the input matters (sorted? "
+    "contiguous? symmetric? a graph?). Then ask which technique that property points to."
+)
+#: What the learner's last message showed, as the kind of help it calls for.
+#: One confused step is not weakness at a whole family of algorithms.
+_GAP_RULE: Final[Mapping[str, str]] = {
+    "implementation_error": (
+        "implementation. They have the idea; do not re-teach the algorithm. Work on the "
+        "code: the one line or structure that is wrong."
+    ),
+    "conceptual_misconception": (
+        "concept. The mental model is off; fix that on a tiny example before any code."
+    ),
+    "terminology_error": (
+        "terminology only. The reasoning is right: give the usual name in one clause and move on."
+    ),
+    "partially_correct": "one missing piece. Confirm what is right, then supply only that.",
+    "correct": "none. Do not repeat what they just showed; move to the next thing.",
+}
 _NOTE_PITCH: Final[Mapping[Pitch, str]] = {
     "beginner": "Starting smaller: your record on {topic} so far says to take it slowly.",
     "advanced": "Skipping the basics: your record on {topic} is strong.",
@@ -138,6 +168,14 @@ class Adaptation(APIModel):
     #: Struggles / right answers in a row on this subject, this turn included.
     struggles: int = 0
     successes: int = 0
+    #: The representation to switch to if THIS message turns out to be a miss.
+    #: The first reading does not always see confusion ("could not
+    #: understand"); the agent that reads the message does, and must change
+    #: the presentation on that same turn, not one turn late.
+    if_stuck: Representation = "worked_example"
+    #: The learner has said more than once that finding the pattern is where
+    #: they get stuck (`gap.pattern_recognition` in their profile).
+    pattern_gap: bool = False
     #: Fixed sentences for the learner: what changed because of them.
     notes: list[str] = Field(default_factory=list[str])
 
@@ -163,6 +201,15 @@ class Adaptation(APIModel):
                 "notes": [note for note in self.notes if note not in dropped],
             }
         )
+
+    def after_a_miss(self) -> "Adaptation":
+        """This adaptation once the agent's own reading of the message found a
+        miss the first reading had not: the switch it was told to make."""
+        if self.representation != "plain":
+            return self
+        note = _NOTE_REPRESENTATION[self.if_stuck]
+        notes = self.notes if note in self.notes else [note, *self.notes]
+        return self.model_copy(update={"representation": self.if_stuck, "notes": notes})
 
     def linked_to(self, repeated: Sequence[str]) -> "Adaptation":
         """This adaptation once the reply linked a mistake found THIS turn to
@@ -196,6 +243,7 @@ def adapt(
     evidence_log: Sequence[str],
     recurring: Sequence[str] = (),
     first_turn: bool = False,
+    pattern_gap: bool = False,
 ) -> Adaptation:
     """This turn's adaptation, from the decision and the learner's record.
 
@@ -214,8 +262,12 @@ def adapt(
     if tutoring and not wants_code and struggles:
         representation = _LADDER[min(struggles, len(_LADDER) - 1)]
     skip_ahead = tutoring and not wants_code and successes >= SKIP_AFTER
+    earlier = streak(evidence_log, "none", STRUGGLE)
+    if_stuck = _LADDER[min(earlier + 1, len(_LADDER) - 1)]
 
     notes: list[str] = []
+    if pattern_gap and first_turn and tutoring:
+        notes.append(_NOTE_PATTERN_GAP)
     if representation != "plain":
         notes.append(_NOTE_REPRESENTATION[representation])
     if skip_ahead:
@@ -231,6 +283,8 @@ def adapt(
         recurring=list(recurring),
         struggles=struggles,
         successes=successes,
+        if_stuck=if_stuck,
+        pattern_gap=pattern_gap,
         notes=notes,
     )
 
@@ -300,6 +354,17 @@ def tutor_state_block(decision: TurnDecision | None, adaptation: Adaptation | No
         if adaptation.representation != "plain":
             rule = _REPRESENTATION_RULE[adaptation.representation]
             lines.append(f"representation: {adaptation.representation}. {rule}")
+        elif decision is not None and decision.move in ("step", "grade", "explain"):
+            rule = _REPRESENTATION_RULE[adaptation.if_stuck]
+            lines.append(
+                "if_they_did_not_follow: when the learner's message says or shows that they "
+                'did not understand your last message ("could not understand", "I\'m '
+                f'confused", a wrong answer), switch to {adaptation.if_stuck}. {rule}'
+            )
+        if adaptation.pattern_gap:
+            lines.append(f"recurring_gap: pattern recognition. {_PATTERN_GAP_RULE}")
+        if decision is not None and decision.evidence in _GAP_RULE:
+            lines.append(f"gap: {_GAP_RULE[decision.evidence]}")
         if adaptation.skip_ahead:
             lines.append(f"skip_ahead: yes. {_SKIP_RULE}")
         for item_id in adaptation.recurring:

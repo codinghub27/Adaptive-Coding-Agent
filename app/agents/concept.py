@@ -86,6 +86,8 @@ class ConceptAnswer(BaseModel):
     examples: list[ConceptExample] = Field(default_factory=list[ConceptExample])
     #: The ONE question the reply ends on (empty when the model gave none).
     check: str = ""
+    #: The learner asked how to recognise which technique fits a problem.
+    pattern_recognition: bool = False
 
 
 def _label(chunk: KnowledgeChunk) -> str:
@@ -247,7 +249,36 @@ _NO_MARKERS_RULE: Final = (
 _CHECK_RULE: Final = (
     'Put ONE short question in "check" that makes the learner use what you just said (for a '
     "plan: a question about where they are now, so the plan can be adjusted). One question, "
-    "never a list of them. "
+    'never a list of them. Leave "check" empty when the learner asked for something to be '
+    "done or answered and a question back would add nothing. "
+)
+#: A learner who asks how to FIND the pattern is asking for a method, not for
+#: a catalogue of techniques. Measured live: "every time I'm getting stuck at
+#: new problems" got definitions of sliding window, prefix sums, DP and greedy.
+_PATTERN_RULE: Final = (
+    "If the learner asks how to find, recognise or choose the pattern, technique or approach "
+    "for a problem, or says they get stuck on new problems: do NOT list techniques and their "
+    "definitions. Teach the decision process, one short line per step, applied to ONE small "
+    "problem: (1) the input and the required output; (2) the properties of the input that "
+    "matter (sorted? contiguous? symmetric? a graph? ranges?); (3) what is being optimised "
+    "or searched for; (4) the constraints and the complexity they allow; (5) the signals "
+    "that point to candidate techniques; (6) two plausible candidates compared; (7) why the "
+    "chosen one fits THIS problem; (8) the idea checked on a tiny example. Then, in "
+    '"check", ask them to do step 1 and step 2 on a problem of their own. Set '
+    '"about_pattern_recognition" to true. For any other question set it to false. '
+)
+#: What is said must agree with itself. Measured live: an expand-around-centre
+#: explanation claimed O(n) time two sentences after describing O(n^2) work,
+#: and showed an even-centres-only program under the title "solution".
+_ACCURACY_RULE: Final = (
+    "Before you answer, check that the algorithm you describe, your walk-through, the "
+    "examples and the stated time and space cost all agree. Count nested work: a loop over "
+    "n positions that each scan up to n more is O(n^2), never O(n) because there is one "
+    "outer loop. State each cost once. Every example program must do what its title says. "
+    "A program that covers only part of a problem (one case, one branch) must have a title "
+    'that starts with "Partial:" and names what it leaves out; never present part of a '
+    "solution as the solution. When you name a technique, say which property of the "
+    "problem makes it fit, not that it is commonly used. "
 )
 
 _EXAMPLES_RULE: Final = (
@@ -274,12 +305,14 @@ _SYSTEM: Final = (
 ) + (
     _FOLLOW_UP_RULE
     + _DEPTH_RULE
+    + _PATTERN_RULE
+    + _ACCURACY_RULE
     + _NO_MARKERS_RULE
     + _CHECK_RULE
     + _EXAMPLES_RULE
     + ' Reply with ONLY a JSON object: {"answer": "<markdown answer>", "used": [<numbers of the '
     'references you used>], "check": "<one question>", "examples": [{"title": "<short>", '
-    '"code": "<python>"}]}'
+    '"code": "<python>"}], "about_pattern_recognition": <true|false>}'
 )
 
 #: The corpus has nothing relevant: the tutor answers from what it knows.
@@ -297,11 +330,14 @@ _OPEN_SYSTEM: Final = (
 ) + (
     _FOLLOW_UP_RULE
     + _DEPTH_RULE
+    + _PATTERN_RULE
+    + _ACCURACY_RULE
     + _NO_MARKERS_RULE
     + _CHECK_RULE
     + _EXAMPLES_RULE
     + ' Reply with ONLY a JSON object: {"answer": "<markdown answer>", "check": "<one '
-    'question>", "examples": [{"title": "<short>", "code": "<python>"}]}'
+    'question>", "examples": [{"title": "<short>", "code": "<python>"}], '
+    '"about_pattern_recognition": <true|false>}'
 )
 
 #: A follow-up on an explanation is answered, not lectured at. Measured live:
@@ -376,6 +412,7 @@ class _Output(BaseModel):
     used: list[int] = Field(default_factory=list[int])
     examples: list[ConceptExample] = Field(default_factory=list[ConceptExample])
     check: str = ""
+    about_pattern_recognition: bool = False
 
 
 #: One earlier message as the prompts show it: who said it, and what.
@@ -539,6 +576,7 @@ async def _grounded(
         grounded=bool(citations),
         examples=parsed.examples[:MAX_EXAMPLES],
         check=_one_question(parsed.check),
+        pattern_recognition=parsed.about_pattern_recognition,
     )
 
 
@@ -571,4 +609,5 @@ async def _open_answer(prompt: str, llm: LLMClient, system: str = _OPEN_SYSTEM) 
         grounded=False,
         examples=parsed.examples[:MAX_EXAMPLES],
         check=_one_question(parsed.check),
+        pattern_recognition=parsed.about_pattern_recognition,
     )

@@ -60,8 +60,10 @@ def test_family_aggregation_adapts_faster_than_per_pattern_keys() -> None:
     rows = measure()
     before = rows["before (per-pattern key)"]
     after = rows["after (family-aware)"]
-    assert after == [3, 1]
-    assert before == [15, 5]
+    # The second number was 1 until one failed run stopped meaning "weak"
+    # (UNSOLVED_SCORE 0.10 -> 0.25, 2026-10-09): it now takes two.
+    assert after == [3, 2]
+    assert before == [15, 10]
 
 
 def test_a_failure_on_old_evidence_never_raises_the_shown_skill() -> None:

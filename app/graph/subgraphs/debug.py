@@ -563,7 +563,61 @@ def _turn_context(state: AgentState) -> str:
     return turn_context(state.decision, state.adaptation, recent)
 
 
-def _in_their_style(code: str | None, problem: StructuredInput | None) -> str | None:
+_REPORTED_SYNTAX_ERROR_RE: Final = re.compile(r"SyntaxError|invalid syntax", re.IGNORECASE)
+_SYNTAX_ELSEWHERE: Final = (
+    "**Syntax, where you ran it.** The SyntaxError you saw does not happen in the sandbox: "
+    "this code parses under Python 3 here. So it comes from where it was run, not from the "
+    "logic."
+)
+_SYNTAX_FROM_HINTS: Final = (
+    " The line it points at uses type hints, which Python 2 cannot read, and LeetCode's "
+    '"Python" option is Python 2. Either choose "Python3" as the language, or write the '
+    "line without hints:\n\n```python\n{line}\n```"
+)
+_SYNTAX_UNKNOWN: Final = (
+    " The most likely causes are an older Python version than the code needs, or stray "
+    "text pasted around it. Which language option did you select, and what are the two "
+    "lines above the one the error points at?"
+)
+_LOGIC_SEPARATELY: Final = (
+    "**Logic, separately.** With the syntax out of the way, this is a different problem:"
+)
+
+
+def _environment_note(problem: StructuredInput | None, verdict: Verdict | None) -> str | None:
+    """What to say when the learner reports a SyntaxError the sandbox does not
+    reproduce: the code parses here, so the error belongs to their environment.
+
+    Measured live: a learner pasted code with type hints and LeetCode's
+    "SyntaxError: invalid syntax" on the annotated line. The sandbox ran the
+    code under Python 3, and the reply reported a wrong-answer failure as if
+    the SyntaxError had never been mentioned. `None` when no SyntaxError was
+    reported, or when the sandbox could not parse the code either (then it IS
+    a syntax error and the ordinary report covers it)."""
+    if problem is None or verdict is None or not problem.error:
+        return None
+    if not _REPORTED_SYNTAX_ERROR_RE.search(problem.error):
+        return None
+    if verdict.category == "syntax_error" or verdict.status == "skipped":
+        return None
+    code = extract_learner_code(problem)
+    if code is None:
+        return None
+    if has_type_hints(code):
+        plain = without_type_hints(code).splitlines()
+        changed = [
+            new.strip()
+            for old, new in zip(code.splitlines(), plain, strict=False)
+            if old != new and new.strip()
+        ]
+        if changed:
+            return _SYNTAX_ELSEWHERE + _SYNTAX_FROM_HINTS.format(line=changed[0])
+    return _SYNTAX_ELSEWHERE + _SYNTAX_UNKNOWN
+
+
+def _in_their_style(
+    code: str | None, problem: StructuredInput | None, *, plain: bool = False
+) -> str | None:
     """Code handed back to the learner, without type hints the tutor added.
 
     Generated code is shown as plain Python (owner decision). A fix or a
@@ -572,7 +626,7 @@ def _in_their_style(code: str | None, problem: StructuredInput | None) -> str | 
     if code is None:
         return None
     original = extract_learner_code(problem)
-    if original is not None and has_type_hints(original):
+    if not plain and original is not None and has_type_hints(original):
         return code
     return without_type_hints(code)
 
@@ -685,6 +739,7 @@ async def run_debug(
     )
 
     final_verdict = final_state.get("final_verdict")
+    first_seen = final_state.get("initial_verdict")
     is_reply = bool(initial.get("is_reply"))
     explanation = final_state.get("bug_explanation")
     credited = _credit_for_their_fix(
@@ -695,6 +750,12 @@ async def run_debug(
     )
     if is_reply and credited is not None:
         explanation = credited
+    environment = _environment_note(problem, first_seen)
+    if environment is not None:
+        # Two different failures, reported as two: the parsing error the
+        # learner saw where THEY ran it, and whatever the sandbox found.
+        logic = explanation if first_seen is not None and first_seen.status == "fail" else None
+        explanation = f"{environment}\n\n{_LOGIC_SEPARATELY} {logic}" if logic else environment
     result = DebugResult(
         # On a follow-up the static findings, the approach and the failing
         # case were all said on the turn before; only the reply is new.
@@ -703,8 +764,12 @@ async def run_debug(
         failing_case=None if is_reply else final_state.get("failing_case"),
         bug_explanation=explanation,
         bug_location=final_state.get("bug_location"),
-        patched_code=_in_their_style(final_state.get("patched_code"), problem),
-        presented_code=_in_their_style(final_state.get("presented_code"), problem),
+        patched_code=_in_their_style(
+            final_state.get("patched_code"), problem, plain=environment is not None
+        ),
+        presented_code=_in_their_style(
+            final_state.get("presented_code"), problem, plain=environment is not None
+        ),
         presented_label=final_state.get("presented_label"),
         presented_notes=final_state.get("presented_notes") or [],
         attempts=final_state.get("attempts", 0),

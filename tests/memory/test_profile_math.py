@@ -77,7 +77,7 @@ def test_outcome_score_solved_needed_full_solution() -> None:
 
 
 def test_outcome_score_unsolved() -> None:
-    assert outcome_score(_event(solved=False)) == pytest.approx(0.1)
+    assert outcome_score(_event(solved=False)) == pytest.approx(0.25)
 
 
 def test_outcome_score_raises_for_unobserved_outcome() -> None:
@@ -156,7 +156,7 @@ def test_apply_event_solved_true_regression() -> None:
 def test_apply_event_solved_false_regression() -> None:
     event = _event(topic="arrays", solved=False)
     skills, _errors = apply_event({"arrays": 0.5}, {}, event)
-    assert skills == {"arrays": pytest.approx(0.38)}
+    assert skills == {"arrays": pytest.approx(0.425)}
 
 
 # ---------------------------------------------------------------------------
@@ -323,19 +323,26 @@ def test_calibrated_trajectory_changes_the_teaching_not_just_the_number() -> Non
     At ALPHA 0.2 a topic needed two verified failures or three verified
     successes before `difficulty_for` returned anything new, so a learner saw
     no change on the turn their evidence arrived. This pins the trajectory that
-    fixed it -- one failure reaches "easy", two successes reach "hard" -- so a
-    future tweak to ALPHA or the thresholds cannot silently undo it.
+    fixed it -- two successes reach "hard" -- so a future tweak to ALPHA or the
+    thresholds cannot silently undo it.
+
+    Failure was recalibrated on 2026-10-09 (owner): ONE failed run is one bug,
+    not weakness at a family of algorithms, so it no longer reaches "easy" or
+    the beginner pitch. Two do.
     """
     from app.agents.planner import difficulty_for
 
     assert difficulty_for(PRIOR) == "medium"
 
     failed_once = smooth(PRIOR, UNSOLVED_SCORE)
-    assert failed_once == 0.38
-    assert difficulty_for(failed_once) == "easy"
+    assert failed_once == 0.425
+    assert difficulty_for(failed_once) == "medium"
+    failed_twice = smooth(failed_once, UNSOLVED_SCORE)
+    assert failed_twice == 0.3725
+    assert difficulty_for(failed_twice) == "easy"
 
-    # Recovery is symmetric and quick: one success climbs back out of "easy".
-    assert difficulty_for(smooth(failed_once, 1.0)) == "medium"
+    # Recovery is quick: one success climbs back out of "easy".
+    assert difficulty_for(smooth(failed_twice, 1.0)) == "medium"
 
     first = smooth(PRIOR, 1.0)
     second = smooth(first, 1.0)

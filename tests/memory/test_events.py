@@ -140,7 +140,7 @@ async def test_rebuild_profile_mixed_outcomes_matches_incremental(
 
     incremental = await get_profile(db_session, user_id)
     assert incremental.skill_levels["arrays"] > 0.5
-    assert incremental.skill_levels["dp"] == pytest.approx(0.38)  # ALPHA 0.3
+    assert incremental.skill_levels["dp"] == pytest.approx(0.425)  # ALPHA 0.3, score 0.25
 
     # Corrupt the projection so a real rebuild is exercised.
     profile_row = await ensure_profile(db_session, user_id, for_update=True)

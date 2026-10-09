@@ -536,7 +536,8 @@ _CONFIDENT_TOPIC_SOURCES: Final = frozenset({"hint", "conversation", "title", "p
 _VERIFIED_REVEAL_TEXT: Final = (
     "Here is the full solution. I ran it in the sandbox and it passed every case I checked "
     "it against -- the statement's examples plus edge cases written for it -- so it is "
-    "checked, not proven. Read it line by line, then try writing it again without looking."
+    "checked, not proven: the judge's own hidden tests were not run. Read it line by line, "
+    "then try writing it again without looking."
 )
 _UNVERIFIED_REVEAL_TEXT: Final = (
     "Here is the full solution. **Not verified in sandbox**: {reason}. Treat it as a draft "

@@ -155,6 +155,34 @@ TRAP: Final = (
     "                water += right_max - height[right]\n            right -= 1\n"
     "    return water\n```"
 )
+LPS: Final = (
+    "help me to solve this problem.\n\nLongest Palindromic Substring\n\nGiven a string s, "
+    "return the longest palindromic substring in s.\n\n"
+    'Example 1:\nInput: s = "cbbd"\nOutput: "bb"\n\n'
+    'Example 2:\nInput: s = "a"\nOutput: "a"\n\n'
+    "Constraints:\n1 <= s.length <= 1000\ns consist of only digits and English letters."
+)
+LPS_PASTED: Final = (
+    "full code:\n```python\nclass Solution(object):\n    def longestPalindrome(self, s):\n"
+    "        def expand(l: int, r: int) -> str:\n"
+    "            while l >= 0 and r < len(s) and s[l] == s[r]:\n"
+    "                l -= 1\n                r += 1\n            return s[l + 1:r]\n\n"
+    '        best = ""\n        for i in range(len(s) - 1):\n'
+    "            cand = expand(i, i + 1)\n            if len(cand) > len(best):\n"
+    "                best = cand\n        return best\n```\n"
+    "error: SyntaxError: invalid syntax\n    def expand(l: int, r: int) -> str:\n"
+    "Line 3  (Solution.py)"
+)
+
+
+def no_type_hints(turn: Turn) -> bool:
+    """No annotated parameter or return in any code the reply shows."""
+    import re
+
+    blocks = re.findall(r"```python\n(.*?)```", text(turn), re.DOTALL)
+    return not any(re.search(r"def \w+\([^)]*:\s*\w|\)\s*->", block) for block in blocks)
+
+
 FRAGMENT: Final = (
     "fix this code.\nheight = [0,1,0,2,1,0,1,3,2,1,2,1]\nif not height:\n"
     "            return 0\n\n        left, right = 0, len(height) - 1\n"
@@ -643,6 +671,68 @@ def scenarios() -> list[Scenario]:
                 ),
                 ("t2 says so on the badge", lambda t: bool(adaptations(t[1]))),
             ],
+        ),
+        Scenario(
+            "21",
+            "Owner: Longest Palindromic Substring, from the pattern to a LeetCode submission",
+            "balanced",
+            [
+                "explain how to find the pattern for the problem to solve. every time im "
+                "getting stuck at new problems.",
+                LPS,
+                "could not understand",
+                LPS_PASTED,
+                "give correct code in given leetcode way",
+                "give full python version don't use any keywords in code like nonlocal",
+            ],
+            [
+                (
+                    "t1 a decision process, not a catalogue",
+                    lambda t: (
+                        has(t[0], "input") and has(t[0], "constraint") and has(t[0], "output")
+                    ),
+                ),
+                ("t2 a step, no code", lambda t: t[1]["route"] == "dsa" and not code_shown(t[1])),
+                (
+                    "t3 a different, concrete explanation",
+                    lambda t: text(t[2]) != text(t[1]) and has(t[2], "index", "aba", "bb"),
+                ),
+                ("t3 the change is announced", lambda t: bool(adaptations(t[2]))),
+                (
+                    "t4 the SyntaxError is answered as a syntax problem",
+                    lambda t: has(t[3], "Python 2", "Python3") and has(t[3], "type hint"),
+                ),
+                ("t4 syntax and logic are separate", lambda t: has(t[3], "Logic, separately")),
+                (
+                    "t4 not counted against the learner",
+                    lambda t: not any(v < 0 for v in (t[3].get("skill_deltas") or {}).values()),
+                ),
+                (
+                    "t5 a LeetCode submission",
+                    lambda t: (
+                        code_shown(t[4])
+                        and has(t[4], "class Solution")
+                        and has(t[4], "def longestPalindrome(self, s)")
+                    ),
+                ),
+                ("t5 both kinds of centre", lambda t: has(t[4], "i + 1") and has(t[4], "(i, i)")),
+                ("t5 O(n^2), not O(n)", lambda t: has(t[4], "O(n^2)", "O(n²)")),
+                (
+                    "t6 still a LeetCode submission, no nonlocal",
+                    lambda t: (
+                        code_shown(t[5])
+                        and has(t[5], "class Solution")
+                        and "nonlocal" not in text(t[5]).split("```python")[-1]
+                    ),
+                ),
+                ("no type hints in any code", lambda t: all(no_type_hints(x) for x in t)),
+                (
+                    "no 'take it slowly'",
+                    lambda t: not any("take it slowly" in n for x in t for n in adaptations(x)),
+                ),
+            ],
+            shared_account=False,
+            strict=("no type hints in any code",),
         ),
         Scenario(
             "8",

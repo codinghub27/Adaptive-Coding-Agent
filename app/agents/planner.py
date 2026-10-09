@@ -185,6 +185,9 @@ _LEARNING_ASK_RE: Final = re.compile(
     r"walk me|teach|guide|step by step|steps?|approach|idea)\b"
 )
 _MAX_DEMAND_WORDS: Final = 14
+#: The message names the code itself. With the model's "this asks for the
+#: code" that is enough, whatever learning words stand next to it.
+_NAMES_THE_CODE_RE: Final = re.compile(r"\b(code|solution|implementation|program)\b")
 
 
 def wants_the_code(intent: IntentResult, question: str | None, *, fix: bool = False) -> bool:
@@ -205,6 +208,12 @@ def wants_the_code(intent: IntentResult, question: str | None, *, fix: bool = Fa
         return False
     short = len(text.split()) <= _MAX_DEMAND_WORDS
     if short and _LEARNING_ASK_RE.search(text) is None:
+        return True
+    if short and _NAMES_THE_CODE_RE.search(text) is not None:
+        # "explain with code", "show me how in code": a learning word AND the
+        # code named outright, by a model that read it as an ask for the code.
+        # Measured live: it went to the concept explainer, which answered with
+        # an illustration that covered half the problem.
         return True
     # The model said yes but the message is long or carries a learning ask, so
     # its "yes" alone is not enough. A fixed phrase in it still is: "please fix

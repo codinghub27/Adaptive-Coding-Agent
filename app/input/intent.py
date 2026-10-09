@@ -109,7 +109,8 @@ something new.
 current one ("go back to the earlier one", "the first problem again").
 - asks_for_code: true ONLY for a direct demand to be handed the finished code, solution \
 or fix right now ("show me the solution", "write it out", "give python code", "fix this \
-code"). false for everything else, including: "help me solve", "can you help", "how do I \
+code", "explain with code", "show me how in code"). false for everything else, \
+including: "help me solve", "can you help", "how do I \
 start", "I don't understand", "I don't know", "can you debug it", "where's the mistake?", \
 a request for a hint or an explanation, any question, and any answer to the tutor. When \
 unsure, false.
@@ -129,7 +130,8 @@ last question). Judge the reasoning, not the vocabulary. One of: "correct"; \
 "terminology_error" (the reasoning is right but a technique or term is misnamed); \
 "partially_correct" (on track, something missing); "conceptual_misconception" (the mental \
 model itself is wrong); "implementation_error" (the idea is right, the code has a bug); \
-"incomplete"; "incorrect"; "stuck" ("I don't know", "no idea", "I don't know how"). Use \
+"incomplete"; "incorrect"; "stuck" ("I don't know", "no idea", "I don't know how", \
+"could not understand", "I'm confused", "didn't get it"). Use \
 "none" for a request, a question, a new problem, or anything that is not a response. A \
 message that is a response is never also asks_for_code.
 - no_solution: true only when the learner explicitly asks NOT to be given the answer, the \

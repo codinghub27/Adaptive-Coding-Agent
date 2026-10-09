@@ -20,7 +20,13 @@ import ast
 import builtins
 from typing import Final
 
-__all__ = ["WRAPPER_NAME", "is_sample_data", "line_offset", "repair_snippet"]
+__all__ = [
+    "submission_interface",
+    "WRAPPER_NAME",
+    "is_sample_data",
+    "line_offset",
+    "repair_snippet",
+]
 
 #: The function a bare body is wrapped in.
 WRAPPER_NAME: Final = "solve"
@@ -307,3 +313,30 @@ def repair_snippet(code: str) -> str:
     if _needs_typing(repaired) and "__future__" not in source:
         source = f"{_TYPING_PRELUDE}\n{source}"
     return source if _parse(source) is not None else code
+
+
+def submission_interface(code: str | None) -> str | None:
+    """The shape a solution must have to be submitted where the learner works,
+    read from code they shared: "class Solution with the method
+    longestPalindrome(self, s)", or "a function two_sum(nums, target)".
+
+    Built only from identifiers that `ast` parsed out of their code -- names,
+    never their prose -- so it is safe to put in a prompt. `None` when the code
+    does not parse or defines neither.
+    """
+    tree = _parse(code or "")
+    if tree is None:
+        return None
+    cls = _solution_class(tree)
+    if cls is not None:
+        methods = [node for node in cls.body if _is_plain_method(node)]
+        if methods:
+            method = methods[0]
+            assert isinstance(method, ast.FunctionDef)
+            params = ", ".join(arg.arg for arg in method.args.args)
+            return f"class {cls.name} with the method {method.name}({params})"
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    if len(functions) == 1 and not functions[0].name.startswith("_"):
+        params = ", ".join(arg.arg for arg in functions[0].args.args)
+        return f"a function {functions[0].name}({params})"
+    return None

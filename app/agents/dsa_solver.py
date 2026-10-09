@@ -240,6 +240,11 @@ The learner has only earned a limited amount of help on this turn. Reply with ON
 JSON object and nothing else, containing EXACTLY these keys and no others:
 {fields_json}
 
+When you name or point toward a technique, tie it to a property of THIS problem (what in \
+the statement makes it fit); never choose one because it appears in <knowledge_context>. \
+Anything you state about cost must count nested work: a loop over n positions that each scan \
+up to n more is O(n^2), not O(n).
+
 Never include a key that is not listed above, even if you know the answer for it -- in \
 particular, never include a "code" key (or any runnable code anywhere in your reply) unless \
 "code" is explicitly listed above; the learner has not earned a full solution yet otherwise.

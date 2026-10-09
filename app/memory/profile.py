@@ -20,8 +20,10 @@ a learner needed two verified failures or three verified successes on ONE topic
 before `difficulty_for` returned anything new, so the numbers moved while the
 teaching did not -- adaptive in the data, invisible to the learner. At 0.3,
 paired with the thresholds in `app.agents.planner`, one verified failure drops
-the topic to `easy` (0.5 -> 0.38) and two verified successes raise it to `hard`
-(0.5 -> 0.65 -> 0.755). Recovery is symmetric and quick: one success from 0.38
+the topic to 0.425, still `medium`; a second drops it to `easy` (0.3725). Two
+verified successes raise it to `hard` (0.5 -> 0.65 -> 0.755). The first number
+was 0.38 until 2026-10-09, when one failing run was found to label a learner
+weak on a topic. Recovery is quick: one success from 0.3725
 returns 0.566. Raising it further (0.35) made a single turn swing two buckets,
 which is jumpy on evidence this sparse. This EWMA update only applies when
 an event carries an observed outcome (`event.solved is not None`); see
@@ -77,7 +79,10 @@ PRIOR: Final = 0.5
 MIN_SOLVED_SCORE: Final = 0.4
 HINT_PENALTY: Final = 0.15
 FULL_SOLUTION_SCORE: Final = 0.3
-UNSOLVED_SCORE: Final = 0.1
+#: A failed sandbox run. 0.25, not 0.10 (owner, 2026-10-09): one failed run is
+#: one bug, not weakness at a whole family of algorithms. From the prior it
+#: takes two (0.5 -> 0.425 -> 0.3725) to reach `easy` and the beginner pitch.
+UNSOLVED_SCORE: Final = 0.25
 COMMON_ERRORS_TOP_N: Final = 5
 
 # --- Conceptual evidence (ADAPTIVE-tutoring G2, AD-T5) -----------------------
