@@ -3245,6 +3245,7 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         route == "debug"
         and state.decision is not None
         and state.decision.withhold
+        and state.problem_relation != "followup"  # a reply gets its verdict, not the ask again
         and sections
         and not any("?" in s.body for s in sections)
         and ran is not None

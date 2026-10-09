@@ -221,3 +221,11 @@ Not on the list, found in the evidence:
    with the question: needing the full solution and the hints used count as
    weak evidence; an explanation the learner asks for stays detailed, and a
    follow-up on one is answered short.
+
+## 8. What was done, and what was measured
+
+The changes per root cause, the live numbers and what still does not match
+the target are in `docs/AUDIT_REPORT.md`, section 14. In short: the five-run
+measurement was started on commit `d8e4021` and the Groq quota ran out during
+run 3, so two runs are valid (19 of 20 scenarios each). That is evidence, not
+the merge bar.

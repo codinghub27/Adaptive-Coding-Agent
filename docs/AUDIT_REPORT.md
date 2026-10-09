@@ -799,3 +799,128 @@ Every earlier fix in this report repaired one misreading. They share a cause:
 - Skill moves only on sandbox evidence and graded answers, so "adapts to you"
   is slow to become visible (section 11).
 
+## 14. One decision per turn, evidence, adaptation, voice (2026-10-09)
+
+Evidence and the grouped root causes are in `docs/BEHAVIOR_GAP.md`: 48 real
+assistant turns from the three human accounts, 39 scored BAD, 25 of them from
+the turn's subject and action being worked out in five places.
+
+### What changed
+
+| Cause (BEHAVIOR_GAP) | Change | Commit |
+|---|---|---|
+| RC-1, RC-2: no single decision; rule lists route | `decide_turn` node and the `TurnDecision` record (subject, evidence, move, scaffold, wants_code, withhold). The `route` node is gone. An unsure reading keeps the conversation; an agent must have its subject; a response is not a code demand; "no code yet" is kept until the code is asked for; an unsure reading still acts on a statement, an error or a named problem | `eab797b`, `6bc4646`, `d8e4021`, `ddfcebe` |
+| Profile gets no evidence | Soft evidence: `tutor_reply`, `help_needed`. Never sets `solved`, never reaches the hard band | `356be81` |
+| RC-5: the ask never reaches the code writer | The reference prompt honours an asked-for approach and returns the idea and cost of the code it wrote; edge cases join the statement's examples | `36e72b8` |
+| Adaptation is a label | `app/tutoring/adaptation.py`: pitch, representation, skip-ahead, recurring mistake; notes only for what the reply did; stored per message (migration `d7e8f9a0b1c2`) | `4595194`, `5bd3183`, `6162952` |
+| RC-2: agents without the conversation | `<tutor_state>` and `<conversation_so_far>` in the debugger, reviewer and code explainer | `9c90f29` |
+| RC-3: assembled reports | `app/response/voice.py`; the UI joins spoken sections | `ad5c8ae` |
+| RC-4: failures as refusals; debugger gaps | A reply with no code is asked for again, then the solver's code is shown unverified; a bare traceback is read; `input()` is not a bug; a reply to a diagnosis gets a verdict | `36e72b8`, `22552b2` |
+| Review | Credit only a changed line; Challenge keeps the move a step | `7f93404` |
+| Unrelated, found on the way | Activity hours truncated in UTC (a test failed between 00:00 and 00:30 UTC) | `4a2b13c` |
+
+RC-6 (a pasted method body blamed for its indentation) was already fixed by
+the round-2 snippet repair; scenario 19 now checks it.
+
+### Live measurement: NOT at the merge bar's sample size
+
+`eval.behavior.live_scenarios --runs 5 --pace 12`, 20 scenarios, commit
+`d8e4021`. **The Groq quota ran out during run 3.** Two runs are valid.
+
+| Run | Scenarios passed | Turns the classifier fell back to keywords |
+|---|---|---|
+| 1 | 19 / 20 | 1 of 70 |
+| 2 | 19 / 20 | 1 of 70 |
+| 3 | 11 / 20 | 10 of 70 |
+| 4 | 6 / 20 | 32 of 70 |
+| 5 | 6 / 20 | 30 of 65 |
+
+Runs 3 to 5 measure the provider being unavailable, not the agent, and are
+not counted. Over the two valid runs:
+
+| # | Scenario | Passed | Note |
+|---|---|---|---|
+| 1 | Beginner, Two Sum | 2 / 2 | no full code on turn 1: 2 / 2 |
+| 2 | KeyError debug | 2 / 2 | |
+| 3 | Challenge mode | 2 / 2 | solution withheld: 2 / 2 |
+| 4 | Max Path Sum misconception | 2 / 2 | |
+| 5 | BFS vs DFS | 2 / 2 | |
+| 6 | 678 as text | 2 / 2 | no study plan on follow-ups: 2 / 2 |
+| 7 | Vague phrasings | 2 / 2 | |
+| 9 | Owner: 678, roadmap, follow-ups, code, code using stack | 2 / 2 | follow-up about the roadmap: 2 / 2 |
+| 10 | Owner: shared code, asks for the code, another method | 2 / 2 | |
+| 11 | Owner: explanations and a follow-up | 2 / 2 | |
+| 12 | Owner: greetings, a question about the chat | 2 / 2 | no study plan unless asked: 2 / 2 |
+| 13 | Stuck three times | 2 / 2 | |
+| 14 | Code on the first ask; profile moves | 2 / 2 | |
+| 15 | Ref 6: explain, no final code yet | 1 / 2 | run 2: the fix line was stated on turn 1 |
+| 16 | Ref 7: independent challenge | 2 / 2 | solution withheld: 2 / 2 |
+| 17 | Ref 9: a traceback | 2 / 2 | |
+| 18 | Ref 10: code after understanding | 2 / 2 | |
+| 19 | Owner: pasted method body | 2 / 2 | |
+| 20 | Ref 8: the same mix-up again | 1 / 2 | run 1: a model call failed and the reply was the generic fallback |
+| 8 | Cross-session | 2 / 2 | |
+
+The four must-be-every-run checks held on both valid runs. Two runs cannot
+show a 4-of-5 rate for anything. The record is
+`eval/results/live_scenarios_d8e4021_5runs.json` (git-ignored).
+
+Commits after the measured one: `7f93404`, `4a2b13c`, `ddfcebe` and the one
+that adds this section. `ddfcebe` was checked live on scenarios 12 and 14
+only, one run each; both passed. The others were not run live.
+
+`eval.behavior.replay` was not run: no quota left.
+
+### The local-model fallback
+
+Tried as asked, with no code change and without editing `.env`: a second
+server process with the Groq keys blanked in its environment and the existing
+OpenRouter client pointed at Ollama's OpenAI-compatible endpoint
+(`OPENROUTER_API_BASE=http://127.0.0.1:11434/v1`, `LLM_MODEL=qwen2.5-coder:7b`).
+It works, but the model runs mostly on CPU on this machine (2.3 GB of 5.1 GB
+on the GPU): the first tutoring turn took about four minutes and the second
+had not finished after eighteen. A run is 70 turns. It was stopped and no
+local numbers are reported. `qwen3.5:9b` was not used: its first call timed
+out through the same client.
+
+### What reading the live runs found that the tests did not
+
+Every item below had green unit tests when it was found.
+
+| Seen live | Cause | Fix |
+|---|---|---|
+| "Add 1." (the learner's answer) produced a verified `add_one` function | A solve turn with no subject | An agent must have its subject (`6bc4646`) |
+| The same reply twice under a badge "I drew it out" | The question bank's fixed text ignored the adaptation | A repeated miss goes to the solver's step; notes only for what the reply did (`6bc4646`, `6162952`) |
+| "this one is a worked example" over the full solution | The note was decided before the reply | `Adaptation.as_delivered` (`6162952`) |
+| A follow-up re-explained, a plan rewritten, a diagnosis repeated | "Answer follow-ups briefly" was a side rule | The follow-up has its own prompt (`6bc4646`, `22552b2`, `6162952`) |
+| "It fails: EOFError" for a program calling `input()` | The sandbox has no keyboard | `22552b2` |
+| A traceback answered "no code was executed" | The debugger read only code | `22552b2` |
+| The tutor linked a repeated mistake but the badge did not say so | A non-breaking hyphen in "mix-up" | `d8e4021` |
+| A pasted problem statement got "I can't tell what that refers to" | Quota gone, keyword fallback, unsure label | `ddfcebe` |
+
+### What still does not match the target
+
+- Reliability is unmeasured at the required size: two valid runs.
+- "Don't give me the final code yet" is honoured by a prompt instruction. In
+  one of two runs the model stated the corrected line anyway. The patch and
+  the code block are withheld in code; a line quoted inside a sentence is not.
+- A model call that fails on an explain turn still yields "I wasn't able to
+  put together a full response" (scenario 20, run 1).
+- When the provider is unavailable the tutor now takes a first step instead of
+  asking what the message refers to, but that step is the generic ladder
+  text: the solver's call fails too.
+- The curated question bank still answers in fixed text. It is handed to the
+  solver only after a repeated miss.
+- A wrong complexity claim was seen from the code explainer ("O(2^n)" for a
+  tree recursion that is O(n)): `estimate_complexity` counts two recursive
+  calls as exponential. Not fixed.
+- One failed sandbox run still makes a learner "weak" on a topic, and a later
+  reply then says "your record says to take it slowly". The threshold
+  question from section 11 is still open.
+- "hii agent" in the middle of a conversation was answered with the problem's
+  name instead of a greeting (scenario 12, turn 4; no check covers it).
+- Other languages: Python only, by the owner's decision.
+- Reference conversation 9 was run with the traceback as text; the image path
+  was not exercised.
+- The live scenario checks are string and route checks. Several wrong replies
+  passed them before they were tightened; more probably still can.
