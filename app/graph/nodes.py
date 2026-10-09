@@ -110,6 +110,7 @@ from app.response.format import (
     render_code_block,
 )
 from app.response.generate import generate_response
+from app.response.plain_python import without_type_hints
 from app.response.voice import speak
 from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel
 from app.schemas.decision import (
@@ -2592,7 +2593,7 @@ async def _run_examples(examples: Sequence[ConceptExample], runner: CodeRunner |
     dropped = 0
     for example in examples:
         title = " ".join(example.title.split()) or "Example"
-        code = example.code.strip("\n")
+        code = without_type_hints(example.code.strip("\n"))
         if runner is None:
             blocks.append(
                 f"**{title}** (not executed: the code sandbox is not available)\n\n"

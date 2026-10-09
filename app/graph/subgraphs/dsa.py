@@ -66,6 +66,7 @@ from app.graph.state import AgentState, GraphContext
 from app.knowledge.ingest import chunk_corpus, load_corpus
 from app.memory.profile import family_of
 from app.response.corpus_sections import corpus_sections, requested_sections
+from app.response.plain_python import without_type_hints
 from app.schemas.agent_results import DSAResult, HintLevel, HintResult
 from app.schemas.conversation import MessageView
 from app.schemas.execution import (
@@ -697,7 +698,10 @@ async def run_dsa(
             verified=False,
             reason=_UNCHECKED_REASON,
         )
-    revealed_code = solution.code if solution is not None and at_full else None
+    # Shown as plain Python (owner decision): the hints are taken out of the
+    # text the learner reads. They do not change what the code does, so this
+    # is still the code the sandbox ran.
+    revealed_code = without_type_hints(solution.code) if solution is not None and at_full else None
     if hint is not None and at_full and revealed_code is None:
         # Nothing verified, nothing shown -- so the turn must not COUNT as a
         # full reveal either (needed_full_solution, hints_used, stored level):

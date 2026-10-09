@@ -59,6 +59,7 @@ from app.agents.debugger import (
 )
 from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
+from app.response.plain_python import has_type_hints, without_type_hints
 from app.schemas.agent_results import BugLocation, DebugResult, StaticFinding
 from app.schemas.execution import (
     ExecutionRequest,
@@ -562,6 +563,20 @@ def _turn_context(state: AgentState) -> str:
     return turn_context(state.decision, state.adaptation, recent)
 
 
+def _in_their_style(code: str | None, problem: StructuredInput | None) -> str | None:
+    """Code handed back to the learner, without type hints the tutor added.
+
+    Generated code is shown as plain Python (owner decision). A fix or a
+    tidied copy of the learner's code keeps THEIR hints when they wrote some;
+    it never gains hints they did not write."""
+    if code is None:
+        return None
+    original = extract_learner_code(problem)
+    if original is not None and has_type_hints(original):
+        return code
+    return without_type_hints(code)
+
+
 _THEIR_FIX_IS_RIGHT: Final = (
     "Yes -- that is the fix. With `{line}` in place your code passes {passed}/{total} "
     "test cases in the sandbox. Make the change and send it back if you want it run again."
@@ -688,8 +703,8 @@ async def run_debug(
         failing_case=None if is_reply else final_state.get("failing_case"),
         bug_explanation=explanation,
         bug_location=final_state.get("bug_location"),
-        patched_code=final_state.get("patched_code"),
-        presented_code=final_state.get("presented_code"),
+        patched_code=_in_their_style(final_state.get("patched_code"), problem),
+        presented_code=_in_their_style(final_state.get("presented_code"), problem),
         presented_label=final_state.get("presented_label"),
         presented_notes=final_state.get("presented_notes") or [],
         attempts=final_state.get("attempts", 0),

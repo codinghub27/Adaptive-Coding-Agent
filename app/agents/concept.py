@@ -253,6 +253,8 @@ _CHECK_RULE: Final = (
 _EXAMPLES_RULE: Final = (
     'Always add one or two SHORT programs under "examples" that show the idea in action '
     "(a second one only when it shows a different side of it): each a complete Python script "
+    "in plain Python with NO type hints (no parameter or return annotations, no typing "
+    "imports) "
     "of at most 30 lines that uses only the standard library, reads no input, and prints its "
     "result with print(), with a comment on the lines that carry the idea. They are run "
     'before the learner sees them, so they must run as written. Leave "examples" empty only '

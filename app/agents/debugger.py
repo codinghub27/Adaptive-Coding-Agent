@@ -698,6 +698,8 @@ _APPROACH_ADDENDUM: Final = (
 )
 
 _ANNOTATE_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
+    "Do not add type hints (parameter or return annotations) that the learner's own code "
+    "does not have. "
     "The learner asked to be given the code. Return THEIR code, cleaned up: consistent "
     "formatting, a one-line docstring, and a few brief comments on the lines that carry the "
     "idea. Do not change what it does, its function names or its parameters; add no features, "
@@ -871,6 +873,8 @@ async def explain_bug(
 
 _PATCH_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "A sandbox has already established that the learner's code fails (see <debug_context>). "
+    "Do not add type hints (parameter or return annotations) that the learner's own code "
+    "does not have. "
     "Produce a corrected, complete, runnable version of the learner's code that fixes the "
     "established bug while preserving their overall approach as much as possible. If a previous "
     "patch attempt is included and it still failed, try a different fix. Reply with ONLY a "

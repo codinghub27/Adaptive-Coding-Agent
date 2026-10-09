@@ -115,7 +115,11 @@ _FIELD_DESCRIPTIONS: Final[Mapping[str, str]] = {
     "pseudocode": "Step-by-step pseudocode (not real syntax) for the efficient solution.",
     "complexity_time": "The efficient solution's time complexity, e.g. 'O(n)'.",
     "complexity_space": "The efficient solution's space complexity, e.g. 'O(1)'.",
-    "code": "A complete, correct, runnable Python solution implementing the efficient approach.",
+    "code": (
+        "A complete, correct, runnable Python solution implementing the efficient approach. "
+        "Plain Python with NO type hints: no parameter or return annotations and no typing "
+        "imports."
+    ),
 }
 
 #: What `guided_step` should be about at each rung -- one more notch per rung,

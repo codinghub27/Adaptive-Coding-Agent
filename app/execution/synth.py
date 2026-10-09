@@ -105,7 +105,10 @@ _SYNTH_SYSTEM: Final = (
     "case as its LeetCode level-order list with null for a missing child (for example "
     "[1,2,3,null,4]; the empty tree is []). For a linked list, write a plain list. The "
     "reference solution itself still takes and returns TreeNode / ListNode objects as usual; "
-    "those classes are provided, do not define them."
+    "those classes are provided, do not define them. "
+    "Write plain Python with NO type hints: no parameter annotations, no return annotations "
+    "(`->`), no annotated variables and no `typing` imports -- `def expand(left, right):`, "
+    "never `def expand(left: int, right: int) -> tuple:`."
 )
 
 
