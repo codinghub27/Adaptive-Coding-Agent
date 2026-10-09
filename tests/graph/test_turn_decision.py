@@ -351,3 +351,36 @@ def test_in_challenge_mode_an_ask_for_the_code_is_recorded_but_the_move_is_a_ste
     decision = _decision(challenged)
     assert (decision.wants_code, decision.move) == (True, "step")
     assert _decision(state).move == "code"
+
+
+def test_an_unsure_reading_still_acts_on_what_the_turn_brings() -> None:
+    """Measured: with the provider's quota gone the classifier fell back to
+    the keyword heuristic on 30 of 70 turns, and a pasted LeetCode statement
+    got "I can't tell what that refers to"."""
+    statement = AgentState(
+        input=RawInput(text=_P678),
+        structured_input=StructuredInput(
+            source="text", problem=_P678, question="how to solve this prob"
+        ),
+        intent=_unsure(Intent.DSA_SOLVE),
+    )
+    update = _decide(statement)
+    decision = update.get("decision")
+    assert update.get("route") == "dsa"
+    assert decision is not None
+    assert (decision.move, decision.wants_code) == ("step", False)  # a step, never the code
+
+    traceback = AgentState(
+        input=RawInput(text="x"),
+        structured_input=StructuredInput(
+            source="text", error="TypeError: string indices must be integers"
+        ),
+        intent=_unsure(Intent.ERROR_EXPLANATION),
+    )
+    assert _decide(traceback).get("route") == "debug"
+
+    named = _decide(_state("Can you help me solve Two Sum?", intent=_unsure()))
+    assert named.get("route") == "dsa"
+
+    nothing = _decide(_state("is there another method for this program?", intent=_unsure()))
+    assert nothing.get("route") == "clarify"

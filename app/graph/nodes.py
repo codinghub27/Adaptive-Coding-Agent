@@ -875,29 +875,55 @@ def _anchor_on_the_conversation(
 
 
 def _settle_unsure_reading(state: AgentState) -> IntentResult | None:
-    """A label for a turn nobody read with confidence and that nothing in the
-    conversation claims, when the message still says what it wants.
+    """A label for a turn nobody read with confidence, when the turn itself
+    says what it is.
 
-    An unsure reading must not cost the learner a turn of "could you confirm?".
-    A follow-up already went to the conversation (`_problem_update`). What is
-    left here is a message with no subject of its own that names a topic the
-    corpus teaches and is shaped as a question about it: it is answered as a
-    concept question. Anything else unsure is asked about, specifically.
+    An unsure reading must not cost the learner a turn of "could you confirm?"
+    when the message carries its own subject. A follow-up already went to the
+    conversation (`_problem_update`). What is settled here, from what the
+    message BRINGS and never from a list of request phrases:
+
+    - a problem statement: the first step on it;
+    - an error or traceback with no code: it is read;
+    - a curated problem named by its title ("help me solve Two Sum"): the
+      first step on it;
+    - a question shaped as a question about a concept the corpus teaches: it
+      is explained.
+
+    Measured: when the provider's quota ran out, the classifier fell back to
+    the keyword heuristic on 30 of 70 turns and a pasted LeetCode statement
+    got "I can't tell what that refers to" (docs/AUDIT_REPORT.md, section 14).
+    The same thing produced the owner's "could you confirm" replies. Whether
+    the code is handed over is unaffected: with no confident reading that
+    still takes a listed ask in the message (`wants_the_code`).
     """
     intent = state.intent
     inp = state.structured_input
     if intent is None or not intent.low_confidence or inp is None:
         return None
-    if state.problem_relation != "none" or state.thread_followup:
+    if state.thread_followup or state.problem_relation == "followup":
         return None
     question = inp.question
-    if inp.problem or inp.code or inp.error or not question or is_small_talk(question):
+    if is_small_talk(question):
         return None
-    if intent.intent is not Intent.CONCEPT_EXPLANATION:
+    if inp.code:
+        return None  # user-code-first already decided a turn that brings code
+    why = "no confident reading"
+    if inp.problem:
+        return _relabel(intent, Intent.DSA_SOLVE, f"a problem statement; {why}")
+    if inp.error:
+        return _relabel(intent, Intent.ERROR_EXPLANATION, f"an error to read; {why}")
+    if not question:
         return None
-    if not names_corpus_subject(question) or explicit_ask_phrase(question):
-        return None
-    return _relabel(intent, Intent.CONCEPT_EXPLANATION, "names a topic; no confident reading")
+    if curated_problem_for_text(question) is not None and not asks_for_guidance(question):
+        return _relabel(intent, Intent.DSA_SOLVE, f"names a curated problem; {why}")
+    if (
+        intent.intent is Intent.CONCEPT_EXPLANATION
+        and names_corpus_subject(question)
+        and not explicit_ask_phrase(question)
+    ):
+        return _relabel(intent, Intent.CONCEPT_EXPLANATION, f"names a topic; {why}")
+    return None
 
 
 _REVIEW_MOVE_INTENTS: Final = frozenset({Intent.CODE_REVIEW, Intent.OPTIMIZATION})
