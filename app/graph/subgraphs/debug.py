@@ -594,9 +594,12 @@ def _environment_note(problem: StructuredInput | None, verdict: Verdict | None) 
     the SyntaxError had never been mentioned. `None` when no SyntaxError was
     reported, or when the sandbox could not parse the code either (then it IS
     a syntax error and the ordinary report covers it)."""
-    if problem is None or verdict is None or not problem.error:
+    if problem is None or verdict is None:
         return None
-    if not _REPORTED_SYNTAX_ERROR_RE.search(problem.error):
+    # A message pasted from a judge ("SyntaxError: invalid syntax ... Line 7")
+    # is not a Python traceback, so the normaliser leaves it in the question.
+    reported = "\n".join(part for part in (problem.error, problem.question) if part)
+    if not _REPORTED_SYNTAX_ERROR_RE.search(reported):
         return None
     if verdict.category == "syntax_error" or verdict.status == "skipped":
         return None

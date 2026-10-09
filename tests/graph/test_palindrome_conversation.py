@@ -492,3 +492,22 @@ def test_h_the_kind_of_gap_picks_the_kind_of_help() -> None:
     assert "gap: concept." in concept
     named = tutor_state_block(_step("terminology_error"), plain)
     assert "The reasoning is right" in named
+
+
+def test_a_an_opening_message_gets_no_instruction_about_a_missed_explanation() -> None:
+    """Measured live: given the conditional line on a first message, the model
+    applied it and turned a first explanation into a stopped worked example."""
+    opening = adapt(
+        decision=_step(), pitch="intermediate", topic="x", evidence_log=[], first_turn=True
+    )
+    assert "if_they_did_not_follow" not in tutor_state_block(_step(), opening)
+    later = adapt(decision=_step(), pitch="intermediate", topic="x", evidence_log=[])
+    assert "otherwise ignore this line" in tutor_state_block(_step(), later)
+
+
+def test_d_a_judges_message_left_in_the_question_is_still_the_reported_error() -> None:
+    """LeetCode's "SyntaxError: invalid syntax ... Line 7" is not a Python
+    traceback, so the normaliser leaves it in the question, not in `error`."""
+    as_typed = _pasted().model_copy(update={"error": None, "question": f"full code\n{_ERROR}"})
+    note = _environment_note(as_typed, _wrong_answer())
+    assert note is not None and "Python 2" in note

@@ -70,7 +70,9 @@ _REPRESENTATION_RULE: Final[Mapping[Representation, str]] = {
         "the same question again. Say the core idea in ONE simple sentence. Then take the "
         "smallest input that shows it (two to four elements or characters), write it out "
         "with its indices, and walk it one move at a time, giving the exact positions and "
-        "values compared at each move. Every index and value must agree with that input. "
+        "values compared at each move. Every index and value must agree with that input: "
+        "check each line of the walk against it before you write it, and start at the "
+        "position that actually shows the idea. "
         "Stop one move short and ask ONE question about that move only."
     ),
     "diagram": (
@@ -173,6 +175,9 @@ class Adaptation(APIModel):
     #: understand"); the agent that reads the message does, and must change
     #: the presentation on that same turn, not one turn late.
     if_stuck: Representation = "worked_example"
+    #: This message opens the subject: there is no earlier explanation of the
+    #: tutor's for the learner to have missed.
+    opening: bool = False
     #: The learner has said more than once that finding the pattern is where
     #: they get stuck (`gap.pattern_recognition` in their profile).
     pattern_gap: bool = False
@@ -284,6 +289,7 @@ def adapt(
         struggles=struggles,
         successes=successes,
         if_stuck=if_stuck,
+        opening=first_turn,
         pattern_gap=pattern_gap,
         notes=notes,
     )
@@ -354,12 +360,20 @@ def tutor_state_block(decision: TurnDecision | None, adaptation: Adaptation | No
         if adaptation.representation != "plain":
             rule = _REPRESENTATION_RULE[adaptation.representation]
             lines.append(f"representation: {adaptation.representation}. {rule}")
-        elif decision is not None and decision.move in ("step", "grade", "explain"):
+        elif (
+            not adaptation.opening
+            and decision is not None
+            and decision.move in ("step", "grade", "explain")
+        ):
+            # Not on an opening message: there is nothing of the tutor's yet
+            # to have missed, and a model given this line there applied it to
+            # a first explanation (measured live).
             rule = _REPRESENTATION_RULE[adaptation.if_stuck]
             lines.append(
-                "if_they_did_not_follow: when the learner's message says or shows that they "
-                'did not understand your last message ("could not understand", "I\'m '
-                f'confused", a wrong answer), switch to {adaptation.if_stuck}. {rule}'
+                "if_they_did_not_follow: ONLY when the learner's message says or shows that "
+                'they did not understand your last message ("could not understand", "I\'m '
+                f'confused", a wrong answer), switch to {adaptation.if_stuck}; otherwise '
+                f"ignore this line. {rule}"
             )
         if adaptation.pattern_gap:
             lines.append(f"recurring_gap: pattern recognition. {_PATTERN_GAP_RULE}")

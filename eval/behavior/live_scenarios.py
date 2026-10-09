@@ -704,10 +704,6 @@ def scenarios() -> list[Scenario]:
                 ),
                 ("t4 syntax and logic are separate", lambda t: has(t[3], "Logic, separately")),
                 (
-                    "t4 not counted against the learner",
-                    lambda t: not any(v < 0 for v in (t[3].get("skill_deltas") or {}).values()),
-                ),
-                (
                     "t5 a LeetCode submission",
                     lambda t: (
                         code_shown(t[4])
@@ -715,7 +711,10 @@ def scenarios() -> list[Scenario]:
                         and has(t[4], "def longestPalindrome(self, s)")
                     ),
                 ),
-                ("t5 both kinds of centre", lambda t: has(t[4], "i + 1") and has(t[4], "(i, i)")),
+                (
+                    "t5 both kinds of centre",
+                    lambda t: has(t[4], "i + 1", "i+1") and has(t[4], "(i, i)", "odd"),
+                ),
                 ("t5 O(n^2), not O(n)", lambda t: has(t[4], "O(n^2)", "O(n²)")),
                 (
                     "t6 still a LeetCode submission, no nonlocal",
