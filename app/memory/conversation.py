@@ -386,7 +386,11 @@ async def learning_activity_hours(
     dates) are returned so the client can bucket them into ITS local days.
     """
     since = datetime.now(UTC) - timedelta(days=days)
-    hour = func.date_trunc("hour", Message.created_at)
+    # Truncated in UTC, as the contract says. Without the zone argument
+    # Postgres truncates in the SESSION's time zone, and in a half-hour zone
+    # (Asia/Kolkata) an "hour" then starts at :30 UTC and can fall on the
+    # previous UTC day.
+    hour = func.date_trunc("hour", Message.created_at, "UTC")
     stmt = (
         select(hour)
         .where(Message.user_id == user_id, Message.role == "user", Message.created_at >= since)

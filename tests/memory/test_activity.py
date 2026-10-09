@@ -35,7 +35,7 @@ async def test_every_active_day_counts_even_in_one_conversation(
 
     hours = await learning_activity_hours(db_session, user_id)
 
-    days = {hour.date() for hour in hours}
+    days = {hour.astimezone(UTC).date() for hour in hours}
     assert {(now - timedelta(days=d)).date() for d in (0, 1, 2)} <= days
     assert len(hours) == 3  # assistant messages are not learner activity
 
