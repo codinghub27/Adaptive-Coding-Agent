@@ -758,13 +758,20 @@ async def run_debug(
         # Two different failures, reported as two: the parsing error the
         # learner saw where THEY ran it, and whatever the sandbox found.
         logic = explanation if first_seen is not None and first_seen.status == "fail" else None
+        failing = final_state.get("failing_case")
+        if logic and failing:
+            # The failing case belongs to the logic problem, so it is said
+            # there: after the syntax, never before it.
+            logic = f"it fails on {failing}. {logic}"
         explanation = f"{environment}\n\n{_LOGIC_SEPARATELY} {logic}" if logic else environment
     result = DebugResult(
         # On a follow-up the static findings, the approach and the failing
         # case were all said on the turn before; only the reply is new.
         static_findings=[] if is_reply else final_state.get("static_findings") or [],
         inferred_approach=None if is_reply else final_state.get("inferred_approach"),
-        failing_case=None if is_reply else final_state.get("failing_case"),
+        failing_case=(
+            None if is_reply or environment is not None else final_state.get("failing_case")
+        ),
         bug_explanation=explanation,
         bug_location=final_state.get("bug_location"),
         patched_code=_in_their_style(

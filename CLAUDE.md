@@ -192,6 +192,23 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   (`synth._REFERENCE_SYSTEM`), which also honours an asked-for approach
   ("using a stack") as a choice of algorithm. A program that waits for
   `input()` is reported as not run to the end, never as a failure.
+- **Generated code is plain Python, in the learner's interface.** No type
+  hints (`app/response/plain_python.py` strips them from code the tutor wrote;
+  a fix to the learner's own code keeps hints they wrote). The class and
+  method of the learner's own code (`snippet.submission_interface`) and their
+  earlier messages go to the code writer, so "LeetCode format" and "don't use
+  nonlocal" hold across turns. A `class Solution` is run through an added
+  entry point and shown as the class.
+- **A reported error the sandbox does not reproduce** (a SyntaxError from
+  LeetCode's Python 2 on code that parses here) is answered first and by
+  itself (`debug._environment_note`), then the logic separately.
+- **Code the tutor wrote is not evidence about the learner**
+  (`nodes._is_the_tutors_code`), and one failed run is one bug: two reach
+  `easy` (`UNSOLVED_SCORE` 0.25).
+- **A miss changes the presentation on the same turn.** After the opening
+  message every tutoring prompt carries what to switch to if the learner did
+  not follow (`Adaptation.if_stuck`). Do not put that line on an opening
+  message: a model applies it to a first explanation.
 - **Explanations.** Any concept the learner asks about is explained in detail
   with one or two examples that were run in the sandbox first
   (`app/agents/concept.py`). A retrieval hit below `MIN_CONCEPT_TOPIC_SCORE`

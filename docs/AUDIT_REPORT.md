@@ -924,3 +924,59 @@ Every item below had green unit tests when it was found.
   was not exercised.
 - The live scenario checks are string and route checks. Several wrong replies
   passed them before they were tightened; more probably still can.
+
+## 15. The Longest Palindromic Substring conversation (2026-10-09)
+
+Source: one real conversation and the owner's nine-point brief. Each change
+was made where the behaviour is decided; tests are
+`tests/graph/test_palindrome_conversation.py` (A to H) and
+`tests/response/test_plain_python.py`.
+
+| Seen in the conversation | Where it is decided | Change |
+|---|---|---|
+| Code with `l: int`, `-> (int, int)`; a SyntaxError on LeetCode | the code prompts; nothing enforced it | Plain Python, no type hints: asked for in every code prompt and guaranteed by `app/response/plain_python.py` for code the tutor wrote |
+| "could not understand" got the same explanation and question | the first reading did not call it stuck, so the solver had no instruction | Every tutoring step after the first carries what to switch to if the message is a miss; a miss found by the agent itself is recorded and announced (`Adaptation.after_a_miss`) |
+| "how do I find the pattern?" got a catalogue of techniques | the concept prompt's fixed six-part shape | `_PATTERN_RULE`: the decision process on one problem. Recorded as `gap.pattern_recognition`; seen twice, a new problem starts from that process |
+| O(n) claimed beside O(n^2) work; an even-centres-only "solution" | the concept prompt | `_ACCURACY_RULE`: count nested work; a partial program is titled "Partial:"; the reference must be complete |
+| A SyntaxError blamed on indentation without the code | `_TRACEBACK_SYSTEM` | Causes as hypotheses; a SyntaxError on valid modern Python is first a version question |
+| Code plus the SyntaxError got a wrong-answer report only | the debugger ran the code under Python 3 and never looked back at the report | `_environment_note`: the reported error first and by itself, with the one-line correction, then the logic separately |
+| "in the LeetCode way" got a standalone function | the reference prompt saw only the statement | The class and method of the learner's own code (`submission_interface`, `ast` only) and their earlier messages go to the code writer. A `class Solution` is run through an added entry point and shown as the class |
+| "explain with code" went to the concept explainer | `wants_the_code` rejected any message with a learning word | A message that names the code, read by the model as an ask for it, is one |
+| Skill dropped 0.12 for the tutor's own example; "take it slowly" | one failed run meant weak; any failing code counted | Code the tutor wrote is not evidence about the learner. `UNSOLVED_SCORE` 0.10 -> 0.25: two failed runs, not one, reach `easy` and the beginner pitch. This reverses the earlier "one failure reaches easy" calibration, on the owner's instruction |
+| "passed 8/8" with no limits stated | reveal text | The reveal says the judge's hidden tests were not run; test cases are asked to have unique answers |
+
+### Live
+
+Scenario 21 (the conversation, six turns), commit `3e31c36`, three runs
+started. **One run is valid**: all 12 checks passed, and the transcript was
+read turn by turn. The Groq quota ran out again during run 2 (turns of 60 to
+160 seconds, the classifier on its keyword fallback); runs 2 and 3 are not
+counted. One run shows the changes work together once. It is not a rate.
+
+Found by reading that run and fixed after it, so not yet seen live: the
+syntax note came after the failing case; it now comes first.
+
+### Not done, or not verified
+
+- No sub-skill model. The request was to track pattern recognition,
+  intuition, implementation, syntax, debugging, complexity and platform
+  format as separate skills. What exists: the kind of gap a message shows
+  picks the kind of help for that turn, and ONE recurring gap (pattern
+  recognition) is counted across conversations. The rest is not stored.
+- Accuracy is asked for in prompts, not checked. Nothing verifies a stated
+  complexity or that a walk-through's indices match its input. In the valid
+  run the confused-learner step was consistent; in an earlier run it started
+  an "aba" walk at index 0.
+- Syntax, execution, correctness and platform are not four separate status
+  lines. Execution and correctness are reported from the sandbox; a reported
+  syntax error gets its own paragraph; platform compatibility is stated as
+  not checked.
+- Several valid answers ("bab" or "aba"): the sandbox compares for equality.
+  The code writer is asked to avoid such test cases and to return the answer
+  the example shows. A correct solution that returns the other one would be
+  labelled "Not verified in sandbox".
+- The interface comes from code the learner shared, or from their words to
+  the code writer. With neither, a function is written.
+- Python 2 is recognised only as the cause of a reported SyntaxError on type
+  hints. Other Python 2 differences are left to the model.
+
