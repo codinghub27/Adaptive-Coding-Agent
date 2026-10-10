@@ -48,6 +48,25 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements.txt
+      # The unit suite's autouse `_isolate_settings_env` fixture strips the
+      # infra env vars (DATABASE_URL, QDRANT_URL, provider keys, ...) from the
+      # process so unit tests can't be swayed by the shell. `db`/`integration`
+      # tests get them back from a `.env` file, which `monkeypatch.delenv`
+      # never touches -- the documented mechanism (see tests/conftest.py).
+      # Locally that file exists; CI has none, so those tests failed to build
+      # `Settings` once the env was stripped. Materialize it from the job env
+      # (the single source of truth) so CI mirrors local dev. `.env` is
+      # gitignored, so this is created, never committed.
+      - name: materialize .env for env-isolated db/integration tests
+        run: |
+          {
+            echo "DATABASE_URL=$DATABASE_URL"
+            echo "QDRANT_URL=$QDRANT_URL"
+            echo "LLM_PROVIDER=$LLM_PROVIDER"
+            echo "GROQ_API_KEY=$GROQ_API_KEY"
+            echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
+            echo "KNOWLEDGE_ENABLED=$KNOWLEDGE_ENABLED"
+          } > .env
       - run: alembic upgrade head && alembic check
       - run: ruff check .
       - run: ruff format --check app tests eval
