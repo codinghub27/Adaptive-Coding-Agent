@@ -76,8 +76,32 @@ jobs:
       - name: adaptation speed (family aggregation must beat per-pattern keys)
         run: python -m eval.adaptation_speed
 
-  live-eval:
+  # live-eval needs a real LLM key (Groq or OpenRouter) to build the index and
+  # drive the graph. The `secrets` context isn't available in a job-level `if`,
+  # so this probe reads it in a step env and publishes whether one is set. When
+  # none is configured, live-eval is skipped (not failed), so the nightly run
+  # stays green until the repository owner adds the secrets.
+  check-secrets:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      has_llm_key: ${{ steps.probe.outputs.has_llm_key }}
+    steps:
+      - id: probe
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -n "$GROQ_API_KEY" ] || [ -n "$OPENROUTER_API_KEY" ]; then
+            echo "has_llm_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_llm_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::live-eval skipped: set a GROQ_API_KEY or OPENROUTER_API_KEY repository secret to enable it."
+          fi
+
+  live-eval:
+    needs: check-secrets
+    if: needs.check-secrets.outputs.has_llm_key == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     services:
