@@ -474,14 +474,28 @@ def _prompt(
     return "\n\n".join(parts)
 
 
-def _fallback(references: Sequence[Reference]) -> ConceptAnswer:
-    """No usable model output: answer with the references themselves."""
-    if not references:
-        return ConceptAnswer(answer="", citations=[], grounded=False)
-    body = "\n\n".join(f"**{ref.label}**\n\n{ref.text}" for ref in references[:2])
-    return ConceptAnswer(
-        answer=body, citations=[ref.label for ref in references[:2]], grounded=True
-    )
+#: A reply that does not parse is asked for once more. A failed CALL is not:
+#: the client behind `llm` has already retried and failed over.
+_ATTEMPTS: Final = 2
+
+
+async def _ask(messages: Sequence[ChatMessage], llm: LLMClient, max_tokens: int) -> _Output | None:
+    """The model's parsed answer, or `None` when it gave nothing usable.
+
+    There is no other source for an answer. The retrieved chunks pasted in as
+    the reply were a dump of reference material under the learner's question
+    (target behaviour section 25); with no usable model output the turn says
+    so plainly and asks them to try again (`SAFE_FALLBACK_RESPONSE`).
+    """
+    for _ in range(_ATTEMPTS):
+        try:
+            result = await llm.chat(messages, temperature=0.0, max_tokens=max_tokens)
+        except LLMError:
+            return None
+        parsed = _parse(result.content)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _parse(content: str) -> _Output | None:
@@ -532,13 +546,14 @@ async def answer_concept(
             # A follow-up that could not be answered is not answered with two
             # pages of the curriculum.
             return ConceptAnswer(answer="", citations=[], grounded=False)
-        return answered or _fallback(references)
+        return answered or ConceptAnswer(answer="", citations=[], grounded=False)
     if references:
         prompt = _prompt(question, references, level, history, None, tutor_state)
         system = _SYSTEM_FOLLOW_UP if history else _SYSTEM
         grounded = await _grounded(prompt, references, llm, system, _ANSWER_TOKENS)
         if grounded is None:
-            return _fallback(references)
+            # Nothing usable came back. The references are not the reply.
+            return ConceptAnswer(answer="", citations=[], grounded=False)
         if grounded.grounded:
             return grounded
     if not question.strip():
@@ -562,11 +577,7 @@ async def _grounded(
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content=prompt),
     ]
-    try:
-        result = await llm.chat(messages, temperature=0.0, max_tokens=max_tokens)
-    except LLMError:
-        return None
-    parsed = _parse(result.content)
+    parsed = await _ask(messages, llm, max_tokens)
     if parsed is None:
         return None
     citations = cited(references, parsed.used)
@@ -596,11 +607,7 @@ async def _open_answer(prompt: str, llm: LLMClient, system: str = _OPEN_SYSTEM) 
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content=prompt),
     ]
-    try:
-        result = await llm.chat(messages, temperature=0.0, max_tokens=_ANSWER_TOKENS)
-    except LLMError:
-        return ConceptAnswer(answer="", citations=[], grounded=False)
-    parsed = _parse(result.content)
+    parsed = await _ask(messages, llm, _ANSWER_TOKENS)
     if parsed is None:
         return ConceptAnswer(answer="", citations=[], grounded=False)
     return ConceptAnswer(

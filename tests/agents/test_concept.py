@@ -73,11 +73,25 @@ async def test_references_the_model_did_not_use_are_not_a_refusal() -> None:
     assert len(fake.chat_calls) == 2  # the grounded attempt, then the open answer
 
 
-async def test_unparseable_output_falls_back_to_the_references_themselves() -> None:
+async def test_unparseable_output_is_asked_for_again_and_is_never_the_references() -> None:
+    """CHANGED 2026-10-11 (item B, target behaviour section 25). This test used
+    to pin the opposite: an unparseable reply was answered with the text of
+    two retrieved chunks. That is a dump of reference material under the
+    learner's question. Now the reply is asked for once more, and with nothing
+    usable the answer is empty, which the turn reports as "try again"."""
     fake = FakeLLMClient(chat_content="not json")
     answer = await answer_concept(_QUESTION, _REFS, fake)
-    assert "A trie..." in answer.answer
-    assert answer.citations == ["Trie - Overview", "Trie - X"]
+    assert answer.answer == ""
+    assert answer.citations == []
+    assert len(fake.chat_calls) == 2  # asked again once
+
+
+async def test_a_failed_call_is_not_repeated() -> None:
+    """The client behind `llm` has already retried and failed over."""
+    fake = FakeLLMClient(raise_chat=True)
+    answer = await answer_concept(_QUESTION, _REFS, fake)
+    assert answer.answer == ""
+    assert len(fake.chat_calls) == 1
 
 
 async def test_learner_text_is_delimited_as_untrusted_data() -> None:
