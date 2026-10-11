@@ -151,6 +151,14 @@ class Settings(BaseSettings):
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr | None = None
     langsmith_project: str = "adaptive-coding-agent"
+    #: Send the CONTENT of every run to LangSmith: the learner's message and
+    #: code, each node's state, every model prompt and reply, the final
+    #: response. Off by default: traces then carry ids, flags and counts only
+    #: (`app.llm.client.redact_trace_payload`), because that content is the
+    #: learner's and LangSmith is a third party. Turn it on for your own
+    #: development workspace to read whole conversations there. Image bytes
+    #: are never sent either way.
+    langsmith_trace_content: bool = False
     #: LangSmith API base URL. `None` uses the SDK default (US cloud); an EU
     #: or self-hosted workspace MUST set this, or every run is posted to a
     #: region that rejects the key and nothing appears in the UI.

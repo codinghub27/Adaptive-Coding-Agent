@@ -22,7 +22,7 @@ from langsmith import Client as LangSmithClient
 from langsmith import trace as ls_trace
 from langsmith.client import RUN_TYPE_T
 from langsmith.run_helpers import tracing_context  # pyright: ignore[reportUnknownVariableType]
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from app.config import LLMProvider, Settings
 from app.llm.base import (
@@ -179,6 +179,36 @@ def _summarize_trace_payload(items: dict[str, object], *, depth: int = 0) -> dic
     return summary
 
 
+def _without_bytes(value: object, depth: int = 0) -> object:
+    """`value` with every `bytes` (an uploaded image) and every secret replaced
+    by a placeholder, however deep it sits in a node's state."""
+    if isinstance(value, (bytes, bytearray)):
+        return f"<bytes:{len(value)}>"
+    if isinstance(value, SecretStr):
+        return "<secret>"
+    if depth > 12:
+        return value
+    if isinstance(value, BaseModel):
+        return _without_bytes(value.model_dump(mode="python"), depth + 1)
+    if isinstance(value, dict):
+        items = cast("dict[object, object]", value)
+        return {key: _without_bytes(item, depth + 1) for key, item in items.items()}
+    if isinstance(value, (list, tuple)):
+        seq = cast("list[object] | tuple[object, ...]", value)
+        return [_without_bytes(item, depth + 1) for item in seq]
+    return value
+
+
+def content_trace_payload(payload: object) -> dict[str, object]:
+    """What a run sends when the owner has turned content tracing on
+    (`LANGSMITH_TRACE_CONTENT`): everything that was said, without the raw
+    bytes of an uploaded image and without anything held as a secret."""
+    if not isinstance(payload, dict):
+        return {"value": _without_bytes(payload)}
+    cleaned = _without_bytes(cast("dict[object, object]", payload))
+    return cast("dict[str, object]", cleaned)
+
+
 def redact_trace_payload(payload: object) -> dict[str, object]:
     """Redact one LangSmith run's `inputs`/`outputs` before they ever leave the process.
 
@@ -227,10 +257,18 @@ class Tracer:
         enabled: bool,
         client: LangSmithClient | None = None,
         project_name: str | None = None,
+        records_content: bool = False,
     ) -> None:
         self._enabled = enabled
         self._client = client
         self._project_name = project_name
+        self._records_content = enabled and records_content
+
+    @property
+    def records_content(self) -> bool:
+        """Whether runs carry what was said (`LANGSMITH_TRACE_CONTENT`), not
+        only ids, flags and counts."""
+        return self._records_content
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "Tracer":
@@ -245,15 +283,26 @@ class Tracer:
         redaction is applied client-wide (see that function's docstring) --
         every run this client submits, including our own `teaching_graph`
         parent run, is passed through it before transmission.
+
+        With `langsmith_trace_content` the owner has asked to read whole
+        conversations in LangSmith: every node and model call is sent with
+        its inputs and outputs (`content_trace_payload`: all of it except
+        the bytes of an uploaded image and anything held as a secret).
         """
         if settings.langsmith_tracing and settings.langsmith_api_key is not None:
+            content = settings.langsmith_trace_content
             client = LangSmithClient(
                 api_key=settings.langsmith_api_key.get_secret_value(),
                 api_url=settings.langsmith_endpoint,
-                hide_inputs=redact_trace_payload,
-                hide_outputs=redact_trace_payload,
+                hide_inputs=content_trace_payload if content else redact_trace_payload,
+                hide_outputs=content_trace_payload if content else redact_trace_payload,
             )
-            return cls(enabled=True, client=client, project_name=settings.langsmith_project)
+            return cls(
+                enabled=True,
+                client=client,
+                project_name=settings.langsmith_project,
+                records_content=content,
+            )
         return cls(enabled=False)
 
     @classmethod

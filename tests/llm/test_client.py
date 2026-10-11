@@ -34,6 +34,7 @@ from app.llm.client import (
     FailoverLLMClient,
     LangChainLLMClient,
     Tracer,
+    content_trace_payload,
     get_llm_client,
     is_rate_limit,
     redact_trace_payload,
@@ -737,3 +738,55 @@ async def test_a_limited_last_fallback_retries_earlier_keys_once() -> None:
     result = await client.chat([ChatMessage(role="user", content="y")])
     assert result.content == "k1"
     assert client.active_index == 0
+
+
+# --------------------------------------------------------------------------
+# LANGSMITH_TRACE_CONTENT: the owner's choice to read whole conversations
+# --------------------------------------------------------------------------
+
+
+def test_content_is_not_sent_unless_asked_for(make_settings: MakeSettings) -> None:
+    tracer = Tracer.from_settings(make_settings(langsmith_tracing=True, langsmith_api_key="a-key"))
+    assert tracer.records_content is False
+    inputs = _trace_inputs(
+        RawInput(text="SECRET"), user_id=None, conversation_id=None, max_llm_calls=5
+    )
+    assert "SECRET" not in str(inputs)
+
+
+def test_content_tracing_sends_the_message_and_the_reply_unredacted(
+    make_settings: MakeSettings,
+) -> None:
+    settings = make_settings(
+        langsmith_tracing=True, langsmith_api_key="a-key", langsmith_trace_content=True
+    )
+    tracer = Tracer.from_settings(settings)
+    assert tracer.records_content is True
+    client = tracer._client  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert client is not None
+    # Every node and model call goes out as it is, except an image's bytes.
+    state = AgentState(input=RawInput(text="how do I reverse a list?", image=b"\x89PNG-bytes"))
+    sent = content_trace_payload({"state": state, "question": "how do I reverse a list?"})
+    assert sent["question"] == "how do I reverse a list?"
+    assert "how do I reverse a list?" in str(sent["state"])
+    assert "PNG-bytes" not in str(sent) and "<bytes:" in str(sent)
+    assert content_trace_payload("plain") == {"value": "plain"}
+
+    inputs = _trace_inputs(
+        RawInput(text="how do I reverse a list?", image=b"\x89PNG"),
+        user_id=None,
+        conversation_id=None,
+        max_llm_calls=5,
+        content=True,
+    )
+    assert inputs["message"] == "how do I reverse a list?"
+    assert "PNG" not in str(inputs)  # image bytes are never sent
+    state = AgentState(input=RawInput(text="hi"), response="Use slicing.")
+    assert _trace_outputs(state, BudgetedLLMClient(FakeLLMClient(), 5), True)["response"] == (
+        "Use slicing."
+    )
+
+
+def test_content_tracing_needs_tracing_to_be_on(make_settings: MakeSettings) -> None:
+    settings = make_settings(langsmith_tracing=False, langsmith_trace_content=True)
+    assert Tracer.from_settings(settings).records_content is False

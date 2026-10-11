@@ -221,13 +221,21 @@ def _trace_inputs(
     user_id: UUID | None,
     conversation_id: UUID | None,
     max_llm_calls: int,
+    content: bool = False,
 ) -> dict[str, object]:
-    """Metadata-only inputs for the `teaching_graph` parent run.
+    """Inputs for the `teaching_graph` parent run.
 
-    Never the learner's text/code/image bytes themselves -- only ids, flags,
-    and enum-ish values (see `app.llm.client.Tracer.run`'s contract).
+    By default never the learner's text/code/image bytes themselves -- only
+    ids, flags, and enum-ish values (see `app.llm.client.Tracer.run`'s
+    contract). With `content` (`LANGSMITH_TRACE_CONTENT`, the owner's own
+    choice) the message itself is recorded too, so a trace reads from what
+    the learner sent to what the tutor answered. Image bytes never are.
     """
+    said: dict[str, object] = (
+        {"message": raw.text, "teaching_mode": raw.teaching_mode} if content else {}
+    )
     return {
+        **said,
         "has_text": bool(raw.text and raw.text.strip()),
         "has_image": raw.image is not None,
         "language": raw.language,
@@ -237,10 +245,25 @@ def _trace_inputs(
     }
 
 
-def _trace_outputs(state: AgentState, budgeted: BudgetedLLMClient) -> dict[str, object]:
-    """Metadata-only outputs for the `teaching_graph` parent run: counts and
-    enum-ish values, never the generated response or any retrieved text."""
+def _records(tracer: Tracer | None) -> bool:
+    """Whether this run may carry what was said (`LANGSMITH_TRACE_CONTENT`)."""
+    return tracer is not None and tracer.records_content
+
+
+def _thread(conversation_id: UUID | None) -> dict[str, object]:
+    """Run metadata that makes LangSmith group a conversation's turns into
+    one thread (its Threads view keys on `session_id`)."""
+    return {"session_id": str(conversation_id)} if conversation_id is not None else {}
+
+
+def _trace_outputs(
+    state: AgentState, budgeted: BudgetedLLMClient, content: bool = False
+) -> dict[str, object]:
+    """Outputs for the `teaching_graph` parent run: counts and enum-ish
+    values, and -- only with `content` -- the reply the learner was given."""
+    said: dict[str, object] = {"response": state.response} if content else {}
     return {
+        **said,
         "route": state.route,
         "intent": state.intent.intent.value if state.intent is not None else None,
         "topic": state.plan.topic if state.plan is not None else None,
@@ -315,10 +338,15 @@ async def run_graph(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 max_llm_calls=max_llm_calls,
+                content=_records(tracer),
             ),
             fn=_invoke_graph,
-            outputs=lambda result: _trace_outputs(result, budgeted),
-            metadata=lambda: {"transport": "chat", **budgeted.usage_summary()},
+            outputs=lambda result: _trace_outputs(result, budgeted, _records(tracer)),
+            metadata=lambda: {
+                "transport": "chat",
+                **_thread(conversation_id),
+                **budgeted.usage_summary(),
+            },
         )
 
     return GraphRunResult(state=state, llm_calls=budgeted.calls)
@@ -450,10 +478,15 @@ async def stream_graph(
                         user_id=user_id,
                         conversation_id=conversation_id,
                         max_llm_calls=max_llm_calls,
+                        content=_records(tracer),
                     ),
                     fn=_drive_graph,
-                    outputs=lambda result: _trace_outputs(result, budgeted),
-                    metadata=lambda: {"transport": "stream", **budgeted.usage_summary()},
+                    outputs=lambda result: _trace_outputs(result, budgeted, _records(tracer)),
+                    metadata=lambda: {
+                        "transport": "stream",
+                        **_thread(conversation_id),
+                        **budgeted.usage_summary(),
+                    },
                 )
             queue.put_nowait(
                 GraphResultEvent(GraphRunResult(state=state, llm_calls=budgeted.calls))
