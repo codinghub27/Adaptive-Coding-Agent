@@ -477,6 +477,10 @@ def _prompt(
 #: A reply that does not parse is asked for once more. A failed CALL is not:
 #: the client behind `llm` has already retried and failed over.
 _ATTEMPTS: Final = 2
+_JSON_ONLY: Final = (
+    "Your last reply could not be read. Answer again as ONE JSON object in the format "
+    "described, with nothing before or after it."
+)
 
 
 async def _ask(messages: Sequence[ChatMessage], llm: LLMClient, max_tokens: int) -> _Output | None:
@@ -487,14 +491,17 @@ async def _ask(messages: Sequence[ChatMessage], llm: LLMClient, max_tokens: int)
     (target behaviour section 25); with no usable model output the turn says
     so plainly and asks them to try again (`SAFE_FALLBACK_RESPONSE`).
     """
+    asked = list(messages)
     for _ in range(_ATTEMPTS):
         try:
-            result = await llm.chat(messages, temperature=0.0, max_tokens=max_tokens)
+            result = await llm.chat(asked, temperature=0.0, max_tokens=max_tokens)
         except LLMError:
             return None
         parsed = _parse(result.content)
         if parsed is not None:
             return parsed
+        # The same messages at temperature 0 would come back the same.
+        asked = [*messages, ChatMessage(role="user", content=_JSON_ONLY)]
     return None
 
 

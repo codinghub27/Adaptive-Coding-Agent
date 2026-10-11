@@ -17,7 +17,9 @@ be recognised without reading meaning:
 - one of the learner's own computed expressions with something added to it
   (`max(left, right)` in their code, `1 + max(left, right)` in the reply):
   that is the corrected expression, with or without a patch to compare with;
-- a fenced block that is not the learner's own code.
+- a fenced block of Python that carries any of the above. A traceback, the
+  sandbox's output and the learner's own code (with or without a marker
+  comment) are evidence for the diagnosis and stay.
 
 What is wrong and why stays: "you are not counting the current node" is the
 diagnosis, not the fix. A fix said entirely in words ("add one to the
@@ -30,6 +32,8 @@ from __future__ import annotations
 
 import ast
 import re
+import textwrap
+from collections.abc import Sequence
 from typing import Final
 
 __all__ = ["WITHHELD", "redact_fix"]
@@ -169,8 +173,24 @@ def _is_literal(expression: ast.expr) -> bool:
 
 
 def _is_their_code(block: str, own_lines: set[str]) -> bool:
-    lines = [_flat(line) for line in block.splitlines() if line.strip()]
+    """Every line is one of theirs; a comment added to mark a line is not code."""
+    lines = [_flat(line.split("#", 1)[0]) for line in block.splitlines()]
+    lines = [line for line in lines if line]
     return bool(lines) and all(line in own_lines for line in lines)
+
+
+def _is_new_code(block: str, theirs: str, flat_fragments: Sequence[str]) -> bool:
+    """A fenced block that carries the fix: one of its lines, or Python that
+    does something the learner did not write. A traceback, the sandbox's
+    output or a test input is evidence for the diagnosis and is kept."""
+    flat = _flat(block)
+    if any(fragment in flat for fragment in flat_fragments):
+        return True
+    try:
+        ast.parse(textwrap.dedent(block))
+    except SyntaxError:
+        return False
+    return any(_is_new_statement(line, theirs) for line in block.splitlines())
 
 
 def _tidy(text: str) -> str:
@@ -196,7 +216,10 @@ def redact_fix(text: str, learner_code: str | None, patched_code: str | None = N
     flat_fragments = [_flat(fragment) for fragment in fragments]
 
     def fence(match: re.Match[str]) -> str:
-        return match.group(0) if _is_their_code(match.group(1), own_lines) else WITHHELD
+        block = match.group(1)
+        if _is_their_code(block, own_lines) or not _is_new_code(block, theirs, flat_fragments):
+            return match.group(0)
+        return WITHHELD
 
     def span(match: re.Match[str]) -> str:
         inner = match.group(1)

@@ -126,13 +126,23 @@ def test_a_sound_walk_through_has_no_problems() -> None:
 def test_an_index_past_the_end_is_caught() -> None:
     """Audit section 15: an "aba" walk that did not match the string."""
     assert trace_problems('In "aba", look at index 3 next.')
-    assert trace_problems("For [2, 7, 11, 15], compare nums[4] with the target.")
+    assert trace_problems("For [2, 7, 11, 15], compare index 4 with the target.")
 
 
 def test_a_value_the_index_does_not_hold_is_caught() -> None:
-    assert trace_problems('In "aba", index 0 is b.')
-    assert trace_problems("With [2, 7, 11, 15], nums[1] is 11.")
-    assert not trace_problems("With [2, 7, 11, 15], nums[1] is 7.")
+    assert trace_problems("In \"aba\", index 0 is 'b'.")
+    assert trace_problems("With [2, 7, 11, 15], index 1 is 11.")
+    assert not trace_problems("With [2, 7, 11, 15], index 1 is 7.")
+
+
+def test_what_is_not_a_claim_about_the_input_is_left_alone() -> None:
+    """Code review, 2026-10-11: each of these was dropped as a wrong sentence."""
+    # A dictionary lookup beside the quoted list, not an index into it.
+    assert not trace_problems("With [2, 7, 11, 15], seen[7] is 1 and seen[2] is 0.")
+    # "a" is the article, not the letter at index 0.
+    assert not trace_problems('Take "racecar": index 0 is a match for index 6.')
+    # A quoted name is not the input.
+    assert not trace_problems('Keep a set called "seen". Then look at index 5 of the array.')
 
 
 def test_text_that_quotes_no_input_is_not_judged() -> None:

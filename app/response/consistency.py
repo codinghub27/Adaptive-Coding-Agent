@@ -180,14 +180,21 @@ def consistent_time(code: str | None, stated: str | None) -> str | None:
 # A worked trace against the input it quotes
 # --------------------------------------------------------------------------
 
-_STRING: Final = re.compile(r"""(?<![\w])(["'])([A-Za-z0-9]{2,40})\1""")
+#: A quoted word is the input only when the text presents it as one ("take
+#: "aba"", "s = "aba""); "seen" in quotes is a name, not a string to index.
+_STRING: Final = re.compile(
+    r"""(?:\b(?:take|consider|in|for|with|string|input|word|example)\s*:?\s+|=\s*)"""
+    r"""(["'])([A-Za-z0-9]{2,40})\1""",
+    re.I,
+)
 _LIST: Final = re.compile(r"\[\s*-?\w+(?:\s*,\s*-?\w+)+\s*\]")
 _INDEX: Final = re.compile(r"\bind(?:ex|ices)\s+(\d+)(?:\s*(?:,|and|to|through|-)\s*(\d+))*", re.I)
-_SUBSCRIPT: Final = re.compile(r"\b[A-Za-z_]\w*\[(\d+)\]")
+#: "index 1 is 7", "index 0 holds 'a'". A letter must be quoted ("index 0 is
+#: a match" names no value). `name[1]` is not read at all: `seen[7]` beside a
+#: quoted list is a dictionary lookup, and which name is the input is not known.
 _HOLDS: Final = re.compile(
-    r"(?:\bindex\s+(\d+)|\b[A-Za-z_]\w*\[(\d+)\])\s*"
-    r"(?:is|holds|=|==|:|\(|,\s*which is)\s*"
-    r"""[`"']?(-?\d+|[A-Za-z0-9])[`"']?(?![\w])""",
+    r"\bindex\s+(\d+)\s*(?:is|holds|=|==|:|,\s*which is)\s*"
+    r"""(?:(-?\d+)(?!\w|\.\d)|[`"']([A-Za-z0-9])[`"'])""",
     re.I,
 )
 _SENTENCE: Final = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -213,13 +220,12 @@ def _sentence_problems(sentence: str, sequences: list[Sequence[object]]) -> list
     problems: list[str] = []
     longest = max(len(sequence) for sequence in sequences)
     named = [int(n) for match in _INDEX.finditer(sentence) for n in match.groups() if n]
-    named += [int(match.group(1)) for match in _SUBSCRIPT.finditer(sentence)]
     for index in named:
         if index >= longest:
             problems.append(f"index {index} is past the end of an input of length {longest}")
     for match in _HOLDS.finditer(sentence):
-        index = int(match.group(1) or match.group(2))
-        value = match.group(3)
+        index = int(match.group(1))
+        value = match.group(2) or match.group(3)
         if index < longest and not any(_holds(s, index, value) for s in sequences):
             problems.append(f"index {index} does not hold {value}")
     return problems

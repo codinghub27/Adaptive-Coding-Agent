@@ -145,3 +145,14 @@ async def test_the_reply_of_a_no_code_yet_turn_goes_through_the_guard() -> None:
 
     free = await final_response(state(withhold=False), _runtime())
     assert "1 + max" in str(free.get("response"))
+
+
+def test_evidence_in_a_fenced_block_is_kept() -> None:
+    """Code review, 2026-10-11: a traceback, the sandbox's output and the
+    learner's own code with a marker comment were all replaced."""
+    traceback = "It stops here:\n\n```\nTraceback (most recent call last):\nKeyError: 3\n```"
+    assert redact_fix(traceback, _MAX_DEPTH, _MAX_DEPTH_FIXED) == traceback
+    output = "It printed:\n\n```\n0\n```\n\nbut a single node should give 1."
+    assert redact_fix(output, _MAX_DEPTH, None) == output
+    marked = "Look here:\n\n```python\n    return max(left, right)  # <- this line\n```"
+    assert redact_fix(marked, _MAX_DEPTH, _MAX_DEPTH_FIXED) == marked
