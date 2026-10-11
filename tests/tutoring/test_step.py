@@ -160,3 +160,26 @@ async def test_the_next_question_is_shown_as_something_not_to_write() -> None:
     user = llm.chat_calls[0][1].content
     assert "do not write it, answer it or hint at its answer" in user
     assert "Where would you keep them?" in user
+
+
+async def test_a_step_outside_the_limits_is_asked_for_once_more() -> None:
+    from collections.abc import Sequence
+
+    from app.llm.base import ChatMessage, ChatResult
+
+    class _Twice(FakeLLMClient):
+        async def chat(
+            self,
+            messages: Sequence[ChatMessage],
+            *,
+            temperature: float | None = None,
+            max_tokens: int | None = None,
+        ) -> ChatResult:
+            self.chat_calls.append(messages)
+            step = "Is that clear?" if len(self.chat_calls) == 1 else _WRITTEN
+            return ChatResult(content=json.dumps({"step": step}), provider="fake", model="fake")
+
+    llm = _Twice()
+    assert await spoken_step(_brief(), llm) == _WRITTEN
+    assert len(llm.chat_calls) == 2
+    assert "broke a hard limit" in llm.chat_calls[1][-1].content

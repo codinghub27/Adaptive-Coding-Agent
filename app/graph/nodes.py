@@ -2568,6 +2568,21 @@ async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> Age
     }
 
 
+def _graded_adaptation(state: AgentState, update: AgentStateUpdate) -> Adaptation | None:
+    """The adaptation as the reply to a GRADED answer is told it.
+
+    The grade has already settled whether this was a miss, and a miss already
+    carries its representation. The "if they did not follow, switch to ..."
+    line is for an agent that still has to read the message; given here it
+    was applied to a correct answer (measured live: a trace table drawn for
+    "either works").
+    """
+    adaptation = update.get("adaptation", state.adaptation)
+    if adaptation is None:
+        return None
+    return adaptation.model_copy(update={"opening": True})
+
+
 def _step_brief(
     state: AgentState,
     update: AgentStateUpdate,
@@ -2592,6 +2607,7 @@ def _step_brief(
             *(word for concept in next_pending.expected_concepts for word in concept.keywords),
         ]
     problem = state.active_problem.problem.problem if state.active_problem is not None else None
+    recent = _recent_exchange(state)
     return StepBrief(
         verdict=grade.grade,
         asked=pending.question if pending is not None else "",
@@ -2602,9 +2618,7 @@ def _step_brief(
         next_answers=tuple(next_answers),
         problem=problem,
         turn_context=turn_context(
-            update.get("decision", state.decision),
-            update.get("adaptation", state.adaptation),
-            _recent_exchange(state),
+            update.get("decision", state.decision), _graded_adaptation(state, update), recent
         ),
     )
 

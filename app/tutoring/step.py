@@ -42,6 +42,13 @@ _MAX_STEP_CHARS: Final = 700
 #: Room for a reasoning model to think first: at 320 the whole budget went on
 #: reasoning and the reply came back empty (measured live, gpt-oss-120b).
 _MAX_TOKENS: Final = 1200
+_ATTEMPTS: Final = 2
+_AGAIN: Final = (
+    "Your last reply broke a hard limit. Write it again as ONE JSON object: two or three "
+    "plain sentences, no question mark anywhere, no code, and nothing that states or hints "
+    "at the answer to the next question (do not name the data structure, technique or step "
+    "it asks for)."
+)
 _MAX_REPLY_CHARS: Final = 600
 _MAX_PROBLEM_CHARS: Final = 1200
 
@@ -171,13 +178,26 @@ async def spoken_step(brief: StepBrief, llm: LLMClient) -> str | None:
         ChatMessage(role="system", content=STEP_SYSTEM),
         ChatMessage(role="user", content=_prompt(brief)),
     ]
+    for _ in range(_ATTEMPTS):
+        try:
+            result = await llm.chat(messages, temperature=0.3, max_tokens=_MAX_TOKENS)
+        except LLMError:
+            return None
+        step = _parsed(result.content)
+        if step is not None and acceptable(step, brief.verdict, brief):
+            # A sentence that misreads the example it quotes is not said.
+            return without_trace_problems(step.strip())
+        # Outside the limits: asked once more, told which limits. The bank's
+        # sentence is said only when that fails too.
+        messages = [*messages[:2], ChatMessage(role="user", content=_AGAIN)]
+    return None
+
+
+def _parsed(content: str) -> str | None:
+    raw = extract_json_object(content)
+    if raw is None:
+        return None
     try:
-        result = await llm.chat(messages, temperature=0.3, max_tokens=_MAX_TOKENS)
-        raw = extract_json_object(result.content)
-        parsed = _StepOutput.model_validate(json.loads(raw)) if raw is not None else None
-    except (LLMError, json.JSONDecodeError, ValidationError):
+        return _StepOutput.model_validate(json.loads(raw)).step
+    except (json.JSONDecodeError, ValidationError):
         return None
-    if parsed is None or not acceptable(parsed.step, brief.verdict, brief):
-        return None
-    # A sentence that misreads the example it quotes is not said.
-    return without_trace_problems(parsed.step.strip())
