@@ -123,6 +123,9 @@ def _pattern(fragment: str) -> re.Pattern[str]:
 
 _COMPUTED: Final = (ast.Call, ast.BinOp, ast.Compare, ast.BoolOp, ast.Subscript)
 _OPERAND: Final = r"[\w.]+(?:\([^()]*\))?"
+#: A bare operation in backticks: `+ 1`, `- 1`, `* 2`, `+= 1`.
+#: `-1` is a value, so a minus needs its space.
+_OPERATION: Final = re.compile(r"(?:\+\s*|(?:-|\*|//|/|%)\s+|(?:\+|-|\*|//|/|%)=\s*)[\w.]+")
 _AUGMENTED: Final = re.compile(r"(?<![\w`])[A-Za-z_][\w.\[\]]*\s*(?:\+|-|\*|//|/)=\s*[\w.\[\]]+")
 
 
@@ -225,6 +228,9 @@ def redact_fix(text: str, learner_code: str | None, patched_code: str | None = N
         inner = match.group(1)
         flat = _flat(inner)
         if any(fragment in flat for fragment in flat_fragments):
+            return WITHHELD
+        if _OPERATION.fullmatch(inner.strip()) and flat not in theirs:
+            # "the missing `+ 1`" is the change itself, said as an operation.
             return WITHHELD
         return WITHHELD if _is_new_statement(inner, theirs) else match.group(0)
 

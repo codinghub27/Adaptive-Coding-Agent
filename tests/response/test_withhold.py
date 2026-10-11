@@ -156,3 +156,13 @@ def test_evidence_in_a_fenced_block_is_kept() -> None:
     assert redact_fix(output, _MAX_DEPTH, None) == output
     marked = "Look here:\n\n```python\n    return max(left, right)  # <- this line\n```"
     assert redact_fix(marked, _MAX_DEPTH, _MAX_DEPTH_FIXED) == marked
+
+
+def test_the_change_said_as_a_bare_operation_is_withheld() -> None:
+    """Read in a live run of scenario 15: "The missing `+ 1` means ..."."""
+    said = "You take `max(left, right)` but never count the node itself. The missing `+ 1` matters."
+    out = redact_fix(said, _MAX_DEPTH, None)
+    assert "+ 1" not in out and WITHHELD in out
+    assert "never count the node itself" in out and "`max(left, right)`" in out
+    # A value is not an operation, and their own `- 1` is theirs.
+    assert redact_fix("It returns `-1` here.", _MAX_DEPTH, None) == "It returns `-1` here."
