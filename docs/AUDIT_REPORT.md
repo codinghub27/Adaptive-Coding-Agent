@@ -980,3 +980,97 @@ syntax note came after the failing case; it now comes first.
 - Python 2 is recognised only as the cause of a reported SyntaxError on type
   hints. Other Python 2 differences are left to the model.
 
+
+## 16. Conversation behaviour toward the target, and three owner conversations (2026-10-11)
+
+Branch `claude/focused-brown-en05us`, commits `07e5c47` to `061ed0c`. Method:
+measure, read the transcripts, fix where the behaviour is decided, measure
+again. The second measurement did not complete (see "Live measurement").
+
+### What changed
+
+| Item (target section) | Where it is decided | Change | Commit |
+|---|---|---|---|
+| D: "no code yet" leaked the fix in prose (6, 9) | `_with_tutoring`, before the reply is spoken | `app/response/withhold.py`: the patch's new lines, the learner's own expression with an operand joined to it, a bare operation in backticks, a new statement, a fenced block that carries any of these. The diagnosis and anything the learner wrote stay | `07e5c47`, `3e69f40`, `eee83ae` |
+| E: accuracy asked for, not checked (15, 21) | the cost line beside revealed code; `_usable_step` | `app/response/consistency.py`: a cost the code's loops rule out is corrected or not stated; a walk-through sentence that names an index its quoted input does not have is dropped | `c4980a4`, `3e69f40`, `e2d8e9a` |
+| F: the bank answered in fixed text (18, invariant 2) | `grade_answer` | `app/tutoring/step.py`: one model call writes the reply to a graded answer from the learner's words. The verdict, the next question and the limits stay in code; the bank's sentence is the fallback | `143c5b0`, `6f0f160`, `6a1f78a` |
+| B: corpus chunks as the reply (25) | `concept._ask` | An unparseable reply is asked for once more; with nothing usable the turn says "try again" | `287a5dd`, `3e69f40` |
+| G: notes for what the reply did (18, 20) | `_with_tutoring` | A written graded reply keeps its representation note and never claims a skip | `f37cd4b` |
+| A, C | no change | Reproduced as scenario 22: all four asks got code with a real verdict, the buggy paste got the real bug named (one run, read) | `ef7ceb2` |
+| Explain-with-code requests | `decide_turn`, `planner.wants_the_code`, the code writer, the concept prompt | See below | `a5d2920` |
+| Fix requests | the debugger's prompts, budgets, patch gate and renderer | See below | `30c3d8c`, `061ed0c` |
+| Tracing | `Tracer`, `_trace_inputs` | `LANGSMITH_TRACE_CONTENT` (off by default) sends message, node state, prompts and reply; image bytes never. `session_id` groups a conversation. `teaching_mode` is recorded | `243d4ba`, `6817436` |
+
+### Three owner conversations, read the same evening
+
+| Seen | Cause | Change |
+|---|---|---|
+| "Explain ... with code line by line" on a stated problem: a hint, then a generic hint | 16 words; an ask for the code was believed up to 14 | A message that names the code counts up to 30 words. The code writer returns a walk with the code; a step that quotes a line not in the code is dropped |
+| "explain the code of 3sum line by line": "I wasn't able to put together a full response" | Labelled CODE_EXPLAIN with no code anywhere | `_code_to_explain`: with a statement it is an ask for that code; with a name it is explained from knowledge, as the program then a numbered walk |
+| The same message: "I can't tell what that refers to" | An unsure reading is asked about | An unsure reading BY THE MODEL of a message that opens a conversation is explained |
+| Correct code under "Time: O(n^2)" | This section's own cost check: an inner loop followed by `return` | Not counted as nested |
+| "Check: ...?" then "Your turn: ...?" | The answer and the reply each asked | The answer's closing question is removed when one follows |
+| "12-Week plan" listing 18 weeks | Model inconsistency | The title follows the list |
+| "find bugs": one of three named. "give bug fixed code": no code | Prompts asked for "the" bug; the patch reply came back empty at `max_tokens=1200`; a patch that did not pass was never shown | Every bug, numbered; budgets raised; an undefined name is found statically; an asked-for fix is always shown, labelled with the sandbox's result |
+
+### The token budgets
+
+Found three times the same way, each with green tests: a reply that came
+back EMPTY because the model (`openai/gpt-oss-120b`) reasons before it writes
+and the reasoning is counted against `max_tokens`. Measured for the written
+step at 320 (every graded reply silently fell back to the bank). The
+debugger's reading (500) and patch (1200) are the same shape and were raised
+without a separate measurement: the quota was gone by then.
+
+### Live measurement
+
+| | Before (`3f92756`) | After |
+|---|---|---|
+| `eval.behavior.replay` | 148 / 148, 7 / 7 | 148 / 148, 7 / 7 at `6a1f78a` |
+| `live_scenarios`, 2 runs | 1-6, 8-14, 16-19: 2/2. 7: 1/2 (one ReadError). 15: 1/2. 20: 0/2. 21: 0/2 | NOT MEASURED |
+
+The replay is saturated and cannot show an improvement. The full live run on
+the final code was started twice. The first ended with the session at
+scenario 11. During the second **the Groq token quota ran out** (retry-after
+of 950 seconds on all five keys, OpenRouter refusing too): its replay showed
+`adaptive_007` failing for want of a model, and it was stopped. No
+after-number is reported for the 21 baseline scenarios.
+
+What was run and READ on the changed code, one run each unless said:
+
+- Scenario 15 (no code yet): 12 / 12. The corrected line was not stated; the
+  reply did say "the missing `+ 1`", which `eee83ae` now withholds (not seen
+  live after it).
+- Scenario 22 (`docs/current-behavior.md`): 9 / 9.
+- Scenario 1: the two graded replies were the bank's sentences on the first
+  run (the empty-reply defect) and on the second one of the two; 4 and 5
+  passed. After `6a1f78a`: not run.
+- Next Permutation, "explain with code line by line": checked code, 8 / 8
+  cases, a nine-step walk quoting the code.
+- "explain the code of 3sum line by line": answered 4 runs of 4 after the
+  fix; one read in full, a 23-step walk.
+- The fix request (`30c3d8c`, `061ed0c`): not seen live with a working model.
+
+### What still does not match the target
+
+- No after-rate for any baseline scenario. Scenarios 20 (the recurring
+  mix-up linked in words) and 21 failed both baseline runs and nothing in
+  this section addresses them.
+- An explain turn whose model call fails still says "I wasn't able to put
+  together a full response". Seen twice more this evening under rate limits.
+- A fix said entirely in words ("add one to the result") is not withheld.
+- The cost check reads the cost line only, not a cost claimed in prose, and
+  knows a handful of shapes. It has already produced one wrong correction.
+- The opening line of a curated chain and the wording of the bank's questions
+  are still fixed text.
+- A first message the model reads unsurely as a concept question is now
+  explained even when it points at something absent ("another method for
+  this program?").
+- In a line-by-line explanation from the concept explainer the program is
+  printed after the walk, not before it.
+- With no model at all the debugger reports its static findings and the
+  sandbox run, and now says when no fix could be written. It cannot diagnose.
+- The image path of the second owner conversation was reproduced as text.
+- Two tests that pinned the old behaviour were rewritten, not extended:
+  `test_unparseable_output_falls_back_to_the_references_themselves` and
+  `test_debug_patch_never_revealed_when_not_fixed`.
