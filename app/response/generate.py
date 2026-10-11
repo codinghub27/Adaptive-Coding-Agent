@@ -141,6 +141,14 @@ def _render_dsa(
             bodies[cast("ResponseSectionKind", kind)] = (teaching, None)
     if result.code is not None and _may_reveal_code(plan):
         code_body = render_code_block(result.code, language="python")
+        if code_body and result.walkthrough:
+            # They asked for the code to be explained: each step quotes lines
+            # that are in the code above (checked where the code was written).
+            steps = "\n".join(
+                f"{number}. `{' / '.join(step.code.splitlines())}`\n   {step.says}"
+                for number, step in enumerate(result.walkthrough, start=1)
+            )
+            code_body = f"{code_body}\n\n**Line by line:**\n\n{steps}"
         if code_body:
             bodies["code"] = (code_body, None)
 

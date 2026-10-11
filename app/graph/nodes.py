@@ -860,7 +860,7 @@ def _decide(state: AgentState) -> AgentStateUpdate:
     anchored = _anchor_on_the_conversation(state, effective)
     if anchored is not None:
         update, effective = anchored, state.model_copy(update=dict(anchored))
-    settled = _settle_unsure_reading(effective)
+    settled = _settle_unsure_reading(effective) or _code_to_explain(effective)
     if settled is not None:
         update["intent"] = settled
         effective = effective.model_copy(update={"intent": settled})
@@ -906,6 +906,37 @@ def _anchor_on_the_conversation(
     )
     update = _problem_update(original.model_copy(update={"intent": reread}))
     return update if update.get("problem_relation") == "followup" else None
+
+
+def _code_to_explain(state: AgentState) -> IntentResult | None:
+    """The code explainer must have code.
+
+    "Explain the code of 3Sum line by line" names code the learner does not
+    have: there is none in the message and none in the conversation. Read as
+    "explain this code", it reached an explainer with nothing to read and the
+    reply was "I wasn't able to put together a full response" (owner's
+    conversation, 2026-10-11). The learner is asking to be SHOWN the code and
+    have it explained:
+
+    - with a problem statement in hand (this turn's, or the conversation's):
+      the solver writes it, the sandbox checks it, and it is explained;
+    - with only a name ("3Sum", "binary search"): the concept explainer
+      explains it with code that was run first.
+
+    Decided from what the turn brings, never from a list of phrases.
+    """
+    intent = state.intent
+    inp = state.structured_input
+    if intent is None or inp is None or intent.intent is not Intent.CODE_EXPLAIN:
+        return None
+    if intent.low_confidence:
+        return None  # nobody is sure what this asks: it is asked about
+    if inp.code or inp.error or not inp.question or is_small_talk(inp.question):
+        return None
+    why = "asks for code to be explained, and there is none to read"
+    if inp.problem:
+        return _relabel(intent, Intent.DSA_SOLVE, why).model_copy(update={"asks_for_code": True})
+    return _relabel(intent, Intent.CONCEPT_EXPLANATION, why)
 
 
 def _settle_unsure_reading(state: AgentState) -> IntentResult | None:
@@ -957,6 +988,23 @@ def _settle_unsure_reading(state: AgentState) -> IntentResult | None:
         and not explicit_ask_phrase(question)
     ):
         return _relabel(intent, Intent.CONCEPT_EXPLANATION, f"names a topic; {why}")
+    if (
+        intent.intent is Intent.CONCEPT_EXPLANATION
+        # The model's own reading, not the keyword fallback: that one calls
+        # anything it cannot place "explain a concept".
+        and intent.source == "llm"
+        and state.active_problem is None
+        and not state.recent_context
+        and not explicit_ask_phrase(question)
+    ):
+        # The first message of a conversation, read (unsurely) as a question
+        # to explain. There is nothing it could be referring back to, so "I
+        # can't tell what that refers to" answers a doubt nobody can have:
+        # the message stands alone and is explained, from the corpus or from
+        # the tutor's own knowledge (owner's conversation, 2026-10-11:
+        # "explain the code of 3sum line by line" got that reply one run in
+        # three).
+        return _relabel(intent, Intent.CONCEPT_EXPLANATION, f"opens the conversation; {why}")
     return None
 
 

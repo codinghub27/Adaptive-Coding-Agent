@@ -79,6 +79,15 @@ MAX_HINT_LEVEL_FOR_ASSISTANCE: Final[Mapping[AssistanceLevel, HintLevel]] = Mapp
 ReviewSeverity = Literal["info", "minor", "major"]
 
 
+class CodeStep(APIModel):
+    """One step of a walk through code the tutor shows: the line(s), copied
+    from that code, and what they do. Display-only, LLM-written; `code` is
+    checked against the shown code before it is kept."""
+
+    code: str = Field(max_length=600)
+    says: str = Field(max_length=400)
+
+
 class HintResult(APIModel):
     """One rung of the hint ladder produced for this turn.
 
@@ -153,6 +162,8 @@ class DSAResult(APIModel):
     key_insight: str | None = None
     pseudocode: str | None = None
     code: str | None = None
+    #: The code explained line by line, when the learner asked for that.
+    walkthrough: list[CodeStep] = Field(default_factory=list[CodeStep])
     complexity_time: str | None = None
     complexity_space: str | None = None
     common_mistakes: list[str] = Field(default_factory=list[str])

@@ -236,7 +236,12 @@ async def test_each_intent_routes_end_to_end(intent: Intent) -> None:
     assert ROUTE_NODES[expected_route]  # sanity: route resolves to a real node name
 
     assert state.intent is not None
-    assert state.intent.intent == intent
+    # CHANGED 2026-10-11: "explain this code" with no code anywhere is settled in
+    # `decide_turn` as a question to be explained (`_code_to_explain`): the code
+    # explainer had nothing to read and the reply was the generic fallback.
+    # The route, which is what this test is about, is the same.
+    settled = Intent.CONCEPT_EXPLANATION if intent is Intent.CODE_EXPLAIN else intent
+    assert state.intent.intent == settled
     assert state.route == expected_route
     assert state.response is not None
     assert "stub" not in state.response.lower()

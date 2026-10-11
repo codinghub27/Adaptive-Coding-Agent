@@ -68,7 +68,7 @@ from app.memory.profile import family_of
 from app.response.consistency import without_trace_problems
 from app.response.corpus_sections import corpus_sections, requested_sections
 from app.response.plain_python import without_type_hints
-from app.schemas.agent_results import DSAResult, HintLevel, HintResult
+from app.schemas.agent_results import CodeStep, DSAResult, HintLevel, HintResult
 from app.schemas.conversation import MessageView
 from app.schemas.execution import (
     ExecutionRequest,
@@ -751,6 +751,7 @@ async def run_dsa(
         key_insight=about.approach or final_state.get("key_insight"),
         pseudocode=final_state.get("pseudocode"),
         code=revealed_code,
+        walkthrough=[CodeStep(code=code, says=says) for code, says in about.walkthrough],
         complexity_time=about.complexity_time or final_state.get("complexity_time"),
         complexity_space=about.complexity_space or final_state.get("complexity_space"),
         common_mistakes=final_state.get("common_mistakes") or [],

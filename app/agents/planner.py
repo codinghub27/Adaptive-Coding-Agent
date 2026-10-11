@@ -185,6 +185,11 @@ _LEARNING_ASK_RE: Final = re.compile(
     r"walk me|teach|guide|step by step|steps?|approach|idea)\b"
 )
 _MAX_DEMAND_WORDS: Final = 14
+#: A message that NAMES the code may be longer and still be an ask for it:
+#: "Explain how to solve this problem and explain with code line by line of
+#: how it works" is 16 words, and at 14 it was answered with a hint and then a
+#: second hint (owner's conversation, 2026-10-11).
+_MAX_NAMED_CODE_WORDS: Final = 30
 #: The message names the code itself. With the model's "this asks for the
 #: code" that is enough, whatever learning words stand next to it.
 _NAMES_THE_CODE_RE: Final = re.compile(r"\b(code|solution|implementation|program)\b")
@@ -209,7 +214,7 @@ def wants_the_code(intent: IntentResult, question: str | None, *, fix: bool = Fa
     short = len(text.split()) <= _MAX_DEMAND_WORDS
     if short and _LEARNING_ASK_RE.search(text) is None:
         return True
-    if short and _NAMES_THE_CODE_RE.search(text) is not None:
+    if len(text.split()) <= _MAX_NAMED_CODE_WORDS and _NAMES_THE_CODE_RE.search(text):
         # "explain with code", "show me how in code": a learning word AND the
         # code named outright, by a model that read it as an ask for the code.
         # Measured live: it went to the concept explainer, which answered with

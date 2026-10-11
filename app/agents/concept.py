@@ -281,6 +281,22 @@ _ACCURACY_RULE: Final = (
     "problem makes it fit, not that it is commonly used. "
 )
 
+#: "Explain the code of 3Sum line by line" is a request with its own shape:
+#: the code, then each line in order. The six-part explanation with the code
+#: tucked in as a commented example did not answer it (owner's conversation,
+#: 2026-10-11).
+_CODE_WALK_RULE: Final = (
+    "When the learner asks for CODE to be explained -- line by line, step by step, how the "
+    "code works -- that request replaces the default shape of your answer. Put the complete "
+    'program first in "examples" (it must run as it is and print a result for a small '
+    'input). Make "answer" a walk through THAT program: one or two sentences on what it '
+    "does overall, then a numbered list that goes down the program in order. Each item "
+    "quotes one line (or a few adjacent lines) of it exactly, in backticks, and then says "
+    "in plain words what that line does and why the program needs it, using the small "
+    "input's own values where that helps. Cover every line that does work; do not skip the "
+    "loop conditions or the updates. End with the time and space cost in one line. No "
+    "other sections. "
+)
 _EXAMPLES_RULE: Final = (
     'Always add one or two SHORT programs under "examples" that show the idea in action '
     "(a second one only when it shows a different side of it): each a complete Python script "
@@ -307,6 +323,7 @@ _SYSTEM: Final = (
     + _DEPTH_RULE
     + _PATTERN_RULE
     + _ACCURACY_RULE
+    + _CODE_WALK_RULE
     + _NO_MARKERS_RULE
     + _CHECK_RULE
     + _EXAMPLES_RULE
@@ -332,6 +349,7 @@ _OPEN_SYSTEM: Final = (
     + _DEPTH_RULE
     + _PATTERN_RULE
     + _ACCURACY_RULE
+    + _CODE_WALK_RULE
     + _NO_MARKERS_RULE
     + _CHECK_RULE
     + _EXAMPLES_RULE
@@ -425,6 +443,61 @@ _MARKER_RE: Final = re.compile(
     r"|(?i:\b(?:famil(?:y|ies)|refs?|references?)\s*)\[\d+(?:\s*,\s*\d+)*\]"
     r"|(?<=[\s(])\[\d{1,2}\](?=[\s.,;:)]|$)"
 )
+
+
+_CLOSING_LABEL: Final = re.compile(r"^[*_\s]*(?:check|your turn|question)\b[*_\s]*:", re.I)
+_PLAN_LENGTH: Final = re.compile(r"\b(\d{1,2})([- \u2010\u2011]?)(week)\b", re.I)
+_WEEK_NUMBER: Final = re.compile(r"\bweeks?\s+(\d{1,2})(?:\s*[-\u2010-\u2014]\s*(\d{1,2}))?", re.I)
+
+
+def _one_closing_question(answer: str, check: str) -> str:
+    """`answer` without a closing question of its own when `check` asks one.
+
+    The reply ends with the `check` question. A model also writes one at the
+    end of its answer ("Check: what topic ...?"), and the learner was asked
+    twice, sometimes two different things (owner's conversation, 2026-10-11).
+    Only a final paragraph that is labelled as the question, or is a single
+    short question, is taken off.
+    """
+    if not check.strip():
+        return answer
+    paragraphs = answer.rstrip().split("\n\n")
+    while len(paragraphs) > 1:
+        # A rule drawn above the question ("---") is part of that paragraph.
+        last = re.sub(r"^(?:[-*_]{3,}\s*)+", "", paragraphs[-1].strip()).strip()
+        if not last:
+            paragraphs.pop()
+            continue
+        short_question = last.endswith("?") and len(last) <= 240 and "\n" not in last
+        if not (_CLOSING_LABEL.match(last) or short_question):
+            break
+        paragraphs.pop()
+    return "\n\n".join(paragraphs)
+
+
+def _plan_length_agrees(answer: str) -> str:
+    """A plan titled "12-Week" that lists weeks up to 18 is titled 18-week.
+
+    Only when the text numbers its weeks and the title's number is not the
+    last of them: the list is what the learner follows, so the title is what
+    is corrected.
+    """
+    weeks = [int(n) for match in _WEEK_NUMBER.finditer(answer) for n in match.groups() if n]
+    title = _PLAN_LENGTH.search(answer)
+    if title is None or len(weeks) < 3:
+        return answer
+    longest = max(weeks)
+    if int(title.group(1)) == longest:
+        return answer
+    start, end = title.span(1)
+    return answer[:start] + str(longest) + answer[end:]
+
+
+def _said(parsed: _Output) -> str:
+    """The answer as it is said: markers out, one closing question, a plan
+    whose title agrees with its own list."""
+    answer = strip_markers(parsed.answer.strip())
+    return _plan_length_agrees(_one_closing_question(answer, parsed.check))
 
 
 def strip_markers(text: str) -> str:
@@ -589,7 +662,7 @@ async def _grounded(
         return None
     citations = cited(references, parsed.used)
     return ConceptAnswer(
-        answer=strip_markers(parsed.answer.strip()),
+        answer=_said(parsed),
         citations=citations,
         grounded=bool(citations),
         examples=parsed.examples[:MAX_EXAMPLES],
@@ -618,7 +691,7 @@ async def _open_answer(prompt: str, llm: LLMClient, system: str = _OPEN_SYSTEM) 
     if parsed is None:
         return ConceptAnswer(answer="", citations=[], grounded=False)
     return ConceptAnswer(
-        answer=strip_markers(parsed.answer.strip()),
+        answer=_said(parsed),
         citations=[],
         grounded=False,
         examples=parsed.examples[:MAX_EXAMPLES],
