@@ -6,7 +6,8 @@ import pytest
 
 from app.agents.planner import skill_for
 from app.db.models import LearnerProfile
-from app.memory.profile import DECAY_HALF_LIFE_DAYS, PRIOR, decayed, to_view
+from app.memory.profile import DECAY_HALF_LIFE_DAYS, PRIOR, decayed, fold_event, to_view
+from app.schemas.event import LearningEventCreate
 from app.schemas.profile import LearnerProfileView
 from eval.adaptation_speed import measure
 
@@ -66,10 +67,94 @@ def test_family_aggregation_adapts_faster_than_per_pattern_keys() -> None:
     assert before == [15, 10]
 
 
+def _soft(source: str, grade: str | None = None, topic: str = "bfs") -> LearningEventCreate:
+    return LearningEventCreate.model_validate(
+        {"topic": topic, "solved": None, "evidence_source": source, "concept_grade": grade}
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "grade"),
+    [("tutor_reply", "correct"), ("concept_check", "incorrect"), ("help_needed", None)],
+)
+def test_soft_evidence_stamps_the_key_it_moved(source: str, grade: str | None) -> None:
+    """A soft event moves the family estimate; that key now has an age."""
+    skills, _errors, keys = fold_event({}, {}, {}, _soft(source, grade), _NOW)
+
+    assert keys == ["family:graphs"]
+    assert skills["family:graphs"] != PRIOR
+    # The topic key was only created at the prior: exposure, not evidence.
+    assert skills["bfs"] == PRIOR
+
+
+def test_soft_evidence_stamps_a_topic_that_already_has_real_evidence() -> None:
+    stored = {"bfs": 0.65, "family:graphs": 0.65}
+    _skills, _errors, keys = fold_event(stored, {}, {}, _soft("tutor_reply", "incorrect"), _NOW)
+
+    assert keys == ["bfs", "family:graphs"]
+
+
+def test_an_exposure_event_stamps_nothing() -> None:
+    event = LearningEventCreate(topic="bfs", solved=None)
+    skills, _errors, keys = fold_event({"family:graphs": 0.6}, {}, {}, event, _NOW)
+
+    assert keys == []
+    assert skills == {"family:graphs": 0.6, "bfs": PRIOR}
+
+
+def test_a_soft_event_that_moves_nothing_stamps_nothing_and_keeps_the_stored_value() -> None:
+    """Needing the solution never raises a skill, so on one already below what
+    it pulls toward nothing moves: no fresh stamp, and the stored value is not
+    left decayed (it would decay a second time when read)."""
+    seen_at = (_NOW - timedelta(days=1)).isoformat()
+    stored = {"family:graphs": 0.1}
+    assert decayed(0.1, seen_at, _NOW) > 0.1
+
+    skills, _errors, keys = fold_event(
+        stored, {"family:graphs": seen_at}, {}, _soft("help_needed"), _NOW
+    )
+
+    assert keys == []
+    assert skills["family:graphs"] == 0.1
+
+
+def test_soft_evidence_now_decays_and_reaches_the_focus_list() -> None:
+    """Before: an unstamped soft movement stayed full strength forever and its
+    topic could never be `current_focus` or in `suggested_focus`."""
+    stored = {"bfs": 0.65, "family:graphs": 0.65}
+    then = _NOW - timedelta(days=DECAY_HALF_LIFE_DAYS)
+    skills, _errors, keys = fold_event(stored, {}, {}, _soft("tutor_reply", "incorrect"), then)
+    seen = dict.fromkeys(keys, then.isoformat())
+
+    fresh = to_view(_profile(skills, seen), now=then)
+    aged = to_view(_profile(skills, seen), now=_NOW)
+
+    assert fresh.current_focus == "bfs"
+    assert fresh.suggested_focus == ["bfs"]
+    assert aged.skill_levels["bfs"] == pytest.approx(PRIOR + (skills["bfs"] - PRIOR) / 2)
+    assert aged.family_levels["graphs"] == pytest.approx(
+        PRIOR + (skills["family:graphs"] - PRIOR) / 2
+    )
+
+
+def test_soft_evidence_on_stale_evidence_never_raises_the_shown_skill() -> None:
+    """The soft step is blended into the DECAYED value, as an outcome is: the
+    key is re-stamped, so blending into the stored value would show a jump."""
+    seen_at = (_NOW - timedelta(days=120)).isoformat()
+    stored = {"family:graphs": 0.9}
+    shown_before = decayed(0.9, seen_at, _NOW)
+
+    skills, _errors, keys = fold_event(
+        stored, {"family:graphs": seen_at}, {}, _soft("tutor_reply", "incorrect"), _NOW
+    )
+
+    assert keys == ["family:graphs"]
+    assert skills["family:graphs"] < shown_before
+
+
 def test_a_failure_on_old_evidence_never_raises_the_shown_skill() -> None:
     """Code review P6: blend the outcome into the DECAYED value."""
     from app.memory.profile import apply_event, decay_for_outcome
-    from app.schemas.event import LearningEventCreate
 
     seen_at = (_NOW - timedelta(days=120)).isoformat()
     stored = {"trees": 0.9}

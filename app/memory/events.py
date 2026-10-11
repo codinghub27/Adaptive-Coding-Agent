@@ -20,13 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import LearningEvent
 from app.memory.conversation import get_owned_conversation
-from app.memory.profile import (
-    apply_event,
-    decay_for_outcome,
-    ensure_profile,
-    skill_keys,
-    to_view,
-)
+from app.memory.profile import ensure_profile, fold_event, to_view
 from app.schemas.event import (
     ConceptGrade,
     Difficulty,
@@ -156,8 +150,9 @@ async def record_event(
         return RecordEventResult(event=view, applied=False)
 
     now = datetime.now(UTC)
-    baseline = decay_for_outcome(profile.skill_levels, profile.skill_seen or {}, event, now)
-    skills, errors = apply_event(baseline, profile.common_errors, event)
+    skills, errors, evidence_keys = fold_event(
+        profile.skill_levels, profile.skill_seen or {}, profile.common_errors, event, now
+    )
     profile.skill_levels = skills
     profile.common_errors = errors
     if event.errors:
@@ -165,11 +160,11 @@ async def record_event(
             **(profile.common_errors_seen or {}),
             **dict.fromkeys(event.errors, now.isoformat()),
         }
-    if event.solved is not None:
+    if evidence_keys:
         stamp = now.isoformat()
         profile.skill_seen = {
             **(profile.skill_seen or {}),
-            **dict.fromkeys(skill_keys(event), stamp),
+            **dict.fromkeys(evidence_keys, stamp),
         }
     await session.flush()
 
@@ -203,10 +198,8 @@ async def rebuild_profile(session: AsyncSession, user_id: uuid.UUID) -> LearnerP
     errors_seen: dict[str, str] = {}
     for row in rows:
         event = _row_to_create(row)
-        skills = decay_for_outcome(skills, seen, event, row.created_at)
-        skills, errors = apply_event(skills, errors, event)
-        if event.solved is not None:
-            seen.update(dict.fromkeys(skill_keys(event), row.created_at.isoformat()))
+        skills, errors, evidence_keys = fold_event(skills, seen, errors, event, row.created_at)
+        seen.update(dict.fromkeys(evidence_keys, row.created_at.isoformat()))
         errors_seen.update(dict.fromkeys(event.errors, row.created_at.isoformat()))
 
     profile.skill_levels = skills

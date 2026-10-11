@@ -153,6 +153,59 @@ async def test_rebuild_profile_mixed_outcomes_matches_incremental(
     assert rebuilt.common_errors == incremental.common_errors
 
 
+def _soft_event(topic: str, source: str, grade: str | None = None) -> LearningEventCreate:
+    return LearningEventCreate.model_validate(
+        {"topic": topic, "solved": None, "evidence_source": source, "concept_grade": grade}
+    )
+
+
+async def test_soft_evidence_stamps_skill_seen_and_exposure_does_not(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    await record_event(db_session, user_id, LearningEventCreate(topic="bfs", solved=None))
+    row = await ensure_profile(db_session, user_id)
+    assert not row.skill_seen  # exposure only: nothing moved, nothing stamped
+
+    await record_event(db_session, user_id, _soft_event("bfs", "tutor_reply", "correct"))
+    row = await ensure_profile(db_session, user_id)
+    # The family estimate moved; the topic key has no real evidence yet.
+    assert set(row.skill_seen or {}) == {"family:graphs"}
+    assert row.skill_levels["family:graphs"] > 0.5
+    assert row.skill_levels["bfs"] == 0.5
+
+
+async def test_rebuild_profile_reproduces_skill_seen_for_soft_evidence(
+    db_session: AsyncSession, user_id: uuid.UUID
+) -> None:
+    events = [
+        LearningEventCreate(topic="trie", solved=None),
+        _soft_event("bfs", "tutor_reply", "correct"),
+        _soft_event("stack", "help_needed"),
+        LearningEventCreate(topic="dp", solved=False),
+        _soft_event("dp", "concept_check", "incorrect"),
+        _soft_event("heap", "tutor_reply"),  # ungraded: exposure only
+    ]
+    for event in events:
+        await record_event(db_session, user_id, event)
+
+    row = await ensure_profile(db_session, user_id, for_update=True)
+    incremental_levels = dict(row.skill_levels)
+    incremental_seen = set(row.skill_seen or {})
+    assert "dp" in incremental_seen
+    assert "trie" not in incremental_seen and "heap" not in incremental_seen
+    assert any(key.startswith("family:") for key in incremental_seen)
+
+    row.skill_levels = {"x": 0.9}
+    row.skill_seen = {}
+    await db_session.flush()
+
+    await rebuild_profile(db_session, user_id)
+    row = await ensure_profile(db_session, user_id)
+
+    assert set(row.skill_seen or {}) == incremental_seen
+    assert row.skill_levels == pytest.approx(incremental_levels)
+
+
 async def test_user_isolation_events_and_profile(
     db_session: AsyncSession, user_id: uuid.UUID, other_user_id: uuid.UUID
 ) -> None:

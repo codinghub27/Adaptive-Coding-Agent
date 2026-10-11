@@ -307,22 +307,57 @@ def decay_for_outcome(
     event: LearningEventCreate,
     now: datetime,
 ) -> dict[str, float]:
-    """`skill_levels` with this outcome event's keys decayed to `now` first.
+    """`skill_levels` with this evidence event's keys decayed to `now` first.
 
     Decay is applied at read time, so the stored value of an old key is still
     its full-strength EWMA. Blending a new outcome into THAT value (and then
     re-stamping it as fresh) could make a failure RAISE the displayed skill
     (stored 0.9 shown as ~0.53 after 120 days; one failure -> stored 0.63, shown
     0.63). The outcome is blended into what the learner was actually shown.
-    Exposure events are left alone: they move nothing.
+    Soft evidence is treated the same way, since a key it moves is re-stamped
+    too (`fold_event`). Exposure events are left alone: they move nothing.
     """
     out = dict(skill_levels)
-    if event.solved is None:
+    if event.solved is None and _soft_step(event) is None:
         return out
     for key in skill_keys(event):
         if key in out:
             out[key] = decayed(out[key], seen.get(key), now)
     return out
+
+
+def fold_event(
+    skill_levels: Mapping[str, float],
+    seen: Mapping[str, str],
+    common_errors: Mapping[str, int],
+    event: LearningEventCreate,
+    now: datetime,
+) -> tuple[dict[str, float], dict[str, int], list[str]]:
+    """Fold one event into the stored projection at `now`.
+
+    Returns the new skill levels, the new error counts, and the keys this
+    event is evidence on -- the ones whose "last evidence" time
+    (`skill_seen`) becomes `now`. An outcome event is evidence on all of its
+    keys. A soft event is evidence on the keys `apply_event` actually moved
+    (the family, and the topic once it has real evidence), found by comparing
+    before and after rather than restating that rule here. An exposure event
+    is evidence on none.
+
+    A key decayed for a soft event that then did not move it (a correct answer
+    at the ceiling) gets its stored value back: it is not re-stamped, so
+    keeping the decayed value would decay it twice at read time.
+    """
+    baseline = decay_for_outcome(skill_levels, seen, event, now)
+    skills, errors = apply_event(baseline, common_errors, event)
+    if event.solved is not None:
+        return skills, errors, skill_keys(event)
+    moved: list[str] = []
+    for key in skill_keys(event):
+        if skills[key] != baseline.get(key, PRIOR):
+            moved.append(key)
+        elif key in skill_levels:
+            skills[key] = skill_levels[key]
+    return skills, errors, moved
 
 
 def to_view(profile: LearnerProfile, now: datetime | None = None) -> LearnerProfileView:
