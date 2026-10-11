@@ -231,12 +231,11 @@ def _trace_inputs(
     choice) the message itself is recorded too, so a trace reads from what
     the learner sent to what the tutor answered. Image bytes never are.
     """
-    said: dict[str, object] = (
-        {"message": raw.text, "teaching_mode": raw.teaching_mode} if content else {}
-    )
+    said: dict[str, object] = {"message": raw.text} if content else {}
     return {
         **said,
         "has_text": bool(raw.text and raw.text.strip()),
+        "teaching_mode": raw.teaching_mode,
         "has_image": raw.image is not None,
         "language": raw.language,
         "user_id": str(user_id) if user_id is not None else None,

@@ -50,6 +50,7 @@ _EXPECTED_INPUT_KEYS = {
     "user_id",
     "conversation_id",
     "max_llm_calls",
+    "teaching_mode",
 }
 _EXPECTED_OUTPUT_KEYS = {
     "route",

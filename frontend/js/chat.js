@@ -272,6 +272,11 @@ function setTeachingMode(mode, note) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+  // The line under the title says which mode the next message is sent in. It
+  // used to read "Teaching mode" whatever was selected, which looked like a
+  // fourth mode the pill could not change.
+  const label = document.querySelector("#mode-label");
+  if (label) label.textContent = `${mode.charAt(0).toUpperCase()}${mode.slice(1)} mode`;
   if (note) showToast(note);
 }
 

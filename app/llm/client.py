@@ -66,6 +66,7 @@ _ALLOWED_TRACE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "user_id",
         "conversation_id",
         "max_llm_calls",
+        "teaching_mode",
         # Control-flow values from our own schemas. All enum-ish, numeric or
         # boolean -- none can hold learner prose. Keys that CAN (text,
         # question, problem, code, error, response, summary, title) are
