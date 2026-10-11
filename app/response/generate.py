@@ -210,6 +210,10 @@ def _patch_unproven(result: DebugResult) -> bool:
     )
 
 
+_NO_FIX_THIS_TIME = (
+    "You asked for the fixed code and I could not write one this time: the attempt came "
+    "back unusable. Nothing above is a fix. Ask again in a moment."
+)
 _PATCH_UNPROVEN_NOTE = (
     "The fix above ran in the sandbox to the end. There were no test cases to check its "
     "output against, so it is executed, not verified -- run it on an input whose answer you "
@@ -354,6 +358,14 @@ def _render_debug(
         # than leave the request unanswered. Not on an unproven run -- there
         # the reading above may have named a bug, and this would contradict it.
         found.append(_NOTHING_TO_FIX_NOTE)
+    known_broken = (
+        result.initial_verdict is not None and result.initial_verdict.status == "fail"
+    ) or any(finding.severity == "major" for finding in result.static_findings)
+    if _may_reveal_code(plan) and result.patched_code is None and known_broken:
+        # They asked for the fixed code and none was produced (the model's
+        # reply was unusable). Say so: silence, or their own code handed back
+        # as if it were the answer, reads as "this is the fix".
+        found.append(_NO_FIX_THIS_TIME)
     if (
         verdict_for_render is not None
         and verdict_for_render.status == "skipped"

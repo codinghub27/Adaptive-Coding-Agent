@@ -220,3 +220,26 @@ def test_no_fix_is_shown_to_a_learner_who_did_not_ask_for_it() -> None:
     for final in (_FAILED, _NO_TESTS):
         hinted = generate_response(result=_result(final, _FAILED), plan=_plan("hint")).text
         assert "width * current_height" not in hinted
+
+
+def test_when_no_fix_could_be_written_the_reply_says_so() -> None:
+    """Seen live with the provider rate-limited: the learner's broken code came
+    back as "your code as you shared it" and nothing said it was not a fix."""
+    none = DebugResult(
+        static_findings=[f for f in static_analysis(_MAX_AREA) if "never defined" in f.message],
+        presented_code=_MAX_AREA,
+        presented_label="This is your code as you shared it (made runnable).",
+        initial_verdict=_NO_TESTS,
+    )
+    shown = generate_response(result=none, plan=_plan("full")).text
+    assert "I could not write one this time" in shown and "Nothing above is a fix" in shown
+
+    failed = DebugResult(bug_explanation="1. the loop.", initial_verdict=_FAILED)
+    assert (
+        "I could not write one this time"
+        in generate_response(result=failed, plan=_plan("full")).text
+    )
+    # Not asked for, or nothing known to be wrong: not said.
+    assert "could not write" not in generate_response(result=failed, plan=_plan("hint")).text
+    clean = DebugResult(presented_code="x = 1", initial_verdict=_NO_TESTS)
+    assert "could not write" not in generate_response(result=clean, plan=_plan("full")).text
