@@ -90,6 +90,31 @@ def _targets(node: ast.For | ast.AsyncFor) -> frozenset[str]:
     return frozenset(n.id for n in ast.walk(node.target) if isinstance(n, ast.Name))
 
 
+_LEAVES: Final = (ast.Return, ast.Break, ast.Raise)
+
+
+def _last_before_leaving(node: ast.AST) -> frozenset[int]:
+    """The `for` statements directly in `node`'s blocks that are followed, in
+    the same block, by an unconditional `return`, `break` or `raise`.
+
+    Measured live (2026-10-11): a fallback `for x in arr: ...` followed by
+    `return None`, inside `for num in arr:`, was called O(n^2). The outer loop
+    never reaches a second pass after it.
+    """
+    found: set[int] = set()
+    for name in ("body", "orelse", "finalbody"):
+        block = getattr(node, name, None)
+        if not isinstance(block, list):
+            continue
+        statements = [item for item in block if isinstance(item, ast.stmt)]  # pyright: ignore[reportUnknownVariableType]
+        for position, statement in enumerate(statements):
+            if isinstance(statement, (ast.For, ast.AsyncFor)) and any(
+                isinstance(later, _LEAVES) for later in statements[position + 1 :]
+            ):
+                found.add(id(statement))
+    return frozenset(found)
+
+
 def _chains(node: ast.AST, roots: frozenset[str], bound: frozenset[str]) -> tuple[int, int]:
     """(how far the enclosing chain of same-input `for` loops is extended
     inside `node`, the longest such chain anywhere inside it).
@@ -99,6 +124,7 @@ def _chains(node: ast.AST, roots: frozenset[str], bound: frozenset[str]) -> tupl
     costs nothing.
     """
     extended = best = 0
+    last = _last_before_leaving(node)
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
             best = max(best, _chains(child, frozenset(), frozenset())[1])
@@ -109,7 +135,9 @@ def _chains(node: ast.AST, roots: frozenset[str], bound: frozenset[str]) -> tupl
             continue
         own = _roots(child.iter, bound)
         inner_bound = bound | _targets(child)
-        shared = own & roots
+        # A loop the enclosing one leaves right after runs once in all, not
+        # once per pass: it does not multiply the loop around it.
+        shared = frozenset[str]() if id(child) in last else own & roots
         if shared:
             further, inside = _chains(child, shared, inner_bound)
             extended, best = max(extended, 1 + further), max(best, inside)

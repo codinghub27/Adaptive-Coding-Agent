@@ -190,3 +190,27 @@ def test_a_guided_step_that_misreads_its_example_is_not_said() -> None:
     assert kept is not None and "Index 7" not in kept and kept.endswith("?")
     # The question itself was the wrong sentence: the generic rung is used instead.
     assert _usable_step('Take "aba" and start at index 1. What is at index 9?') is None
+
+
+def test_a_loop_the_outer_one_leaves_right_after_is_not_squared() -> None:
+    """Owner's conversation, 2026-10-11: this code was shown with "O(n^2)"."""
+    code = (
+        "def find_duplicate(arr):\n"
+        "    mask = 0\n"
+        "    for num in arr:\n"
+        "        if num >= 64:\n"
+        "            seen = set()\n"
+        "            for x in arr:\n"
+        "                if x in seen:\n"
+        "                    return x\n"
+        "                seen.add(x)\n"
+        "            return None\n"
+        "        bit = 1 << num\n"
+        "        if mask & bit:\n"
+        "            return num\n"
+        "        mask |= bit\n"
+        "    return None\n"
+    )
+    assert consistent_time(code, "O(n)") == "O(n)"
+    # Without the `return` after it the inner loop does run on every pass.
+    assert consistent_time(code.replace("            return None\n", ""), "O(n)") == "O(n^2)"
