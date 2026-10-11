@@ -20,6 +20,7 @@ empty. When falling back, `sections` is empty and `reveals_code` is `False`.
 
 from typing import cast
 
+from app.response.consistency import consistent_time
 from app.response.format import (
     DSA_SECTIONS_BY_ASSISTANCE,
     SAFE_FALLBACK_RESPONSE,
@@ -123,7 +124,13 @@ def _render_dsa(
         bodies["why_slow"] = (result.why_slow, None)
     if result.pseudocode:
         bodies["pseudocode"] = (render_code_block(result.pseudocode), None)
-    complexity_body = render_complexity(result.complexity_time, result.complexity_space)
+    time = result.complexity_time
+    if result.code is not None and _may_reveal_code(plan):
+        # The cost is said beside the code it describes, so it is checked
+        # against that code first (target behaviour section 15): a claim the
+        # loops rule out is corrected when it can be read off, else not made.
+        time = consistent_time(result.code, time)
+    complexity_body = render_complexity(time, result.complexity_space)
     if complexity_body:
         bodies["complexity"] = (complexity_body, None)
     # Pattern-level corpus sections (P3). A problem-specific complexity from the

@@ -65,6 +65,7 @@ from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
 from app.knowledge.ingest import chunk_corpus, load_corpus
 from app.memory.profile import family_of
+from app.response.consistency import without_trace_problems
 from app.response.corpus_sections import corpus_sections, requested_sections
 from app.response.plain_python import without_type_hints
 from app.schemas.agent_results import DSAResult, HintLevel, HintResult
@@ -429,7 +430,13 @@ def _usable_step(text: str | None) -> str | None:
     step = text.strip()
     if not step or len(step) > _MAX_STEP_CHARS or _STEP_CODE_RE.search(step):
         return None
-    return step
+    # A walk-through that misreads its own example (an index the quoted input
+    # does not have, a value that index does not hold) teaches a wrong fact:
+    # the sentence is dropped, and the step with it when its question went too.
+    sound = without_trace_problems(step)
+    if sound is None or ("?" in step and "?" not in sound):
+        return None
+    return sound
 
 
 # --------------------------------------------------------------------------
