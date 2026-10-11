@@ -117,7 +117,8 @@ from app.response.format import (
 from app.response.generate import generate_response
 from app.response.plain_python import without_type_hints
 from app.response.voice import speak
-from app.schemas.agent_results import DSAResult, ExplainResult, HintLevel
+from app.response.withhold import redact_fix
+from app.schemas.agent_results import DebugResult, DSAResult, ExplainResult, HintLevel
 from app.schemas.decision import (
     EVIDENCE_LABELS,
     Evidence,
@@ -3327,6 +3328,23 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
                 body=_ASK_FOR_THE_FIX,
             )
         )
+    if (
+        state.decision is not None
+        and state.decision.withhold
+        and not generated.reveals_code
+        and learner_code is not None
+    ):
+        # "Don't give me the code yet" is kept in code, not only asked of the
+        # model: a corrected line quoted inside a sentence is still the fix
+        # (target behaviour sections 6 and 9; audit section 14, scenario 15).
+        result = state.agent_result
+        patched = result.patched_code if isinstance(result, DebugResult) else None
+        # What the learner wrote this turn is theirs too: a fix they proposed
+        # is confirmed in their own words, not withheld from them.
+        theirs = "\n".join(part for part in (learner_code, state.input.text) if part)
+        sections = [
+            s.model_copy(update={"body": redact_fix(s.body, theirs, patched)}) for s in sections
+        ]
     revealed = route == "dsa" and generated.reveals_code
     if sections:
         # Every reply is spoken (`app.response.voice`): no `##` headers. The
