@@ -100,6 +100,94 @@ async def test_nested_loop_brute_force_reports_quadratic_time() -> None:
     assert estimate.time == "O(n^2)"
 
 
+# --------------------------------------------------------------------------
+# Recursion: the call-site count alone never claims a Big-O it cannot defend
+# --------------------------------------------------------------------------
+
+_MAX_DEPTH: Final = (
+    "def max_depth(node):\n"
+    "    if node is None:\n"
+    "        return 0\n"
+    "    left = max_depth(node.left)\n"
+    "    right = max_depth(node.right)\n"
+    "    return 1 + max(left, right)\n"
+)
+
+_NAIVE_FIB: Final = (
+    "def fib(n):\n    if n < 2:\n        return n\n    return fib(n - 1) + fib(n - 2)\n"
+)
+
+_FACTORIAL: Final = "def fact(n):\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n"
+
+_BINARY_SEARCH: Final = (
+    "def search(nums, target, lo, hi):\n"
+    "    if lo > hi:\n"
+    "        return -1\n"
+    "    mid = (lo + hi) // 2\n"
+    "    if nums[mid] == target:\n"
+    "        return mid\n"
+    "    if nums[mid] < target:\n"
+    "        lo = mid + 1\n"
+    "    else:\n"
+    "        hi = mid - 1\n"
+    "    return search(nums, target, lo, hi)\n"
+)
+
+_BINARY_SEARCH_DIRECT: Final = (
+    "def search(nums, target, lo, hi):\n"
+    "    if lo > hi:\n"
+    "        return -1\n"
+    "    mid = (lo + hi) // 2\n"
+    "    if nums[mid] < target:\n"
+    "        return search(nums, target, mid + 1, hi)\n"
+    "    return mid\n"
+)
+
+_FAST_POWER: Final = (
+    "def power(x, n):\n"
+    "    if n == 0:\n"
+    "        return 1\n"
+    "    half = power(x, n // 2)\n"
+    "    return half * half * (x if n % 2 else 1)\n"
+)
+
+
+def test_two_call_tree_recursion_is_not_called_exponential() -> None:
+    estimate = estimate_complexity(_MAX_DEPTH)
+
+    assert estimate.time != "O(2^n)"
+    assert estimate.time is None  # ambiguous from the call-site count: not stated
+    assert estimate.space == "O(n)"
+
+
+def test_naive_fibonacci_is_neither_exponential_by_guess_nor_linear() -> None:
+    estimate = estimate_complexity(_NAIVE_FIB)
+
+    assert estimate.time not in ("O(2^n)", "O(n)")
+    assert estimate.time is None
+
+
+def test_single_linear_recursion_is_still_linear() -> None:
+    assert estimate_complexity(_FACTORIAL).time == "O(n)"
+
+
+def test_halving_recursion_is_not_called_linear() -> None:
+    assert estimate_complexity(_BINARY_SEARCH_DIRECT).time is None
+    assert estimate_complexity(_FAST_POWER).time is None
+    # `lo = mid + 1` then `search(..., lo, hi)`: the halved name is one
+    # assignment removed from the call.
+    assert estimate_complexity(_BINARY_SEARCH).time is None
+
+
+async def test_run_explain_leaves_time_unstated_for_tree_recursion() -> None:
+    llm = FakeLLMClient(chat_content=_LLM_CONTENT)
+
+    run_result = await run_explain(_state(_MAX_DEPTH), _runtime(llm))
+
+    assert run_result.result.complexity_time is None
+    assert run_result.result.complexity_space == "O(n)"
+
+
 async def test_nested_loop_brute_force_run_explain_reports_quadratic_time() -> None:
     llm = FakeLLMClient(chat_content=_LLM_CONTENT)
 

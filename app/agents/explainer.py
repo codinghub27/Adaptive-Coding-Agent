@@ -309,16 +309,66 @@ def _has_aux_allocation(tree: ast.Module) -> bool:
     return any(isinstance(node, _AUX_LITERAL_TYPES) for node in ast.walk(tree))
 
 
-def _estimate_time(max_depth: int, recursive_calls: int) -> str | None:
+def _is_halving(node: ast.AST) -> bool:
+    """`x // 2` or `x >> 1`."""
+    if not isinstance(node, ast.BinOp) or not isinstance(node.right, ast.Constant):
+        return False
+    if isinstance(node.op, ast.FloorDiv):
+        return node.right.value == 2
+    return isinstance(node.op, ast.RShift) and node.right.value == 1
+
+
+def _recursion_halves(func: _FuncDef) -> bool:
+    """Whether a self-recursive call in `func` is passed a halved value: an
+    argument containing `// 2` / `>> 1`, or a name assigned from one, however
+    many assignments removed (`mid = (lo + hi) // 2`, `lo = mid + 1`, then
+    `search(..., lo, hi)`).
+
+    Name-based and flow-insensitive, like `_self_recursive_call_count`: it
+    only ever turns a claimed O(n) into "unknown", never into a different
+    claim, so a false positive costs a missing estimate and nothing else.
+    """
+    assigns = [node for node in ast.walk(func) if isinstance(node, ast.Assign)]
+    halved_names: set[str] = set()
+    grew = True
+    while grew:
+        grew = False
+        for node in assigns:
+            if not any(
+                _is_halving(sub) or (isinstance(sub, ast.Name) and sub.id in halved_names)
+                for sub in ast.walk(node.value)
+            ):
+                continue
+            for target in node.targets:
+                names = {sub.id for sub in ast.walk(target) if isinstance(sub, ast.Name)}
+                if not names <= halved_names:
+                    halved_names |= names
+                    grew = True
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != func.name:
+            continue
+        for arg in [*node.args, *(keyword.value for keyword in node.keywords)]:
+            for sub in ast.walk(arg):
+                if _is_halving(sub) or (isinstance(sub, ast.Name) and sub.id in halved_names):
+                    return True
+    return False
+
+
+def _estimate_time(max_depth: int, recursive_calls: int, halving: bool = False) -> str | None:
     if recursive_calls >= 2:
-        # Heuristic: multiple self-recursive call sites in one function body suggests
-        # branching recursion (e.g. naive Fibonacci) -- exponential is a defensible guess,
-        # though it will overstate memoized/branch-and-bound recursion.
-        return "O(2^n)"
+        # Two or more self-recursive call sites are ambiguous from the count alone:
+        # a tree traversal or divide-and-conquer (O(n), O(n log n)) has the same
+        # shape as naive Fibonacci (O(2^n)). Unknown: be honest, don't guess.
+        return None
     if recursive_calls == 1:
+        if halving:
+            # The recursion narrows by half (binary search, fast power): not linear
+            # depth, and what each call costs is not known here. Unknown.
+            return None
         # Heuristic: a single self-recursive call site is treated as linear-depth
-        # recursion -- this misclassifies logarithmic recursion (e.g. binary search)
-        # as O(n); a known, documented limitation.
+        # recursion.
         return "O(n)"
     return _LOOP_TIME_BY_DEPTH.get(max_depth)  # None beyond depth 3: be honest, don't guess
 
@@ -344,8 +394,10 @@ def estimate_complexity(code: str | None) -> ComplexityEstimate:
     `_max_loop_depth`/`_self_recursive_call_count` for the exact rules and
     their documented limitations. Returns `(None, ...)` for time when loop
     nesting exceeds this heuristic's depth-3 table and there is no
-    recursion -- honest about not guessing beyond what it can defend.
-    Returns `(None, None)` outright for unparseable or empty code.
+    recursion, when a function calls itself from two or more sites (a tree
+    traversal and naive Fibonacci look the same), or when a single
+    recursion halves its input -- honest about not guessing beyond what it
+    can defend. Returns `(None, None)` outright for unparseable or empty code.
     """
     if code is None or not code.strip():
         return ComplexityEstimate(time=None, space=None)
@@ -354,12 +406,14 @@ def estimate_complexity(code: str | None) -> ComplexityEstimate:
     except SyntaxError:
         return ComplexityEstimate(time=None, space=None)
     max_depth = _max_loop_depth(tree)
-    recursive_calls = max(
-        (_self_recursive_call_count(func) for func in _all_function_defs(tree)), default=0
+    funcs = _all_function_defs(tree)
+    recursive_calls = max((_self_recursive_call_count(func) for func in funcs), default=0)
+    halving = any(
+        _self_recursive_call_count(func) == 1 and _recursion_halves(func) for func in funcs
     )
     has_aux = _has_aux_allocation(tree)
     return ComplexityEstimate(
-        time=_estimate_time(max_depth, recursive_calls),
+        time=_estimate_time(max_depth, recursive_calls, halving),
         space=_estimate_space(max_depth, recursive_calls, has_aux),
     )
 
