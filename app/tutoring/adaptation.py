@@ -207,6 +207,14 @@ class Adaptation(APIModel):
             }
         )
 
+    def without_skip(self) -> "Adaptation":
+        """This adaptation for a reply that changed its presentation but went
+        on to the next question in order: nothing was skipped."""
+        if not self.skip_ahead:
+            return self
+        notes = [note for note in self.notes if note != _NOTE_SKIP]
+        return self.model_copy(update={"skip_ahead": False, "notes": notes})
+
     def after_a_miss(self) -> "Adaptation":
         """This adaptation once the agent's own reading of the message found a
         miss the first reading had not: the switch it was told to make."""

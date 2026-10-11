@@ -275,6 +275,18 @@ def test_a_note_is_kept_only_for_what_the_reply_did() -> None:
     assert len(kept.notes) == 1 and "Starting smaller" in kept.notes[0]  # the pitch is real
 
 
+def test_a_written_reply_to_a_graded_answer_skipped_nothing() -> None:
+    """It follows the representation it was given, but the question after it
+    is the bank's next one in order (item F)."""
+    skipping = _adapt("correct", ["correct"])
+    assert skipping.skip_ahead is True
+    said = skipping.as_delivered(by_tutor_step=True).without_skip()
+    assert (said.skip_ahead, said.adapted) == (False, False)
+
+    drawn = _adapt("stuck", ["stuck"])
+    assert drawn.without_skip() == drawn  # the changed presentation stays, with its note
+
+
 def test_the_link_is_found_whatever_hyphen_the_model_typed() -> None:
     from app.graph.nodes import _plain_hyphens  # pyright: ignore[reportPrivateUsage]
 

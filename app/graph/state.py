@@ -190,6 +190,9 @@ class AgentState(BaseModel):
     grade_lesson: str | None = None
     assistance_before: AssistanceLevel | None = None
     grade_handoff: bool = False
+    #: The reply to this turn's graded answer was written by the tutor from
+    #: the learner's own words (`app.tutoring.step`), not the bank's sentence.
+    grade_step_written: bool = False
     practice: PracticeRecord | None = None
     submitted_code: bool = False
     #: The full solution was handed over this turn, for the first time on this
@@ -242,6 +245,7 @@ class AgentStateUpdate(TypedDict, total=False):
     grade_lesson: str | None
     assistance_before: AssistanceLevel | None
     grade_handoff: bool
+    grade_step_written: bool
     practice: PracticeRecord | None
     submitted_code: bool
     help_needed: bool

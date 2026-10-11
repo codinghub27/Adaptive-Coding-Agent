@@ -2546,6 +2546,7 @@ async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> Age
         )
         if said is not None:
             feedback = said
+            update["grade_step_written"] = True
     return {
         **update,
         "answer_grade": grade,
@@ -3455,7 +3456,13 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         by_tutor_step = not generated.reveals_code and (
             _guided_hint(state) or (route == "explain" and grade is None)
         )
-        delivered = state.adaptation.as_delivered(by_tutor_step=by_tutor_step)
+        # A written reply to a graded answer followed the representation it
+        # was given; the question after it is still the bank's next one, so
+        # it skipped nothing.
+        written = state.grade_step_written and not generated.reveals_code
+        delivered = state.adaptation.as_delivered(by_tutor_step=by_tutor_step or written)
+        if written and not by_tutor_step:
+            delivered = delivered.without_skip()
         opening = state.problem_relation == "new" or not state.recent_context
         missed = state.decision is not None and state.decision.evidence in STRUGGLE
         if by_tutor_step and missed and not opening:
