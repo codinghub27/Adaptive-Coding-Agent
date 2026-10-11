@@ -2585,8 +2585,12 @@ def _step_brief(
         follows.append(f"{item.name}. {item.correct_model} Small example: {item.example}")
     if reacted.lesson:
         follows.append(reacted.lesson)
+    next_answers: list[str] = []
     if next_pending is not None:
-        follows.append(f"Your next question: {next_pending.question}")
+        next_answers = [
+            *next_pending.accepted_answers,
+            *(word for concept in next_pending.expected_concepts for word in concept.keywords),
+        ]
     problem = state.active_problem.problem.problem if state.active_problem is not None else None
     return StepBrief(
         verdict=grade.grade,
@@ -2594,6 +2598,8 @@ def _step_brief(
         reply=reply,
         get_across=feedback,
         continues_with="\n".join(follows),
+        next_question=next_pending.question if next_pending is not None else "",
+        next_answers=tuple(next_answers),
         problem=problem,
         turn_context=turn_context(
             update.get("decision", state.decision),

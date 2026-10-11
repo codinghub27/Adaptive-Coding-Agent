@@ -137,3 +137,26 @@ async def test_a_graded_turn_falls_back_to_the_banks_sentence() -> None:
     )
 
     assert update.get("grade_feedback") == spec.on_correct
+
+
+def test_a_step_may_not_answer_the_next_question_first() -> None:
+    """Measured live: "store them in a constant-time lookup structure" ahead of
+    "which data structure gives that lookup?"."""
+    brief = _brief(
+        next_question="Which Python data structure gives that fast lookup?",
+        next_answers=("dictionary", "hash map", "set"),
+    )
+    assert acceptable(_WRITTEN, "correct", brief)
+    assert not acceptable("Right idea. A dictionary makes that lookup instant.", "correct", brief)
+    # A word the learner already used is theirs to hear back.
+    said = _brief(reply="keep them in a dictionary", next_answers=("dictionary",))
+    assert acceptable("Keeping them in a dictionary is the right instinct.", "correct", said)
+
+
+async def test_the_next_question_is_shown_as_something_not_to_write() -> None:
+    llm = _said(_WRITTEN)
+    await spoken_step(_brief(next_question="Where would you keep them?"), llm)
+
+    user = llm.chat_calls[0][1].content
+    assert "do not write it, answer it or hint at its answer" in user
+    assert "Where would you keep them?" in user
