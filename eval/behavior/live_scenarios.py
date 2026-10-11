@@ -138,6 +138,46 @@ def no_refusal(turn: Turn) -> bool:
     )
 
 
+def states_the_fix(turn: Turn, *spellings: str) -> bool:
+    """One of `spellings` is in the reply, however it is spaced."""
+    flat = "".join(text(turn).lower().split())
+    return any("".join(spelling.lower().split()) in flat for spelling in spellings)
+
+
+def has_code_block(turn: Turn) -> bool:
+    return "```python" in text(turn) or code_shown(turn)
+
+
+def _bank_sentences() -> frozenset[str]:
+    """Every fixed reply sentence in the curated bank (item F)."""
+    from app.tutoring.bank import BANK_PATH
+
+    bank = json.loads(BANK_PATH.read_text(encoding="utf-8"))
+    out: set[str] = set()
+    for spec in bank["questions"].values():
+        for field_name in ("on_correct", "on_incorrect", "scaffold"):
+            sentence = str(spec.get(field_name) or "").strip()
+            if len(sentence) >= 30:
+                out.add(sentence)
+    return frozenset(out)
+
+
+def written_not_looked_up(turn: Turn) -> bool:
+    """A graded reply is not one of the bank's fixed sentences."""
+    return not any(sentence in text(turn) for sentence in _bank_sentences())
+
+
+def no_dump(turn: Turn) -> bool:
+    """No retrieved material nobody asked for (target behaviour section 25)."""
+    return not has(
+        turn,
+        "how to recognize this pattern",
+        "the spreadsheet's cue",
+        "common mistakes to avoid",
+        "a brute-force approach",
+    )
+
+
 def one_question(turn: Turn) -> bool:
     """A tutoring step asks at most two things (one question, maybe a lead-in)."""
     return text(turn).count("?") <= 2
@@ -195,6 +235,14 @@ FRAGMENT: Final = (
     "                    right_max = height[right]\n                else:\n"
     "                    trapped_water += right_max - height[right]\n"
     "                right += 1\n\n        return trapped_water"
+)
+#: `docs/current-behavior.md`: the learner's own (correct) method body, pasted.
+FRAGMENT_OK: Final = (
+    "give correct code of this.\nheight = [0,1,0,2,1,0,1,3,2,1,2,1]\n\n```python\n"
+    + FRAGMENT.split("\n", 2)[2]
+    .replace("left -= 1", "left += 1")
+    .replace("right += 1", "right -= 1")
+    + "\n```"
 )
 MAX_DEPTH: Final = (
     "I'm solving Maximum Depth of Binary Tree. My code gives the wrong answer. Explain it, "
@@ -256,6 +304,13 @@ def scenarios() -> list[Scenario]:
                     "no badge for what the reply did not do",
                     lambda t: not any("worked example" in n for n in adaptations(t[3])),
                 ),
+                # ADDED 2026-10-11 (item F): the reply to a graded answer is the
+                # tutor's own, not the bank's fixed sentence.
+                (
+                    "t2, t3 the reply is written, not looked up",
+                    lambda t: written_not_looked_up(t[1]) and written_not_looked_up(t[2]),
+                ),
+                ("t2, t3 still one question", lambda t: one_question(t[1]) and one_question(t[2])),
             ],
             strict=("t1 no full code",),
         ),
@@ -547,9 +602,20 @@ def scenarios() -> list[Scenario]:
                 ("t1 their code is read", lambda t: t[0]["route"] == "debug"),
                 ("t1 names the missing node", lambda t: has(t[0], "current node", "1 +", "+ 1")),
                 ("t1 no final code, as asked", lambda t: not code_shown(t[0])),
+                # TIGHTENED 2026-10-11 (item D): any spacing, and the reply to
+                # "Add 1." may not state the line either (reference 6 says
+                # "Try changing only the return statement").
                 (
                     "t1 the fix line is not stated either",
-                    lambda t: not has(t[0], "1 + max(", "max(left, right) + 1"),
+                    lambda t: not states_the_fix(t[0], "1 + max(", "max(left, right) + 1"),
+                ),
+                (
+                    "t2 the fix line is still theirs to write",
+                    lambda t: not states_the_fix(t[1], "1 + max(", "max(left, right) + 1"),
+                ),
+                (
+                    "t1 the diagnosis is still said",
+                    lambda t: has(t[0], "current node", "node itself", "root"),
                 ),
                 ("t1 asks them to make the fix", lambda t: "?" in text(t[0])),
                 (
@@ -732,6 +798,46 @@ def scenarios() -> list[Scenario]:
             ],
             shared_account=False,
             strict=("no type hints in any code",),
+        ),
+        Scenario(
+            "22",
+            "Owner: docs/current-behavior.md, asking for the code four ways, then a buggy paste",
+            "balanced",
+            [
+                FRAGMENT_OK,
+                "give full code and tell me where is the bug",
+                "give python code",
+                "i asked for python code",
+                FRAGMENT,
+            ],
+            [
+                ("t1 code on the first ask", lambda t: has_code_block(t[0]) and no_refusal(t[0])),
+                ("t2 code, not a refusal", lambda t: has_code_block(t[1]) and no_refusal(t[1])),
+                ("t3 code, not another hint", lambda t: has_code_block(t[2]) and no_refusal(t[2])),
+                (
+                    "t4 code, not a greeting",
+                    lambda t: has_code_block(t[3]) and not has(t[3], "share a problem statement"),
+                ),
+                ("no corpus dump on any turn", lambda t: all(no_dump(x) for x in t)),
+                (
+                    "no verdict is invented",
+                    lambda t: all(
+                        verdict(x).get("status") == "pass" or not has(x, "verified in the sandbox")
+                        for x in t[:4]
+                    ),
+                ),
+                (
+                    "t5 the paste is not blamed",
+                    lambda t: not has(t[4], "indentation", "unindent", "syntax error"),
+                ),
+                (
+                    "t5 the real bug is named",
+                    lambda t: has(t[4], "left -= 1", "right += 1", "left += 1", "right -= 1"),
+                ),
+                ("t5 a real verdict on their code", lambda t: learner_verdict(t[4]) == "fail"),
+            ],
+            shared_account=False,
+            strict=("t2 code, not a refusal", "t3 code, not another hint"),
         ),
         Scenario(
             "8",
