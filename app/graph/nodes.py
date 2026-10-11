@@ -160,6 +160,7 @@ from app.tutoring.adaptation import (
     Pitch,
     adapt,
     conversation_block,
+    turn_context,
     tutor_state_block,
 )
 from app.tutoring.bank import (
@@ -179,7 +180,9 @@ from app.tutoring.grader import (
 )
 from app.tutoring.misconceptions import detect_in_code, get_misconception, is_catalog_id
 from app.tutoring.progression import requested_difficulty, session_difficulty
+from app.tutoring.step import StepBrief, spoken_step
 from app.tutoring.turn import (
+    Reacted,
     execution_lines,
     next_progress,
     question_for_turn,
@@ -2533,6 +2536,16 @@ async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> Age
             # reply twice under a badge claiming it had been "drawn out").
             # The grade stands; the next step is the solver's.
             handoff, feedback, next_pending = True, "", None
+    if not handoff:
+        # The bank decided the move and the next question; the tutor says the
+        # reply itself, from what the learner actually wrote. The bank's
+        # sentence is what is said when that fails (`app.tutoring.step`).
+        said = await spoken_step(
+            _step_brief(state, update, grade, reacted, feedback, next_pending, reply or ""),
+            runtime.context.llm,
+        )
+        if said is not None:
+            feedback = said
     return {
         **update,
         "answer_grade": grade,
@@ -2552,6 +2565,41 @@ async def grade_answer(state: AgentState, runtime: Runtime[GraphContext]) -> Age
             errors=[e for e in errors if e is not None],
         ),
     }
+
+
+def _step_brief(
+    state: AgentState,
+    update: AgentStateUpdate,
+    grade: AnswerGrade,
+    reacted: Reacted,
+    feedback: str,
+    next_pending: PendingCheck | None,
+    reply: str,
+) -> StepBrief:
+    """What the tutor's own reply to a graded answer is written from."""
+    pending = state.pending_check
+    follows: list[str] = []
+    if reacted.misconception is not None:
+        item = reacted.misconception
+        follows.append(f"{item.name}. {item.correct_model} Small example: {item.example}")
+    if reacted.lesson:
+        follows.append(reacted.lesson)
+    if next_pending is not None:
+        follows.append(f"Your next question: {next_pending.question}")
+    problem = state.active_problem.problem.problem if state.active_problem is not None else None
+    return StepBrief(
+        verdict=grade.grade,
+        asked=pending.question if pending is not None else "",
+        reply=reply,
+        get_across=feedback,
+        continues_with="\n".join(follows),
+        problem=problem,
+        turn_context=turn_context(
+            update.get("decision", state.decision),
+            update.get("adaptation", state.adaptation),
+            _recent_exchange(state),
+        ),
+    )
 
 
 _REVIEW_INTENTS: Final[frozenset[Intent]] = frozenset({Intent.CODE_REVIEW, Intent.OPTIMIZATION})
