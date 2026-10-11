@@ -633,7 +633,7 @@ async def generate_complexity_rationale(
         ChatMessage(role="user", content=user_block),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=300)
+        result = await llm.chat(messages, temperature=0.2, max_tokens=900)
     except LLMError:
         return None
     return _parse_complexity_rationale(result.content)

@@ -417,7 +417,7 @@ async def _judge(check: PendingCheck, reply: str, llm: LLMClient) -> AnswerGrade
         ChatMessage(role="user", content=_judge_prompt(check, reply)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.0, max_tokens=300)
+        result = await llm.chat(messages, temperature=0.0, max_tokens=900)
         raw = extract_json_object(result.content)
         parsed = _JudgeOutput.model_validate(json.loads(raw)) if raw is not None else None
     except (LLMError, json.JSONDecodeError, ValidationError):

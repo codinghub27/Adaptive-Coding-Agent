@@ -80,7 +80,7 @@ __all__ = [
     "run_debug",
 ]
 
-MAX_PATCH_ATTEMPTS: Final = 2
+MAX_PATCH_ATTEMPTS: Final = 3
 """Hard cap on patch+re-verify cycles per run. Impossible to exceed: the
 conditional edge out of `verify_final` only ever routes back to `patch` while
 `attempts < MAX_PATCH_ATTEMPTS`."""
@@ -126,6 +126,8 @@ class DebugState(TypedDict, total=False):
     has_established_failure: bool
     bug_location: BugLocation | None
     bug_explanation: str | None
+    #: No failure was proven, but the reading named a definite bug.
+    reading_found_bug: bool
     citations: list[str]
 
     patched_code: str | None
@@ -322,6 +324,7 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     )
     return {
         "bug_explanation": reading.explanation,
+        "reading_found_bug": reading.found_bug,
         "citations": reading.citations,
         "inferred_approach": reading.approach,
     }
@@ -350,7 +353,7 @@ async def _present(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     code = state.get("code")
     if not state.get("wants_code", False) or code is None:
         return {}
-    if state.get("has_established_failure", False):
+    if state.get("has_established_failure", False) or state.get("patched_code"):
         return {}  # the fix is what gets shown
     problem = state.get("problem")
     initial = state.get("initial_verdict")
@@ -377,6 +380,23 @@ async def _present(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
     return update
 
 
+def _fix_asked_for_a_read_bug(state: DebugState) -> bool:
+    """The learner asked for the fixed code, the sandbox proved nothing (there
+    were no test cases, and broken code can still run without an error), and
+    the reading named a definite bug.
+
+    Before this the reply was their own code handed back as "your code as you
+    shared it": a loop that never runs fails no test that does not exist
+    (owner's conversation, 2026-10-11). The fix is written once, run, and
+    shown as executed, not verified.
+    """
+    return (
+        state.get("wants_code", False)
+        and state.get("reading_found_bug", False)
+        and state.get("attempts", 0) == 0
+    )
+
+
 async def _patch(state: DebugState, runtime: Runtime[GraphContext]) -> DebugState:
     """LLM call #3 (repeated up to `MAX_PATCH_ATTEMPTS`): produce a candidate fix.
 
@@ -384,7 +404,7 @@ async def _patch(state: DebugState, runtime: Runtime[GraphContext]) -> DebugStat
     source of truth for whether this attempt actually worked.
     """
     attempts = state.get("attempts", 0)
-    if not state.get("has_established_failure", False):
+    if not state.get("has_established_failure", False) and not _fix_asked_for_a_read_bug(state):
         return {"patched_code": None}
     problem = state.get("problem")
     if problem is None:

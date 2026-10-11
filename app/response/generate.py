@@ -197,6 +197,36 @@ def _patch_ran_clean(result: DebugResult) -> bool:
     )
 
 
+def _patch_unproven(result: DebugResult) -> bool:
+    """Nothing was proven either way: there were no test cases, the reading
+    named a bug, and the fix then ran to completion."""
+    initial, final = result.initial_verdict, result.final_verdict
+    return (
+        initial is not None
+        and initial.status == "inconclusive"
+        and final is not None
+        and final.status == "inconclusive"
+        and final.category == "no_tests"
+    )
+
+
+_PATCH_UNPROVEN_NOTE = (
+    "The fix above ran in the sandbox to the end. There were no test cases to check its "
+    "output against, so it is executed, not verified -- run it on an input whose answer you "
+    "know."
+)
+
+
+def _patch_not_verified(result: DebugResult) -> str:
+    """The label over a fix the sandbox did not pass."""
+    final = result.final_verdict
+    reason = final.summary if final is not None and final.summary else "it could not be run"
+    return (
+        "**Not verified in sandbox.** This is the best fix I have, and it did not pass: "
+        f"{reason}. Treat it as a starting point, not as the answer."
+    )
+
+
 def _debug_next_steps(result: DebugResult) -> list[str]:
     has_content = bool(
         result.static_findings
@@ -259,8 +289,15 @@ def _render_debug(
             sections.append(section)
 
     ran_clean = _patch_ran_clean(result)
-    if result.patched_code is not None and (result.fixed or ran_clean) and _may_reveal_code(plan):
-        patch_section = _section("patch", render_code_block(result.patched_code, language="python"))
+    unproven = _patch_unproven(result)
+    if result.patched_code is not None and _may_reveal_code(plan):
+        # They asked for the fixed code, so it is shown whatever the sandbox
+        # said about it (owner decisions A-10, A-15): a fix that could not be
+        # verified carries that label and the reason, never silence.
+        body = render_code_block(result.patched_code, language="python")
+        if not (result.fixed or ran_clean or unproven):
+            body = f"{_patch_not_verified(result)}\n\n{body}"
+        patch_section = _section("patch", body)
         if patch_section is not None:
             sections.append(patch_section)
 
@@ -306,6 +343,8 @@ def _render_debug(
         )
     elif ran_clean and result.patched_code is not None and _may_reveal_code(plan):
         found.append(_PATCH_RAN_CLEAN_NOTE)
+    elif unproven and result.patched_code is not None and _may_reveal_code(plan):
+        found.append(_PATCH_UNPROVEN_NOTE)
     elif (
         _may_reveal_code(plan)
         and result.initial_verdict is not None

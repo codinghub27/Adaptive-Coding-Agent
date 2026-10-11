@@ -487,7 +487,7 @@ async def _style_findings(
         ChatMessage(role="user", content=_review_user_block(problem, code, static_findings)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.2, max_tokens=800)
+        result = await llm.chat(messages, temperature=0.2, max_tokens=1800)
     except LLMError:
         return []
     parsed = _parse_findings(result.content)
@@ -519,7 +519,7 @@ async def _advisory_findings(
         ChatMessage(role="user", content=user),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.3, max_tokens=900)
+        result = await llm.chat(messages, temperature=0.3, max_tokens=1800)
     except LLMError:
         return [], []
     parsed = _parse_findings(result.content)

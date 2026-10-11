@@ -33,6 +33,7 @@ LLM calls can never mark anything "fixed".
 from __future__ import annotations
 
 import ast
+import builtins
 import builtins as _builtins_module
 import json
 import re
@@ -367,7 +368,55 @@ def static_analysis(code: str | None) -> list[StaticFinding]:
         return _tree_sitter_findings(code, exc)
     visitor = _StaticVisitor()
     visitor.visit(tree)
-    return visitor.findings
+    return [*visitor.findings, *_undefined_names(tree)]
+
+
+def _undefined_names(tree: ast.Module) -> list[StaticFinding]:
+    """Names that are read but defined nowhere in the code: not assigned, not
+    a parameter, not imported, not a function or class, not a builtin.
+
+    `max_water = max(water, current_water)` raises NameError only when that
+    line runs; behind a loop that never executes it is invisible to the
+    sandbox, and it was not reported (owner's conversation, 2026-10-11).
+    Whole-module and scope-insensitive on purpose: a name bound ANYWHERE is
+    treated as defined, so this never reports a name that exists.
+    """
+    bound: set[str] = set(dir(builtins))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*":
+                    return []  # anything could be defined
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+        elif isinstance(node, ast.MatchAs) and node.name:
+            bound.add(node.name)
+    findings: list[StaticFinding] = []
+    reported: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+            continue
+        if node.id in bound or node.id in reported:
+            continue
+        reported.add(node.id)
+        findings.append(
+            StaticFinding(
+                tool="ast",
+                message=f"'{node.id}' is used but never defined (NameError when this line runs)",
+                lineno=node.lineno,
+                severity="major",
+            )
+        )
+    return sorted(findings, key=lambda finding: finding.lineno or 0)
 
 
 # --------------------------------------------------------------------------
@@ -422,6 +471,14 @@ _UNTRUSTED_PREAMBLE: Final = (
     "itself (already-established sandbox facts and prior analysis), not the learner.\n\n"
 ) + TURN_CONTEXT_RULE
 
+#: Output budgets. The model reasons before it writes and that reasoning is
+#: counted: at 500 a reading came back empty, and at 1200 so did a whole
+#: corrected program, so a learner who asked for the fixed code got none
+#: (owner's conversation, 2026-10-11; the same was measured for the tutor's
+#: step at 320). These are ceilings, not targets.
+_SHORT_TOKENS: Final = 900
+_READING_TOKENS: Final = 1800
+_CODE_TOKENS: Final = 3500
 _MAX_FIELD_CHARS: Final = 2_000
 _MAX_CODE_CHARS: Final = 4_000
 _MAX_FINDINGS_IN_PROMPT: Final = 8
@@ -501,6 +558,7 @@ class _BugExplanationOutput(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
     bug_explanation: str | None = None
     inferred_approach: str | None = None
+    found_bug: bool = False
     used: list[int] = Field(default_factory=list[int])
 
 
@@ -521,6 +579,8 @@ class CodeReading:
     explanation: str | None = None
     citations: list[str] = field(default_factory=list[str])
     approach: str | None = None
+    #: An unproven reading (no sandbox failure) that named a definite bug.
+    found_bug: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,7 +659,7 @@ async def infer_approach(problem: StructuredInput, llm: LLMClient) -> str | None
         result = await llm.chat(
             messages,
             temperature=0.2,
-            max_tokens=300,
+            max_tokens=_SHORT_TOKENS,
         )
     except LLMError:
         return None
@@ -609,10 +669,16 @@ async def infer_approach(problem: StructuredInput, llm: LLMClient) -> str | None
 _EXPLAIN_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "A sandbox has already run the learner's code and established that it fails; that failure is "
     "FACT, not something for you to re-judge or contradict. Using the trusted <debug_context> "
-    "(the already-established failure details) plus the learner's problem/code, explain in 2-4 "
-    "sentences why the bug happens. Name the exact bug: quote the one line or expression that "
+    "(the already-established failure details) plus the learner's problem/code, explain why "
+    "the bug happens. Name the exact bug: quote the one line or expression that "
     "is wrong, trace it on the failing case to show the value it produces, and say what it "
-    'should refer to instead. Write TO the learner ("you"), and do not rewrite their function. '
+    "should refer to instead. Then read the REST of the code: the failing case shows only the "
+    "first thing that goes wrong, and fixing it alone often leaves the code broken. Report "
+    "EVERY definite bug you find -- a wrong condition, a wrong operator, a name that is never "
+    "defined, a wrong update -- as a numbered list, one bug per item, each with its line "
+    "quoted and one sentence on why it is wrong. Never pad the list with style remarks or "
+    "things that merely could be written differently. "
+    'Write TO the learner ("you"), and do not rewrite their function. '
     "Never claim the code is correct or that it passes -- the "
     "failure is already established. If trusted <reference_notes> are provided, use the ones "
     "that genuinely apply (e.g. a common mistake of this pattern) and list their numbers in "
@@ -626,13 +692,17 @@ _READ_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "cases to check it against or could not run it. Do NOT assume the code is wrong. Read it "
     "line by line and trace it on one small input of your own. If you find a definite bug, "
     "name it: quote the one line or expression that is wrong, show the value it produces on "
-    "your input, and say what it should be instead. If you find none, say plainly that you "
+    "your input, and say what it should be instead. Report EVERY definite bug you find, as a "
+    "numbered list, one bug per item -- code that runs without an error can still be wrong on "
+    "every line that matters (a loop whose condition is never true hides everything inside "
+    "it). If you find none, say plainly that you "
     "found no bug, and name the input you traced and the result it gives. Never invent a bug "
-    'to have something to report. Write TO the learner ("you") in 2-4 sentences, and do not '
+    'to have something to report. Write TO the learner ("you"), and do not '
     "rewrite their function. If trusted <reference_notes> are provided, use the ones that "
     'genuinely apply and list their numbers in "used"; never cite a note you did not use. '
+    'Set "found_bug" to true only when you named at least one definite bug. '
     "Reply with ONLY a single JSON object and nothing else: "
-    '{"bug_explanation": "<your reading>", "used": [<note numbers>]}'
+    '{"bug_explanation": "<your reading>", "found_bug": <true|false>, "used": [<note numbers>]}'
 )
 
 
@@ -748,7 +818,7 @@ async def annotate_code(problem: StructuredInput, llm: LLMClient) -> AnnotatedCo
         ChatMessage(role="user", content=_user_input_block(problem)),
     ]
     try:
-        result = await llm.chat(messages, temperature=0.0, max_tokens=1400)
+        result = await llm.chat(messages, temperature=0.0, max_tokens=_CODE_TOKENS)
     except LLMError:
         return None
     json_str = extract_json_object(result.content)
@@ -823,7 +893,7 @@ async def read_code(
         result = await llm.chat(
             messages,
             temperature=0.2,
-            max_tokens=600 if name_approach else 500,
+            max_tokens=_READING_TOKENS,
         )
     except LLMError:
         return CodeReading()
@@ -838,6 +908,7 @@ async def read_code(
         explanation=_none_if_blank(parsed.bug_explanation),
         citations=cited(references, parsed.used),
         approach=_none_if_blank(parsed.inferred_approach),
+        found_bug=parsed.found_bug and _none_if_blank(parsed.bug_explanation) is not None,
     )
 
 
@@ -879,11 +950,15 @@ async def explain_bug(
 
 
 _PATCH_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
-    "A sandbox has already established that the learner's code fails (see <debug_context>). "
+    "The learner's code is wrong: a sandbox established that it fails, or a careful reading "
+    "found a definite bug (see <debug_context>). "
     "Do not add type hints (parameter or return annotations) that the learner's own code "
     "does not have. "
-    "Produce a corrected, complete, runnable version of the learner's code that fixes the "
-    "established bug while preserving their overall approach as much as possible. If a previous "
+    "Produce a corrected, complete, runnable version of the learner's code that fixes EVERY "
+    "bug in it -- the one in <debug_context> is only the first thing that went wrong; read "
+    "each line and fix a wrong condition, a wrong operator or an undefined name wherever it "
+    "is -- while preserving their overall approach and their names as much as possible. "
+    "If a previous "
     "patch attempt is included and it still failed, try a different fix. Reply with ONLY a "
     'single JSON object and nothing else: {"patched_code": "<the complete corrected source>"}'
 )
@@ -924,7 +999,7 @@ async def patch_code(
         result = await llm.chat(
             messages,
             temperature=0.2,
-            max_tokens=1200,
+            max_tokens=_CODE_TOKENS,
         )
     except LLMError:
         return None

@@ -118,13 +118,28 @@ def test_debug_patch_only_revealed_at_full_when_fixed(level: AssistanceLevel) ->
 
 
 @pytest.mark.parametrize("level", ASSISTANCE_ORDER)
-def test_debug_patch_never_revealed_when_not_fixed(level: AssistanceLevel) -> None:
+def test_an_unverified_patch_is_shown_only_when_asked_for_and_says_so(
+    level: AssistanceLevel,
+) -> None:
+    """CHANGED 2026-10-11. This pinned "a patch that did not pass is never
+    shown", at every level. At `full` -- the learner asked for the fixed code
+    -- that left them with no code at all ("give bug fixed code of my code"
+    got the failing case back and nothing else), against owner decisions A-10
+    and A-15: code that could not be verified is shown, labelled, with the
+    reason. Below `full` nothing changes: no patch, verified or not."""
     result = _debug_result(fixed=False)
     response = generate_response(result=result, plan=_plan(level))
 
-    assert not any(section.kind == "patch" for section in response.sections)
-    assert response.reveals_code is False
-    assert "UNIQUE_PATCH_SENTINEL" not in response.text
+    if level == "full":
+        assert any(section.kind == "patch" for section in response.sections)
+        assert "UNIQUE_PATCH_SENTINEL" in response.text
+        assert "Not verified in sandbox" in response.text
+        assert "still failing" in response.text  # the sandbox's own reason
+        assert "verified in the sandbox:" not in response.text  # never called fixed
+    else:
+        assert not any(section.kind == "patch" for section in response.sections)
+        assert response.reveals_code is False
+        assert "UNIQUE_PATCH_SENTINEL" not in response.text
 
 
 def test_plan_none_behaves_as_hint_and_never_reveals_code() -> None:
