@@ -244,6 +244,31 @@ FRAGMENT_OK: Final = (
     .replace("right += 1", "right -= 1")
     + "\n```"
 )
+NEXT_PERMUTATION: Final = (
+    "31. Next Permutation\n\nThe next permutation of an array of integers is the next "
+    "lexicographically greater permutation of its integers. If such an arrangement is not "
+    "possible, the array must be rearranged as the lowest possible order (sorted in "
+    "ascending order).\n\nGiven an array of integers nums, find the next permutation of "
+    "nums. The replacement must be in place and use only constant extra memory.\n\n"
+    "Example 1:\nInput: nums = [1,2,3]\nOutput: [1,3,2]\n\n"
+    "Example 2:\nInput: nums = [3,2,1]\nOutput: [1,2,3]\n\n"
+    "Example 3:\nInput: nums = [1,1,5]\nOutput: [1,5,1]\n\n"
+    "Constraints:\n1 <= nums.length <= 100\n0 <= nums[i] <= 100\n\n"
+    "Explain how to solve this problem and explain with code line by line of how it works."
+)
+
+
+def walks_the_code(turn: Turn) -> bool:
+    """A numbered walk that quotes code: at least four `N. \`...\`` items."""
+    import re
+
+    return len(re.findall(r"(?m)^\s*\d+\.\s+`[^`\n]+`", text(turn))) >= 4
+
+
+def not_the_fallback(turn: Turn) -> bool:
+    return not has(turn, "wasn't able to put together", "can't tell what that refers to")
+
+
 MAX_DEPTH: Final = (
     "I'm solving Maximum Depth of Binary Tree. My code gives the wrong answer. Explain it, "
     "but don't give me the final code yet.\n\n```python\n"
@@ -838,6 +863,43 @@ def scenarios() -> list[Scenario]:
             ],
             shared_account=False,
             strict=("t2 code, not a refusal", "t3 code, not another hint"),
+        ),
+        # --- owner's conversations of 2026-10-11 -----------------------------------
+        Scenario(
+            "23",
+            "Owner: a stated problem, 'explain with code line by line'",
+            "guidance",
+            [NEXT_PERMUTATION],
+            [
+                ("the code is shown, not a hint", lambda t: code_shown(t[0]) and no_refusal(t[0])),
+                ("it is walked line by line", lambda t: walks_the_code(t[0])),
+                (
+                    "a real sandbox verdict",
+                    lambda t: verdict(t[0]).get("status") in ("pass", "fail"),
+                ),
+                ("no generic hint card", lambda t: not has(t[0], "one step at a time")),
+            ],
+            shared_account=False,
+            strict=("the code is shown, not a hint",),
+        ),
+        Scenario(
+            "24",
+            "Owner: 'explain the code of 3sum line by line', nothing pasted",
+            "balanced",
+            [
+                "explain the code of 3sum line by line of how it works.",
+                "explain binary search code line by line",
+            ],
+            [
+                ("t1 answered, not the fallback", lambda t: not_the_fallback(t[0])),
+                ("t1 the code is there", lambda t: "```python" in text(t[0])),
+                ("t1 walked line by line", lambda t: walks_the_code(t[0])),
+                ("t1 one closing question", lambda t: not has(t[0], "**Check:**")),
+                ("t2 answered, not the fallback", lambda t: not_the_fallback(t[1])),
+                ("t2 walked line by line", lambda t: walks_the_code(t[1])),
+            ],
+            shared_account=False,
+            strict=("t1 answered, not the fallback",),
         ),
         Scenario(
             "8",
