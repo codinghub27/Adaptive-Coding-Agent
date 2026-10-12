@@ -215,6 +215,46 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   (2.5, reranker scale) is no hit: it gives no topic label and no references,
   and the tutor answers from its own knowledge with a one-line note. Never a
   refusal, and never "the references don't cover this".
+- **A question about the learner's code is answered, with the code run first**
+  (`app/agents/code_answer.py`, 2026-10-12). "What is the output of this
+  code" runs the code as a script in the sandbox and one model call answers
+  what was asked with the real output in its prompt: the answer first, then
+  why, then one prediction question. The output shown is the sandbox's, never
+  the model's. The outline / line-by-line / cost report (`run_explain`) is
+  only the fallback when no model answers. The reply is recorded as
+  `last_thread == "code"`; a further question ("why does b change too?") is a
+  follow-up on THAT code (`_continues_code_answer`) and is answered with the
+  exchange in the prompt. A code-only turn that nobody read as a bug report,
+  with no error and a clean run, is answered the same way from the debug node
+  (`_question_about_working_code`): user-code-first means the code is read,
+  not that a bug is assumed. A direct answer gets the pitch but not the
+  step-tutoring "if they did not follow" line (`_answer_pitch`).
+- **A knowledge check is its own move** (`KNOWLEDGE_CHECK` -> route `assess`,
+  `app/agents/assess.py`). "Ask me 10 basic questions" is not a practice
+  request. One call writes the questions from the profile
+  (`standing_note`) and the ask; they are stored on the conversation
+  (`SessionProgress.quiz`) with their marking keys, which are never shown
+  before an answer. The quiz is open only while it is the last thing the
+  tutor said (`last_thread == "quiz"`); the next message is its answers
+  unless it is confidently a request for something else
+  (`routing.answers_open_quiz`). A second call marks them. Each MARKED answer
+  is one learning event on its own topic with `evidence_source="quiz"`: soft
+  evidence, capped below the hard band, but it does move the topic's own
+  skill key (it was asked on that topic, to find the level). A question that
+  was not answered is no evidence. Topics are a closed vocabulary: corpus
+  patterns plus `FOUNDATION_TOPICS`. With no model the built-in fundamentals
+  set is asked; answers that could not be marked record nothing and the quiz
+  stays open.
+- **A short message gets a topic only from a strong hit or a named problem.**
+  With no problem statement the floor is `MIN_CONCEPT_TOPIC_SCORE`; between
+  the two floors a topic is taken only when the message names a problem the
+  corpus lists under a pattern retrieval returned (`planner._named_problem`).
+  Measured: "how to solve 3sum" scores -1.60 and "what is the output of this
+  code" -3.71; the score cannot separate them, the name does. A wrong topic
+  is a wrong key on the learner's profile and steers later turns.
+- **A practice request that names no topic is given a problem**: the weakest
+  area the profile has evidence on, else an easy starter. The tutor never
+  hands the choice back.
 - **Tests are deterministic where they can be.** A statement's own examples are
   always in the suite. Sandbox-validated cases are cached per learner and
   subject (`test_suite_cache`, `app/memory/test_suites.py`) and reused.

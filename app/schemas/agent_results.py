@@ -335,6 +335,12 @@ class ExplainResult(APIModel):
     #: (ADAPTIVE-upgrade P3), and the labels of the references it used.
     answer: str | None = None
     citations: list[str] = Field(default_factory=list[str])
+    #: The learner's code was run in the sandbox for this answer
+    #: (`app.agents.code_answer`); the answer carries the output it printed.
+    ran: bool = False
+    #: This is a direct answer to a question about the learner's own code, not
+    #: a concept answer and not the structural report.
+    about_code: bool = False
 
     def to_outcome(self) -> "AgentOutcome":
         """Project this result onto the Phase 04 `AgentOutcome` shape.

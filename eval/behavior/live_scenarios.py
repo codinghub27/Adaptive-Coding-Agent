@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import sys
 import time
@@ -66,6 +67,13 @@ ISLANDS: Final = (
     'Example 1:\nInput: grid = [["1","1","0"],["0","1","0"],["0","0","1"]]\nOutput: 2\n\n'
     "how should I approach this?"
 )
+
+
+OUTPUT_ASK: Final = "what is the output of this code.\na=b=[]\na.append(1)\nprint(b)"
+QUIZ_ASK: Final = "ask me 10 dsa basic question to test how much knowledge i have"
+QUIZ_SKIPS: Final = "\n".join(f"{n}. skip, I don't know" for n in range(1, 11))
+#: The practice agent's old reply to a request it had no topic for.
+PICK: Final = "which pattern you want to practise"
 
 
 def _examples() -> dict[str, list[str]]:
@@ -121,6 +129,14 @@ def stack_code(turn: Turn) -> bool:
     """The revealed code keeps a stack: it pushes and pops (or names one)."""
     lowered = text(turn).lower()
     return "stack" in lowered and ".append(" in lowered and ".pop(" in lowered
+
+
+def numbered(turn: Turn) -> int:
+    """How many numbered lines ("1. ...") the reply has."""
+    return sum(1 for line in text(turn).splitlines() if _NUMBERED_RE.match(line))
+
+
+_NUMBERED_RE: Final = re.compile(r"\d{1,2}\. \S")
 
 
 def no_guessing(turn: Turn) -> bool:
@@ -900,6 +916,68 @@ def scenarios() -> list[Scenario]:
             ],
             shared_account=False,
             strict=("t1 answered, not the fallback",),
+        ),
+        Scenario(
+            "25",
+            "Owner: 'what is the output of this code', then 'why'",
+            "balanced",
+            [OUTPUT_ASK, "why b as contains the same value as a"],
+            [
+                ("t1 states the real output", lambda t: "[1]" in text(t[0])),
+                ("t1 the code was run", lambda t: has(t[0], "in the sandbox")),
+                (
+                    "t1 an answer, not a report",
+                    lambda t: not has(t[0], "structure:", "**cost", "not executed", "o(n)"),
+                ),
+                (
+                    "t1 no DSA topic for a Python question",
+                    lambda t: (t[0].get("plan") or {}).get("topic") is None,
+                ),
+                ("t2 says why", lambda t: has(t[1], "same list", "same object", "one list")),
+                ("t2 an answer, not a report", lambda t: not has(t[1], "structure:", "**cost")),
+                ("t2 answered, not the fallback", lambda t: not_the_fallback(t[1])),
+            ],
+            shared_account=False,
+            strict=("t1 states the real output", "t2 says why"),
+        ),
+        Scenario(
+            "26",
+            "Owner: 'ask me 10 questions to test my knowledge', answered, profile moves",
+            "balanced",
+            [QUIZ_ASK, QUIZ_SKIPS, "ask me questions to check how much knowledge i have"],
+            [
+                ("t1 is a knowledge check", lambda t: t[0].get("route") == "assess"),
+                ("t1 ten numbered questions", lambda t: numbered(t[0]) == 10),
+                ("t1 not one practice problem", lambda t: not has(t[0], "leetcode.com", PICK)),
+                ("t2 the answers are marked", lambda t: has(t[1], "you got **0 of")),
+                ("t2 the answers are given", lambda t: len(text(t[1])) > 400),
+                (
+                    "t2 recorded as quiz evidence",
+                    lambda t: (
+                        {e.get("evidence_source") for e in t[1].get("events") or []} == {"quiz"}
+                    ),
+                ),
+                ("t2 the profile moved", lambda t: bool(t[1].get("skill_deltas"))),
+                ("t3 asks again, not a refusal", lambda t: numbered(t[2]) >= 3),
+                ("t3 is not t1 word for word", lambda t: text(t[2]) != text(t[0])),
+            ],
+            shared_account=False,
+            strict=("t1 ten numbered questions", "t2 the profile moved"),
+        ),
+        Scenario(
+            "27",
+            "Owner: a quiz, then 'start from basic not directly in DSA'",
+            "balanced",
+            [QUIZ_ASK, "start from basic not directly in DSA"],
+            [
+                ("t2 a new set of questions", lambda t: t[1].get("route") == "assess"),
+                ("t2 numbered questions", lambda t: numbered(t[1]) >= 3),
+                ("t2 not a study plan", lambda t: not has(t[1], "week 1", "1-week", "roadmap")),
+                ("t2 is not t1", lambda t: text(t[1]) != text(t[0])),
+                ("t2 not a refusal", lambda t: not has(t[1], PICK)),
+            ],
+            shared_account=False,
+            strict=("t2 a new set of questions",),
         ),
         Scenario(
             "8",

@@ -36,6 +36,7 @@ from app.execution.base import CodeRunner
 from app.graph.nodes import (
     FALLBACKS,
     Node,
+    assess_agent,
     clarify,
     classify_intent,
     debug_agent,
@@ -98,6 +99,7 @@ NODE_FUNCTIONS: Final[Mapping[str, Node]] = MappingProxyType(
         "debug_agent": debug_agent,
         "explain_agent": explain_agent,
         "practice_agent": practice_agent,
+        "assess_agent": assess_agent,
         "grade_answer": grade_answer,
         "execute_code": execute_code,
         "verify": verify_execution,

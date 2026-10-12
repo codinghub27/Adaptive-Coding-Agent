@@ -76,6 +76,7 @@ Move = Literal[
     "review",
     "plan",
     "practice",
+    "assess",
     "grade",
     "meta",
     "greet",

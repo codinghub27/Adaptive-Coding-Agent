@@ -20,7 +20,9 @@ from typing import Final, Literal
 from app.agents.planner import wants_the_code
 from app.graph.state import AgentState, RouteKey
 from app.input.intent import is_small_talk, names_a_request
+from app.schemas.decision import EVIDENCE_LABELS
 from app.schemas.intent import Intent
+from app.schemas.tutoring import QuizState, SessionProgress
 from app.tutoring.grader import asks_for_help, is_dont_know, looks_like_injection
 from app.tutoring.misconceptions import detect_in_code
 
@@ -31,9 +33,11 @@ __all__ = [
     "VerifyKey",
     "GRADE_AFTER_NODES",
     "MetaKind",
+    "answers_open_quiz",
     "asks_for_guidance",
     "grade_after",
     "meta_followup",
+    "open_quiz",
     "route_after",
     "select_route",
     "should_grade",
@@ -46,6 +50,7 @@ INTENT_ROUTES: Final[Mapping[Intent, RouteKey]] = MappingProxyType(
         Intent.DSA_HINT: "dsa",
         Intent.APPROACH_DISCUSSION: "dsa",
         Intent.PRACTICE_REQUEST: "practice",
+        Intent.KNOWLEDGE_CHECK: "assess",
         Intent.CODE_DEBUG: "debug",
         Intent.ERROR_EXPLANATION: "debug",
         Intent.TEST_CASE_ANALYSIS: "debug",
@@ -66,6 +71,9 @@ ROUTE_NODES: Final[Mapping[RouteKey, str]] = MappingProxyType(
         "debug": "debug_agent",
         "explain": "explain_agent",
         "practice": "practice_agent",
+        # A knowledge check: the questions are asked, and on the next turn the
+        # learner's answers are marked and folded into their profile.
+        "assess": "assess_agent",
         "clarify": "clarify",
         # ADAPTIVE-tutoring Q1: a reply to the agent's own pending question.
         "grade": "grade_answer",
@@ -158,7 +166,9 @@ def meta_followup(state: AgentState) -> MetaKind | None:
 
 
 #: Intents that are a request for something NEW, never an answer.
-_NEW_REQUEST_INTENTS: Final = frozenset({Intent.PRACTICE_REQUEST, Intent.GENERAL_GUIDANCE})
+_NEW_REQUEST_INTENTS: Final = frozenset(
+    {Intent.PRACTICE_REQUEST, Intent.GENERAL_GUIDANCE, Intent.KNOWLEDGE_CHECK}
+)
 
 #: A reply this short with no request wording is an answer, whatever the
 #: classifier's confidence (see `_bare_reply`).
@@ -253,6 +263,52 @@ def should_grade(state: AgentState) -> bool:
     return not asks_for_help(reply)
 
 
+def open_quiz(progress: SessionProgress | None) -> QuizState | None:
+    """The knowledge check the tutor is waiting on, if any.
+
+    It is open only while it is the LAST thing the tutor said. Once the
+    learner has moved on to something else, a later message is not its
+    answers, however much it looks like one.
+    """
+    if progress is None or progress.last_thread != "quiz":
+        return None
+    return progress.quiz
+
+
+#: The labels a message that answers the tutor comes back with.
+_ANSWER_INTENTS: Final = frozenset({Intent.DSA_HINT, Intent.DSA_SOLVE, Intent.APPROACH_DISCUSSION})
+
+
+def answers_open_quiz(state: AgentState) -> bool:
+    """Is this turn the learner's answers to the knowledge check just asked?
+
+    Read from the message as it arrived, before anything ties it to an older
+    subject of the conversation (`nodes._decide` asks this first).
+
+    Yes when a quiz is open and the message brings nothing of its own (no
+    problem, code or error) and is not a request for something else. The
+    classifier was told a quiz is waiting (`nodes.classifier_context`): a
+    reading that the learner SHOWED something is an answer; a confident
+    request (a new set, a problem, a plan, an explanation) is not. With no
+    confident reading at all the questions are the only thing on the table,
+    so the message is read against them.
+    """
+    if open_quiz(state.session_progress) is None:
+        return False
+    inp = state.structured_input
+    if inp is None or inp.is_empty or inp.problem or inp.code or inp.error:
+        return False  # it brings a subject of its own
+    reply = (inp.question or "").strip()
+    if not reply or is_small_talk(reply):
+        return False
+    intent = state.intent
+    if intent is None or intent.low_confidence:
+        return True
+    if intent.learner_showed in EVIDENCE_LABELS:
+        return True
+    return intent.intent in _ANSWER_INTENTS and not wants_the_code(intent, reply)
+
+
 def select_route(state: AgentState) -> RouteKey:
     """Decide which subgraph should handle this turn.
 
@@ -264,6 +320,8 @@ def select_route(state: AgentState) -> RouteKey:
     """
     if state.structured_input is not None and meta_followup(state) is not None:
         return "meta"
+    if answers_open_quiz(state):
+        return "assess"
     if should_grade(state):
         return "grade"
     if state.structured_input is None or state.structured_input.is_empty:

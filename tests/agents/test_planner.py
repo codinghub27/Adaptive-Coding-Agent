@@ -16,9 +16,12 @@ from app.agents.planner import (
     WEAK_SKILL,
     ProblemAnalysis,
     analyze_problem,
+    asks_for_fix,
     build_plan,
     clamp_assistance,
+    declines_the_answer,
     difficulty_for,
+    explicit_ask_phrase,
 )
 from app.memory.profile import PRIOR
 from app.schemas.agent_results import HintLevel
@@ -662,14 +665,70 @@ def test_retrieval_topic_ignored_when_the_top_hit_scores_below_the_floor() -> No
 
 
 def test_retrieval_topic_used_at_the_floor_exactly() -> None:
+    # The low floor is the one for a problem STATEMENT.
     analysis = analyze_problem(
-        _input("two sum problem"),
+        _input(problem="Given a sorted array, return the pair of values that add up to k."),
         LearnerProfileView.empty(),
         None,
         [_hit(topic="arrays", pattern="two_pointers", score=MIN_RETRIEVAL_TOPIC_SCORE)],
     )
 
     assert analysis.topic == "two_pointers"
+    assert analysis.topic_source == "retrieval"
+
+
+def test_a_short_message_gets_no_topic_from_a_weak_hit() -> None:
+    # Measured: "what is the output of this code." tops out on `intervals` at
+    # -3.71, and `a=b=[]` (query "a b") on `dfs` at -1.13. Neither is about it.
+    for question, pattern, score in (
+        ("what is the output of this code.", "intervals", -3.71),
+        ("why does my loop never end", "sliding_window", -4.37),
+        ("how to solve this problem", "divide_and_conquer", 1.82),
+    ):
+        analysis = analyze_problem(
+            _input(question),
+            LearnerProfileView.empty(),
+            None,
+            [_hit(topic=pattern, pattern=pattern, score=score)],
+        )
+        assert analysis.topic is None, question
+        assert analysis.topic_source == "unknown"
+
+
+def test_a_short_message_that_names_a_listed_problem_keeps_its_topic() -> None:
+    # "how to solve 3sum" scores -1.60 against the page that lists 3Sum: the
+    # score is in the noise band, the name is not.
+    analysis = analyze_problem(
+        _input("how to solve 3sum"),
+        LearnerProfileView.empty(),
+        None,
+        [_hit(topic="arrays", pattern="two_pointers", score=-1.6)],
+    )
+
+    assert analysis.topic == "two_pointers"
+    assert analysis.topic_source == "title"
+
+
+def test_a_named_problem_counts_only_for_a_pattern_retrieval_returned() -> None:
+    analysis = analyze_problem(
+        _input("how to solve 3sum"),
+        LearnerProfileView.empty(),
+        None,
+        [_hit(topic="trees", pattern="trees", score=-1.6)],
+    )
+
+    assert analysis.topic is None
+
+
+def test_a_short_message_takes_a_strong_hit() -> None:
+    analysis = analyze_problem(
+        _input("how do I find the kth largest element"),
+        LearnerProfileView.empty(),
+        None,
+        [_hit(topic="heaps", pattern="heaps", score=5.86)],
+    )
+
+    assert analysis.topic == "heaps"
     assert analysis.topic_source == "retrieval"
 
 
@@ -709,3 +768,32 @@ def test_a_profile_match_still_wins_over_a_high_scoring_retrieval_hit() -> None:
 
     assert analysis.topic == "binary_search"
     assert analysis.topic_source == "profile_match"
+
+
+def test_a_foundation_topic_is_not_read_out_of_a_problem_statement() -> None:
+    # After a quiz the profile has `strings`. A statement that contains the
+    # word is not a turn about that skill.
+    profile = _profile(skill_levels={"strings": 0.47, "hashing": 0.6})
+    statement = _input(problem="Given an array of strings strs, group the anagrams together.")
+
+    assert analyze_problem(statement, profile).topic is None
+    # A short concept question may still be about it.
+    asked = analyze_problem(_input("how do strings work in python"), profile)
+    assert asked.topic == "strings"
+    # A corpus pattern named in a statement is matched as before.
+    hashed = _input(problem="Use hashing to count the words.")
+    assert analyze_problem(hashed, profile).topic == "hashing"
+
+
+def test_dont_give_me_the_code_is_not_an_ask_for_the_code() -> None:
+    declined = "Explain it, but don't give me the final code yet."
+    assert declines_the_answer(declined)
+    assert not explicit_ask_phrase(declined)
+    assert not asks_for_fix(declined)
+    assert declines_the_answer("no spoilers please")
+    assert declines_the_answer("I want to solve it myself")
+    # Asking, and not understanding, are not declining.
+    assert not declines_the_answer("give me the final code")
+    assert explicit_ask_phrase("give me the final code")
+    assert not declines_the_answer("I don't understand this code, fix it")
+    assert asks_for_fix("I don't understand this code, fix it")

@@ -77,6 +77,7 @@ __all__ = [
     "DebugState",
     "build_debug_graph",
     "get_debug_graph",
+    "reads_keyboard",
     "run_debug",
 ]
 

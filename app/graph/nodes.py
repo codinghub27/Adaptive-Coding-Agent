@@ -32,6 +32,16 @@ from uuid import UUID
 
 from langgraph.runtime import Runtime
 
+from app.agents.assess import (
+    builtin_quiz,
+    mark_quiz,
+    render_marks,
+    render_quiz,
+    requested_count,
+    standing_note,
+    write_quiz,
+)
+from app.agents.code_answer import CodeRun, answer_about_code, run_learner_code, with_run
 from app.agents.concept import (
     ConceptExample,
     answer_concept,
@@ -53,6 +63,7 @@ from app.agents.planner import (
     asks_for_fix,
     build_plan,
     clamp_assistance,
+    declines_the_answer,
     explicit_ask_phrase,
     relevant_to_concept,
     wants_the_code,
@@ -63,7 +74,13 @@ from app.execution.base import CodeRunner, canonical
 from app.execution.synth import synthesize_test_suite, verified_reference
 from app.execution.testgen import extract_test_suite, select_entrypoint, top_level_functions
 from app.execution.verification import verify as verify_result
-from app.graph.routing import asks_for_guidance, meta_followup, select_route
+from app.graph.routing import (
+    answers_open_quiz,
+    asks_for_guidance,
+    meta_followup,
+    open_quiz,
+    select_route,
+)
 from app.graph.state import (
     AgentOutcome,
     AgentState,
@@ -73,7 +90,7 @@ from app.graph.state import (
     RouteKey,
     SuiteSource,
 )
-from app.graph.subgraphs.debug import run_debug
+from app.graph.subgraphs.debug import reads_keyboard, run_debug
 from app.graph.subgraphs.dsa import (
     corpus_chunks_by_pattern,
     run_dsa,
@@ -195,6 +212,7 @@ __all__ = [
     "FALLBACKS",
     "Node",
     "SAFE_FALLBACK_RESPONSE",
+    "assess_agent",
     "build_retrieval_query",
     "classify_intent",
     "clarify",
@@ -335,6 +353,9 @@ _LAST_REPLY_WORDS: Final[Mapping[str, str]] = MappingProxyType(
         "problem": "a step on the active_subject (the problem or code)",
         "plan": "a study plan / roadmap",
         "explanation": "a concept explanation",
+        "quiz": "a knowledge check: numbered quiz questions the learner has not answered yet",
+        "code": "an answer to the learner's question about the code they shared "
+        "(the active_subject), which runs without error",
     }
 )
 
@@ -361,6 +382,11 @@ def classifier_context(state: AgentState) -> str | None:
         lines.append(f"pending_question: {_one_line(pending.question)}")
     elif pending is not None:
         lines.append("pending_question: (the tutor asked the learner to write the code)")
+    elif open_quiz(progress) is not None:
+        lines.append(
+            "pending_question: (the tutor asked a set of numbered quiz questions and is "
+            "waiting for the learner's answers)"
+        )
     profile = state.profile
     if profile is not None and active is not None and active.topic in profile.skill_levels:
         level = profile.skill_levels[active.topic]
@@ -515,6 +541,7 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         context=state.retrieved_context,
         inherited_topic=inherited_topic,
         concept_question=_is_concept_question(state),
+        question_query=_question_was_the_query(state),
     )
     hint_progress = await resolve_hint_progress(
         state,
@@ -542,6 +569,15 @@ async def plan_teaching(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         "topic_source": analysis.topic_source,
         "adaptation": _adaptation(state, plan),
     }
+
+
+def _question_was_the_query(state: AgentState) -> bool:
+    """Was this turn's retrieval query the learner's question itself, rather
+    than a problem statement or the names in their code
+    (`build_retrieval_query`)? Such a query takes a topic only from a strong
+    hit or a named problem (`analyze_problem`)."""
+    inp = state.structured_input
+    return inp is not None and not inp.problem and not _extract_identifiers(inp.code)
 
 
 #: The most help a turn may give while the learner has asked not to be given
@@ -713,6 +749,9 @@ def _extract_exception_type(error: str | None) -> str | None:
     return matches[-1] if matches else None
 
 
+_MIN_IDENTIFIER_CHARS: Final = 2
+
+
 def _extract_identifiers(code: Sequence[CodeBlock]) -> list[str]:
     """Function/variable identifier names parsed out of `code` via `ast`.
 
@@ -745,6 +784,9 @@ def _extract_identifiers(code: Sequence[CodeBlock]) -> list[str]:
                 or name in seen
                 or name in _IDENTIFIER_STOPWORDS
                 or name.startswith("__")
+                # `a`, `b`, `i`, `n`: a placeholder names nothing. `a=b=[]`
+                # sent the query "a b", which matched the dfs page at -1.13.
+                or len(name) < _MIN_IDENTIFIER_CHARS
             ):
                 continue
             seen.add(name)
@@ -855,6 +897,18 @@ async def decide_turn(state: AgentState, runtime: Runtime[GraphContext]) -> Agen
 
 
 def _decide(state: AgentState) -> AgentStateUpdate:
+    if answers_open_quiz(state):
+        # The tutor's last message was a set of questions and this one answers
+        # them. Settled first: read as a follow-up on an OLDER subject (code
+        # shared earlier in the conversation), ten "skip" lines were relabelled
+        # a bug report on that code and the quiz was never marked.
+        answering: AgentStateUpdate = {
+            "problem_relation": "none",
+            "problem_key": None,
+            "route": "assess",
+        }
+        answering["decision"] = _turn_decision(state.model_copy(update=dict(answering)), "assess")
+        return answering
     update = _problem_update(state)
     effective = state.model_copy(update=dict(update))
     anchored = _anchor_on_the_conversation(state, effective)
@@ -1027,6 +1081,11 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
         subject = "last_reply"
     elif state.problem_relation in ("same", "followup"):
         subject = "active"
+    elif chosen == "assess":
+        # A new set of questions, or the learner's answers to the set the
+        # tutor asked last.
+        asking = intent is not None and intent.intent is Intent.KNOWLEDGE_CHECK
+        subject = "new" if asking or open_quiz(state.session_progress) is None else "last_reply"
     elif (
         state.problem_relation == "new"
         or (inp is not None and bool(inp.problem or inp.code or inp.error))
@@ -1068,6 +1127,8 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
         move = "grade"
     elif chosen == "practice":
         move = "practice"
+    elif chosen == "assess":
+        move = "assess"
     elif chosen == "debug":
         move = "code" if wants_code and not challenge else "debug"
     elif chosen == "dsa":
@@ -1080,7 +1141,11 @@ def _turn_decision(state: AgentState, chosen: RouteKey) -> TurnDecision:
         move = "explain"
 
     evidence: Evidence = "none"
-    if question and is_dont_know(question) and not wants_code:
+    if chosen == "assess":
+        # Each answer is marked on its own topic (`assess_agent`). One label
+        # for the whole message is evidence about no subject in particular.
+        pass
+    elif question and is_dont_know(question) and not wants_code:
         evidence = "stuck"
     elif intent is not None and intent.learner_showed in EVIDENCE_LABELS and not wants_code:
         evidence = cast(Evidence, intent.learner_showed)
@@ -1127,6 +1192,13 @@ def _withhold(state: AgentState, intent: IntentResult | None, wants_code: bool) 
         return False
     if intent is not None and intent.no_solution:
         return True
+    if intent is None or intent.no_solution is None:
+        # No model read the turn (a rule label, the keyword fallback, an
+        # unsure answer): the learner's own "don't give me the code" still
+        # holds.
+        inp = state.structured_input
+        if declines_the_answer(inp.question if inp is not None else None):
+            return True
     return _held_back(state)
 
 
@@ -1227,6 +1299,21 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
         return update
 
     if (
+        active is not None
+        and not update.get("subject_switched")
+        and _continues_code_answer(state, active, brings_subject)
+    ):
+        # The tutor's last reply answered a question about the learner's code
+        # and this turn asks more about it ("why does b hold the same value?").
+        # It is answered about THAT code with the exchange in front of it, not
+        # as a new concept question and not as a bug hunt.
+        update["problem_relation"] = "followup"
+        update["problem_key"] = active.key
+        update["structured_input"] = inherit_active_problem(inp, active)
+        update["intent"] = _relabel(intent, Intent.CODE_EXPLAIN, "follow-up on the code answer")
+        return update
+
+    if (
         inp is not None
         and active is not None
         and not _code_anchored(active)
@@ -1312,8 +1399,13 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
         # User-code-first (target behaviour section 10): code with no problem
         # statement is the evidence. "give correct code of this" + code was
         # labelled DSA_SOLVE and got Hint 1 of 4 with the code never read.
-        update["intent"] = _relabel(intent, Intent.CODE_DEBUG, "code shared without a statement")
+        update["intent"] = _relabel(intent, Intent.CODE_DEBUG, _CODE_ONLY)
     return update
+
+
+#: The rationale of the user-code-first relabel: nobody READ this turn as a
+#: bug report, it is a debug turn because it brought code and nothing else.
+_CODE_ONLY: Final = "code shared without a statement"
 
 
 _THREAD_INTENTS: Final[Mapping[str, Intent]] = MappingProxyType(
@@ -1363,6 +1455,47 @@ def _continues_last_reply(state: AgentState, brings_subject: bool) -> Intent | N
     if state.pending_check is not None:
         return None  # an answer to the tutor's open question is graded
     return answer_as
+
+
+#: Confident labels that are a request of their own after a code answer.
+_NOT_A_CODE_QUESTION: Final = (
+    DEBUG_ROUTE_INTENTS
+    | _REVIEW_MOVE_INTENTS
+    | {Intent.PRACTICE_REQUEST, Intent.KNOWLEDGE_CHECK, Intent.GENERAL_GUIDANCE}
+)
+
+
+def _continues_code_answer(state: AgentState, active: ActiveProblem, brings_subject: bool) -> bool:
+    """Does this turn ask more about code the tutor just answered a question
+    about (`SessionProgress.last_thread == "code"`)?
+
+    Owner's conversation, 2026-10-12: after "what is the output of this
+    code", "why b as contains the same value as a" was read as a concept
+    question standing alone on one run and as a bug report on another; one
+    got a lesson on a different example, the other an outline and a cost.
+
+    A confident reading that it is something else decides: a debug or review
+    ask, a request for a problem, a quiz or a plan, a question about the chat,
+    or a concept question the model tied to neither the code nor the last
+    reply. Everything else is about the code.
+    """
+    progress = state.session_progress
+    if progress is None or progress.last_thread != "code" or not _code_anchored(active):
+        return False
+    inp = state.structured_input
+    question = inp.question if inp is not None else None
+    if brings_subject or not question or is_small_talk(question):
+        return False
+    intent = state.intent
+    if intent is None or intent.low_confidence:
+        return True
+    if intent.about_conversation or intent.earlier_subject:
+        return False
+    if intent.intent in _NOT_A_CODE_QUESTION or wants_the_code(intent, question, fix=True):
+        return False
+    if intent.intent is Intent.CONCEPT_EXPLANATION:
+        return bool(intent.refers_to_previous or intent.continues_last_reply)
+    return True
 
 
 _CODE_STATEMENTS: Final = (
@@ -1597,7 +1730,7 @@ def _is_non_problem_turn(intent: Intent | None, question: str | None) -> bool:
     GENERAL_GUIDANCE alone does not qualify: it is the classifier's catch-all,
     so "tell me name of that problem" carried it and lost the problem.
     """
-    if intent is Intent.PRACTICE_REQUEST:
+    if intent in (Intent.PRACTICE_REQUEST, Intent.KNOWLEDGE_CHECK):
         return True
     if intent is Intent.GENERAL_GUIDANCE:
         if question and is_dont_know(question):
@@ -2379,6 +2512,22 @@ async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Agen
     on the same problem can see it even though this turn was classified
     `CODE_DEBUG`/`ERROR_EXPLANATION`/`TEST_CASE_ANALYSIS`, not a DSA intent.
     """
+    answered = await _question_about_working_code(state, runtime)
+    if answered is not None:
+        direct: AgentStateUpdate = {
+            "agent_output": answered.to_outcome(),
+            "agent_result": answered,
+        }
+        if state.decision is not None:
+            # The sandbox knew more than the first reading: the record of the
+            # turn says what was done, an answer and not a diagnosis.
+            direct["decision"] = state.decision.model_copy(
+                update={
+                    "move": "explain",
+                    "reasons": [*state.decision.reasons, "ran_clean_answered"],
+                }
+            )
+        return direct
     tests, suite_source = await _resolve_test_suite(state, runtime)
     run = await run_debug(state, runtime, tests=tests)
     update: AgentStateUpdate = {
@@ -2393,6 +2542,74 @@ async def debug_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Agen
     if shown is not None and state.decision is not None:
         update["decision"] = state.decision.with_evidence(shown)
     return update
+
+
+async def _question_about_working_code(
+    state: AgentState, runtime: Runtime[GraphContext]
+) -> ExplainResult | None:
+    """The answer to a question about code that has nothing wrong reported
+    and nothing wrong on running it, or `None` to debug it.
+
+    A turn that brings only code is a debug turn by rule (user-code-first)
+    whenever the classifier's own label was unsure or pointed at the hint
+    ladder. That rule exists so the code is READ. It does not mean the learner
+    suspects a bug: "what is the output of this code" reached the debugger
+    this way and was told "Correctness could not be checked (inconclusive)",
+    three times over, about three lines that print `[1]`.
+
+    So when nobody read the turn as a bug report, no error came with it, and
+    the program runs to the end and prints something, the question is answered
+    with that output in hand. A confident debug ask, a reported error, an ask
+    for the fix, code that crashes and code that only defines functions all go
+    to the debugger as before.
+
+    This is the one thing about the turn that `decide_turn` cannot settle: it
+    takes a sandbox run. The decision record is updated to match
+    (`debug_agent`), the same way a sandbox verdict refines `evidence`.
+    """
+    intent = state.intent
+    inp = state.structured_input
+    decision = state.decision
+    if intent is None or inp is None or intent.rationale != _CODE_ONLY or intent.source != "rule":
+        return None
+    if inp.error or inp.problem or (decision is not None and decision.wants_code):
+        return None
+    code = extract_learner_code(inp)
+    if code is None:
+        return None
+    run = await run_learner_code(code, runtime.context.runner, needs_input=reads_keyboard(code))
+    if not (run.ran and run.completed and run.stdout.strip()):
+        # It crashed, or it only defines things and shows nothing when run:
+        # there is no output to answer from, and "this gives the wrong
+        # answer" about a bare function needs the debugger's test cases.
+        return None
+    return await _code_answer(state, runtime, code, run=run)
+
+
+#: The family a first practice problem comes from when nothing is known
+#: about the learner: Two Sum and its neighbours.
+_STARTER_TOPIC: Final = "hashing"
+_START_HERE: Final = (
+    "You didn't name a topic, so let's start with an easy one. Tell me if you'd rather "
+    "work on something else."
+)
+_WEAKEST_FIRST: Final = (
+    "You didn't name a topic, so I picked the area your results so far are weakest in."
+)
+
+
+def _practice_topic_for(profile: LearnerProfileView | None) -> tuple[str, str]:
+    """The topic to practise when the learner named none, and the sentence
+    that says why it was chosen. Both from the tutor's own records."""
+    chunks = corpus_chunks_by_pattern()
+    for topic in profile.suggested_focus if profile is not None else ():
+        if (
+            topic in chunks
+            and profile is not None
+            and profile.skill_levels.get(topic, PRIOR) < PRIOR
+        ):
+            return topic, _WEAKEST_FIRST
+    return _STARTER_TOPIC, _START_HERE
 
 
 _NO_PRACTICE_TOPIC_TEXT: Final = (
@@ -2440,9 +2657,20 @@ async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> A
         topic = named_pattern(request_text) or topic
     elif progress.last_topic is not None:
         topic = progress.last_topic
+    chosen_for_them: str | None = None
     if topic is None:
-        return {"agent_output": AgentOutcome(text=_NO_PRACTICE_TOPIC_TEXT, topic=None, solved=None)}
+        # No topic named, none in this conversation. Asking "which pattern?"
+        # hands the choice back to the learner who asked to be given one, and
+        # said so five times running in the owner's conversation. The tutor
+        # chooses: the weakest area the profile has evidence on, else the
+        # usual first problem family.
+        topic, chosen_for_them = _practice_topic_for(state.profile)
     base = plan.difficulty if plan is not None else "medium"
+    if chosen_for_them is not None:
+        # Either nothing is known about the learner, or this is the area they
+        # did worst in: both start easy. Read live: after 0 of 5 on a quiz the
+        # tutor picked the weakest area and handed out a medium problem on it.
+        base = "easy"
     difficulty, reason = session_difficulty(base, progress, requested_difficulty(request_text))
     practised = frozenset({progress.last_practice.title} if progress.last_practice else set[str]())
     problem = select_session_problem(
@@ -2470,7 +2698,7 @@ async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> A
         statement=statement,
     )
     text = render_practice_problem(problem, curated.statement if curated is not None else None)
-    lead = _progression_line(progress, reason, problem.difficulty)
+    lead = _progression_line(progress, reason, problem.difficulty) or chosen_for_them
     if lead:
         text = f"{lead}\n\n{text}"
     return {
@@ -2482,6 +2710,65 @@ async def practice_agent(state: AgentState, runtime: Runtime[GraphContext]) -> A
             hints_used=0,
             needed_full_solution=False,
             errors=[],
+        ),
+    }
+
+
+_QUIZ_NOT_MARKED_TEXT: Final = (
+    "I couldn't mark those just now. Your answers are still here in the chat: send them "
+    "again in a moment and I'll go through them."
+)
+_QUIZ_NOT_MATCHED_TEXT: Final = (
+    "I couldn't match that to the questions above, so I've set them aside. If you were "
+    "asking something else, ask it again and I'll answer that. To come back to the check, "
+    "say so and I'll ask a fresh set."
+)
+
+
+async def assess_agent(state: AgentState, runtime: Runtime[GraphContext]) -> AgentStateUpdate:
+    """A knowledge check: ask the questions, or mark the answers to them.
+
+    Which of the two this turn is was settled by `decide_turn`: the learner
+    asked to be tested (`KNOWLEDGE_CHECK`), or they are answering the set the
+    tutor asked last (`routing.answers_open_quiz`). This node does not read
+    the message for that a second time.
+
+    Marked answers are returned as `quiz_grades`; `update_learner_model` turns
+    each one into a learning event on its own topic, which is how the profile
+    learns where this learner stands without waiting for them to fail a
+    problem. `solved` is always `None`: an answer in words is never evidence
+    that code works.
+    """
+    ctx = runtime.context
+    inp = state.structured_input
+    said = (inp.question or "") if inp is not None else ""
+    quiz = open_quiz(state.session_progress)
+    asking = state.intent is not None and state.intent.intent is Intent.KNOWLEDGE_CHECK
+    if quiz is not None and not asking:
+        marked = await mark_quiz(quiz, said, ctx.llm)
+        if marked is None:
+            return {"agent_output": AgentOutcome(text=_QUIZ_NOT_MARKED_TEXT, solved=None)}
+        if not marked.grades:
+            return {"agent_output": AgentOutcome(text=_QUIZ_NOT_MATCHED_TEXT, solved=None)}
+        return {
+            "quiz_grades": marked.grades,
+            "agent_output": AgentOutcome(text=render_marks(marked), solved=None),
+        }
+
+    count = requested_count(said, default=len(quiz.items) if quiz is not None else None)
+    exchange = [(message.role, message.content) for message in state.recent_context[-4:]]
+    written = await write_quiz(
+        said,
+        ctx.llm,
+        count=count,
+        profile_note=standing_note(state.profile),
+        context=turn_context(state.decision, state.adaptation, exchange),
+    )
+    asked = written or builtin_quiz(count)
+    return {
+        "quiz": asked,
+        "agent_output": AgentOutcome(
+            text=render_quiz(asked, built_in=written is None), solved=None
         ),
     }
 
@@ -2701,11 +2988,9 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         )
         return update
 
-    if (
-        intent is not None
-        and intent.intent in _CONCEPT_INTENTS
-        and extract_learner_code(state.structured_input) is None
-    ):
+    code = extract_learner_code(state.structured_input)
+    guidance = intent is not None and intent.intent is Intent.GENERAL_GUIDANCE
+    if intent is not None and intent.intent in _CONCEPT_INTENTS and (code is None or guidance):
         # A concept question or general guidance with no code to explain:
         # answer it FROM the corpus and cite only what the answer used (P3, B1).
         result, about_patterns = await _concept_answer(state, runtime)
@@ -2719,6 +3004,14 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         # Nothing to ground on (no relevant hit, no known topic): fall back to
         # the explainer rather than answering with nothing (code review P3).
 
+    if code is not None:
+        # A question about the learner's own code: it is run, and the question
+        # is answered with the real output (`app.agents.code_answer`). The
+        # structural report below is only what is left when no model answers.
+        answered = await _code_answer(state, runtime, code)
+        if answered is not None:
+            return {"agent_output": answered.to_outcome(), "agent_result": answered}
+
     explain_run = await run_explain(state, runtime)
     update = {
         "agent_output": explain_run.result.to_outcome(),
@@ -2729,17 +3022,74 @@ async def explain_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     return update
 
 
+def _answer_pitch(state: AgentState) -> Adaptation | None:
+    """This turn's adaptation for a direct answer: who to write for, and a
+    changed presentation only when the decision says the learner missed.
+
+    The standing "if they did not follow, switch to a worked example" line is
+    for a tutoring step. Read live on a follow-up question about code, the
+    model applied it to a learner who had only asked "why": a one-sentence
+    answer grew a table, a numbered trace and a second question. Here the
+    switch is made in code, from the decision's own reading, or not at all.
+    """
+    adaptation = state.adaptation
+    if adaptation is None:
+        return None
+    missed = state.decision is not None and state.decision.scaffold == "up"
+    representation = adaptation.representation
+    if missed and representation == "plain":
+        representation = adaptation.if_stuck
+    return adaptation.model_copy(update={"opening": True, "representation": representation})
+
+
+async def _code_answer(
+    state: AgentState, runtime: Runtime[GraphContext], code: str, *, run: CodeRun | None = None
+) -> ExplainResult | None:
+    """Run the learner's code and answer what they asked about it, or `None`
+    when no model answered.
+
+    The exchange so far is always passed: "why does b hold the same value?"
+    one turn after "what does this print?" is about that answer, and an agent
+    that is not shown the conversation answers it as a first message.
+    """
+    ctx = runtime.context
+    inp = state.structured_input
+    question = inp.question if inp is not None else None
+    if run is None:
+        run = await run_learner_code(code, ctx.runner, needs_input=reads_keyboard(code))
+    exchange = [(message.role, message.content) for message in state.recent_context[-4:]]
+    preferences = state.profile.learning_preferences if state.profile is not None else {}
+    answer = await answer_about_code(
+        code,
+        question,
+        ctx.llm,
+        run=run,
+        context=turn_context(state.decision, _answer_pitch(state), exchange),
+        line_by_line=bool(preferences.get("wants_line_by_line_explanations", False)),
+    )
+    if answer is None:
+        return None
+    progress = state.session_progress
+    # The output was shown when the tutor first answered about this code; a
+    # further question does not print it again. After any other kind of reply
+    # (a diagnosis, a hint) it has not been shown yet, so it is.
+    shown_before = (
+        state.problem_relation == "followup"
+        and progress is not None
+        and progress.last_thread == "code"
+        and run.ran
+        and run.completed
+    )
+    said = answer if shown_before else with_run(answer, run)
+    return ExplainResult(answer=said, ran=run.ran, about_code=True)
+
+
 def _is_concept_question(state: AgentState) -> bool:
     """A question about a concept, with no problem statement and no code."""
     inp = state.structured_input
     if state.intent is None or state.intent.intent is not Intent.CONCEPT_EXPLANATION:
         return False
     return inp is not None and not inp.problem and not inp.code
-
-
-def _tutor_state(state: AgentState) -> str:
-    """The trusted `<tutor_state>` block for this turn's agent prompt."""
-    return tutor_state_block(state.decision, state.adaptation)
 
 
 def _learner_level(plan: TeachingPlan | None) -> str:
@@ -2868,7 +3218,11 @@ async def _concept_answer(
         level=None if guidance else _learner_level(state.plan),
         history=_recent_exchange(state) if state.thread_followup else (),
         learner_profile=_profile_note(state.profile) if guidance else None,
-        tutor_state=_tutor_state(state),
+        # The pitch, and a changed presentation only when the decision says
+        # the learner missed (`_answer_pitch`). With the step-tutoring line
+        # in it, "explain binary search code line by line" came back as a
+        # trace on [2, 5] that "stops one move short" (read live, both runs).
+        tutor_state=tutor_state_block(state.decision, _answer_pitch(state)),
     )
     if not answer.answer:
         return ExplainResult(answer=None, citations=[]), False
@@ -3229,6 +3583,10 @@ _VERDICT_RESTATEMENTS: Final = (
     "The sandbox still found a failure.",
     "The sandbox confirmed this passes",
     "A fix was found and verified in the sandbox",
+    # Under "Execution (your code): ran in the sandbox, not verified (no test
+    # cases)" this says the same thing a second time (read live: three lines
+    # in a row told the learner nothing could be checked).
+    "Correctness could not be checked",
 )
 
 
@@ -3339,6 +3697,11 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         learner_submitted=reviewed_code,
         reveals_code=generated.reveals_code,
     )
+    if isinstance(state.agent_result, ExplainResult) and state.agent_result.about_code:
+        # An answered question about code says in its own words whether the
+        # code was run and what it printed. There is no test verdict to add,
+        # and "not executed" under a run's real output is false.
+        exec_lines = []
     # A curated chain's first question replaces the long answer with its one-line
     # opener (spec: "teach the missing piece, not the whole topic").
     # An explicit ask ("explain the intuition, how to recognize it, the
@@ -4006,8 +4369,21 @@ def _thread_of(state: AgentState) -> LastThread | None:
     and a greeting are not something a follow-up is about)."""
     route = state.route
     intent = state.intent.intent if state.intent is not None else None
+    if isinstance(state.agent_result, ExplainResult) and state.agent_result.about_code:
+        return "code"
     if route in ("dsa", "debug", "grade", "practice"):
         return "problem"
+    if route == "assess":
+        if state.quiz is not None:
+            return "quiz"
+        # Marked: the reply explained each answer. A message that matched
+        # none of the questions was about something else, so the quiz stops
+        # waiting for it: the next message must not get the same line again.
+        # Only answers the model could not mark (no model) leave it open.
+        unmatched = (
+            state.agent_output is not None and state.agent_output.text == _QUIZ_NOT_MATCHED_TEXT
+        )
+        return "explanation" if state.quiz_grades or unmatched else None
     if route != "explain":
         return None
     if intent is Intent.GENERAL_GUIDANCE:
@@ -4040,6 +4416,10 @@ async def _persist_tutoring_state(state: AgentState, ctx: GraphContext) -> NodeE
     thread = _thread_of(state)
     if thread is not None:
         progress = progress.model_copy(update={"last_thread": thread})
+    if state.quiz is not None:
+        progress = progress.model_copy(update={"quiz": state.quiz})
+    elif state.quiz_grades:
+        progress = progress.model_copy(update={"quiz": None})
     own_code = state.structured_input.code if state.structured_input is not None else []
     if own_code and state.problem_key is not None and state.problem_relation in ("new", "same"):
         progress = progress.model_copy(
@@ -4107,6 +4487,46 @@ def _skill_deltas(
     return deltas
 
 
+def _quiz_events(state: AgentState, ctx: GraphContext) -> list[LearningEventCreate]:
+    """One learning event per marked quiz answer, in the order asked.
+
+    The topic is the question's own tag, from the closed quiz vocabulary
+    (`app.agents.assess.quiz_topics`); nothing here is learner text.
+    """
+    return [
+        LearningEventCreate(
+            conversation_id=ctx.conversation_id,
+            intent=Intent.KNOWLEDGE_CHECK,
+            topic=mark.topic,
+            solved=None,
+            evidence_source="quiz",
+            concept_grade=mark.grade,
+        )
+        for mark in state.quiz_grades
+    ]
+
+
+def _quiz_skill_deltas(
+    profile: LearnerProfileView | None, events: Sequence[LearningEventCreate]
+) -> dict[str, float]:
+    """How far a marked quiz moved each topic it asked about, all of its
+    events folded in order with the same projection `record_event` uses."""
+    before: dict[str, float] = dict(profile.skill_levels) if profile is not None else {}
+    if profile is not None:
+        before.update({f"{FAMILY_PREFIX}{k}": v for k, v in profile.family_levels.items()})
+    after = dict(before)
+    for event in events:
+        after, _ = apply_event(after, {}, event)
+    deltas: dict[str, float] = {}
+    for key, new_value in after.items():
+        if key.startswith(FAMILY_PREFIX):
+            continue
+        moved = round(new_value - before.get(key, PRIOR), 6)
+        if moved:
+            deltas[key] = moved
+    return deltas
+
+
 async def update_learner_model(
     state: AgentState, runtime: Runtime[GraphContext]
 ) -> AgentStateUpdate:
@@ -4129,7 +4549,21 @@ async def update_learner_model(
     skill_deltas: dict[str, float] = {}
 
     agent_output = state.agent_output
-    if (
+    if state.route == "assess":
+        # A knowledge check has no single topic. Asking the questions records
+        # nothing; each MARKED answer is one piece of evidence on its own
+        # topic, folded in order.
+        events = _quiz_events(state, ctx)
+        if events and ctx.session is not None and ctx.user_id is not None:
+            for quiz_event in events:
+                persisted_id, event_error = await _persist_event(ctx, quiz_event)
+                if persisted_id is not None:
+                    events_persisted.append(persisted_id)
+                if event_error is not None:
+                    errors.append(event_error)
+            if events_persisted:
+                skill_deltas = _quiz_skill_deltas(state.profile, events)
+    elif (
         state.route is not None
         and state.route not in ("clarify", "meta")
         and state.intent is not None
@@ -4240,6 +4674,7 @@ FALLBACKS: Final[MappingProxyType[str, Callable[[AgentState], AgentStateUpdate]]
             "debug_agent": _agent_outcome_fallback,
             "explain_agent": _agent_outcome_fallback,
             "practice_agent": _agent_outcome_fallback,
+            "assess_agent": _agent_outcome_fallback,
             "grade_answer": _agent_outcome_fallback,
             "execute_code": _execute_code_fallback,
             "verify": _verify_execution_fallback,

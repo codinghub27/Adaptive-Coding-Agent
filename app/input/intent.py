@@ -59,8 +59,18 @@ Classify the request into exactly one of these intents:
 - DSA_SOLVE: the user wants a solution or full walkthrough of a problem.
 - DSA_HINT: the user explicitly wants a hint or nudge, not a full solution.
 - PRACTICE_REQUEST: the user wants to be GIVEN a problem to practise on.
+- KNOWLEDGE_CHECK: the user wants to be ASKED questions so their knowledge is tested or \
+assessed ("ask me 10 basic DSA questions", "test how much I know", "quiz me on arrays", \
+"ask me questions to check my level"). The tutor asks, the learner answers. This is not \
+PRACTICE_REQUEST (one coding problem to solve) and not GENERAL_GUIDANCE.
 - CODE_DEBUG: the user wants their failing code fixed or diagnosed.
-- CODE_EXPLAIN: the user wants an explanation of what given code does.
+- CODE_EXPLAIN: the user wants an explanation of what given code does: how it works, \
+what it prints or returns ("what is the output of this code"), or why it behaves as \
+it does. No failure is reported. An ATTEMPT at a problem shared with what the learner \
+believes about it ("I think this returns the maximum path", "is this right?") is \
+CODE_DEBUG, not CODE_EXPLAIN: it has to be checked. So is code the learner says is wrong, \
+fails or "gives the wrong answer", even when they write "explain it": a reported failure \
+is always CODE_DEBUG.
 - CODE_REVIEW: the user wants a critique of code quality or style.
 - ERROR_EXPLANATION: the user wants to understand what an error message means, without \
 necessarily wanting their code fixed.
@@ -95,6 +105,15 @@ about THAT subject -- classify them by what is being asked of it (DSA_SOLVE for 
 solution to a problem, CODE_DEBUG for a bug in shared code, DSA_HINT for a nudge), not as \
 GENERAL_GUIDANCE. A reply that answers the tutor's pending_question is DSA_HINT. \
 GENERAL_GUIDANCE is only for a study plan, roadmap or career advice, or a greeting.
+When pending_question says a set of quiz questions is waiting: a message that gives \
+answers to them (numbered or not, to some or all, including "skip" or "I don't know" for \
+some) is DSA_HINT with learner_showed set; a message that asks for different questions \
+("start from the basics", "not DSA", "easier ones", "ask me something else") is \
+KNOWLEDGE_CHECK.
+When last_reply is an answer to the learner's question about their code, a further \
+question about that code ("why does b change too?", "what if I remove line 2?") is \
+CODE_EXPLAIN with refers_to_previous true. It is CODE_DEBUG only when they report a \
+failure or ask for bugs to be found.
 
 Reply with ONLY a single JSON object and nothing else, in exactly this shape:
 {"intent": "<ONE_OF_THE_INTENT_NAMES_ABOVE>", "confidence": <number between 0 and 1>, \
@@ -121,7 +140,8 @@ was a study plan / roadmap or a concept explanation, and this message follows up
 reply ("where should I start", "first where should i start", "make it shorter", "what \
 about week 2", "give another example", "i'm asking about the roadmap"), set this true, set \
 refers_to_previous false, and use the intent of that reply: GENERAL_GUIDANCE for a plan, \
-CONCEPT_EXPLANATION for an explanation. The active_subject may be an OLD problem the \
+CONCEPT_EXPLANATION for an explanation, KNOWLEDGE_CHECK for a knowledge check. The \
+active_subject may be an OLD problem the \
 learner has moved on from: a follow-up belongs to the last reply, not to it, unless the \
 message is clearly about that problem.
 - learner_showed: what the learner just DEMONSTRATED, when the message is their own \
@@ -157,6 +177,14 @@ _PROBLEM_ASK_OVERRIDE_RE = re.compile(r"(?i)\b(hint|stuck|approach|explain|optim
 _PRACTICE_ASK_RE = re.compile(
     r"(?i)(please\s+|can you\s+|could you\s+)?(give|get|show|send|find)\s+me\s+"
     r"(a|an|another|one|some|1)\b[^.?!\n]{0,40}?\b(problem|question|challenge|exercise)s?\b"
+)
+#: Asking to be ASKED: "ask me 10 basic questions", "quiz me", "ask me
+#: questions to check how much knowledge I have". The verb, "me", and what is
+#: wanted; never "ask me anything" on its own.
+_QUIZ_ASK_RE = re.compile(
+    r"(?i)\bquiz me\b"
+    r"|\b(?:ask|test)\s+me\b[^.?!\n]{0,40}\b(?:questions?|quiz)\b"
+    r"|\b(?:test|check)\s+(?:my|how much)\b[^.?!\n]{0,30}\b(?:knowledge|i know)\b"
 )
 _CONFUSED_CONCEPT_RE = re.compile(
     r"(?i)\b(confused|confusing|don'?t understand|do not understand|difference between|"
@@ -236,6 +264,16 @@ def rule_intent(inp: StructuredInput) -> IntentResult | None:
                 confidence=0.8,
                 source="rule",
                 rationale="explicit request for a practice problem",
+            )
+        # "ask me 10 questions to test how much I know": the same reasoning.
+        # Read live with every credential rate-limited, it fell to the
+        # keyword heuristic and got "I can't tell what that refers to".
+        if _QUIZ_ASK_RE.search(question):
+            return IntentResult(
+                intent=Intent.KNOWLEDGE_CHECK,
+                confidence=0.8,
+                source="rule",
+                rationale="explicit request to be asked questions",
             )
         # "I keep getting confused about when to use BFS versus DFS": a concept
         # question in fixed phrasing, never a request to solve something.
@@ -437,8 +475,6 @@ _PRACTICE_KEYWORDS: Final = (
     "a problem to solve",
     "problem to practise",
     "problem to practice",
-    "quiz me",
-    "test me on",
     "exercise",
     "give me a question",
     "some problems",

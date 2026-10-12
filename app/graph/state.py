@@ -42,6 +42,8 @@ from app.schemas.tutoring import (
     AnswerGrade,
     PendingCheck,
     PracticeRecord,
+    QuizGrade,
+    QuizState,
     Reaction,
     SessionProgress,
     TutoringView,
@@ -59,7 +61,7 @@ __all__ = [
     "SuiteSource",
 ]
 
-RouteKey = Literal["dsa", "debug", "explain", "practice", "clarify", "grade", "meta"]
+RouteKey = Literal["dsa", "debug", "explain", "practice", "assess", "clarify", "grade", "meta"]
 
 # Where this turn's `TestSuite` (if any) came from -- see `debug_agent` and the
 # review branch of `explain_agent` in `app.graph.nodes`, and the gating this
@@ -194,6 +196,11 @@ class AgentState(BaseModel):
     #: the learner's own words (`app.tutoring.step`), not the bank's sentence.
     grade_step_written: bool = False
     practice: PracticeRecord | None = None
+    #: A knowledge check asked this turn (`assess_agent`), stored on the
+    #: conversation until it is answered; and the marks given this turn to an
+    #: answered one, each of which becomes a learning event on its topic.
+    quiz: QuizState | None = None
+    quiz_grades: list[QuizGrade] = Field(default_factory=list[QuizGrade])
     submitted_code: bool = False
     #: The full solution was handed over this turn, for the first time on this
     #: problem, to a learner who had not run an attempt at it. Soft evidence
@@ -247,6 +254,8 @@ class AgentStateUpdate(TypedDict, total=False):
     grade_handoff: bool
     grade_step_written: bool
     practice: PracticeRecord | None
+    quiz: QuizState | None
+    quiz_grades: list[QuizGrade]
     submitted_code: bool
     help_needed: bool
     next_pending: PendingCheck | None

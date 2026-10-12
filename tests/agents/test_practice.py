@@ -14,7 +14,7 @@ from app.agents.practice import (
 )
 from app.graph.routing import INTENT_ROUTES
 from app.graph.subgraphs.dsa import corpus_chunks_by_pattern
-from app.input.intent import fallback_intent
+from app.input.intent import fallback_intent, rule_intent
 from app.schemas.input import StructuredInput
 from app.schemas.intent import Intent
 
@@ -29,12 +29,41 @@ def _chunks(pattern: str):
         "give me a two pointer problem for a beginner",
         "I want to practise BFS",
         "give me another problem",
-        "quiz me on dynamic programming",
     ],
 )
 def test_practice_phrasings_classify_as_practice_request(text: str) -> None:
     result = fallback_intent(StructuredInput(source="text", question=text))
     assert result.intent is Intent.PRACTICE_REQUEST
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "quiz me on dynamic programming",
+        "ask me 10 dsa basic question to test how much knowledge i have",
+        "ask me questions to check how much knowledge i have",
+        "test my knowledge of graphs",
+    ],
+)
+def test_asking_to_be_asked_is_a_knowledge_check_by_rule(text: str) -> None:
+    # Being asked questions is not being handed a problem, and it does not
+    # depend on a model being reachable.
+    result = rule_intent(StructuredInput(source="text", question=text))
+    assert result is not None
+    assert result.intent is Intent.KNOWLEDGE_CHECK
+    assert not result.low_confidence
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ask me anything but don't start from directly DSA",
+        "can I ask you a question about hash maps",
+        "ask me to explain recursion",
+    ],
+)
+def test_other_asks_are_left_to_the_classifier(text: str) -> None:
+    assert rule_intent(StructuredInput(source="text", question=text)) is None
 
 
 def test_practice_intent_routes_to_the_practice_node() -> None:

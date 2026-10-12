@@ -112,7 +112,7 @@ HELP_ALPHA: Final = 0.1
 
 #: Evidence sources that are soft: folded in at a low weight, on the family
 #: estimate first, and never able to lift a skill into the HARD band.
-SOFT_SOURCES: Final = frozenset({"concept_check", "tutor_reply", "help_needed"})
+SOFT_SOURCES: Final = frozenset({"concept_check", "tutor_reply", "help_needed", "quiz"})
 
 
 def help_update(old: float) -> float:
@@ -207,7 +207,7 @@ def _soft_step(event: LearningEventCreate) -> Callable[[float], float] | None:
     the event is exposure only or carries a sandbox outcome."""
     if event.solved is not None:
         return None
-    if event.evidence_source in ("concept_check", "tutor_reply") and event.concept_grade:
+    if event.evidence_source in ("concept_check", "tutor_reply", "quiz") and event.concept_grade:
         grade = event.concept_grade
         return lambda old: concept_update(old, grade)
     if event.evidence_source == "help_needed":
@@ -241,10 +241,37 @@ def apply_event(
         # key only once that key carries real (sandbox) evidence. A single
         # answer must not create a topic key that shadows a stronger family
         # estimate in `skill_for` (measured: it slowed adaptation 9 -> 22 turns).
-        for key in skill_keys(event):
+        #
+        # Two cases do move the topic's own key. A topic with no family (a
+        # foundation topic such as `recursion`) has nowhere else to keep its
+        # estimate. And a knowledge-check answer (`quiz`) is a question asked
+        # ON that topic, at the learner's request, to find their level: the
+        # result belongs on the skill they see. Once a key has moved, every
+        # later piece of soft evidence keeps it current, so it does not go
+        # stale beside its family.
+        #
+        # A topic key that has not moved yet starts from its FAMILY's estimate,
+        # not from the prior: one wrong quiz answer on `bfs` must not put a
+        # learner with strong sandbox evidence on graphs back at a beginner's
+        # level for BFS (the shadowing measured above).
+        keys = skill_keys(event)
+        direct = event.evidence_source == "quiz" or len(keys) == 1
+        family_before = next(
+            (
+                new_skills[key]
+                for key in keys
+                if key.startswith(FAMILY_PREFIX) and key in new_skills
+            ),
+            PRIOR,
+        )
+        for key in keys:
             current = new_skills.get(key)
-            if key.startswith(FAMILY_PREFIX) or (current is not None and current != PRIOR):
+            is_family = key.startswith(FAMILY_PREFIX)
+            moved = current is not None and current != PRIOR
+            if is_family or moved:
                 new_skills[key] = soft(current if current is not None else PRIOR)
+            elif direct:
+                new_skills[key] = soft(family_before)
             elif current is None:
                 new_skills[key] = PRIOR
     elif event.solved is None:

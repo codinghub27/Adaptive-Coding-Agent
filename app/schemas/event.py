@@ -30,8 +30,10 @@ Difficulty = Literal["easy", "medium", "hard"]
 #: `concept_check`: a graded answer to a curated question. `tutor_reply`: the
 #: tutor's own reading of a reply to its guiding question on a problem.
 #: `help_needed`: the learner needed the full solution on a problem they had
-#: not run an attempt at. The last three are soft evidence: they never set
-#: `solved` and never make a learner "strong" (see `app.memory.profile`).
+#: not run an attempt at. `quiz`: a marked answer to one question of a
+#: knowledge check the learner asked for (`app.agents.assess`). The last four
+#: are soft evidence: they never set `solved` and never make a learner
+#: "strong" (see `app.memory.profile`).
 EvidenceSource = Literal[
     "extracted",
     "synthesised",
@@ -40,6 +42,7 @@ EvidenceSource = Literal[
     "concept_check",
     "tutor_reply",
     "help_needed",
+    "quiz",
 ]
 
 #: A graded conceptual answer (ADAPTIVE-tutoring G2); mirrors

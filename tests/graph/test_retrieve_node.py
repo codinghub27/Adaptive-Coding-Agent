@@ -325,12 +325,14 @@ async def test_run_graph_plan_topic_derived_from_retrieval() -> None:
         topic="arrays",
         pattern="two_pointers",
     )
-    hit = RetrievalHit(chunk=chunk, score=-1.2, retrievers=("bm25", "dense"), reranked=True)
+    # A short message with no statement takes a topic from retrieval only on
+    # a strong hit (`MIN_CONCEPT_TOPIC_SCORE`).
+    hit = RetrievalHit(chunk=chunk, score=4.2, retrievers=("bm25", "dense"), reranked=True)
     retriever = FakeRetriever(hits=[hit])
     fake = FakeLLMClient(
         chat_content='{"intent": "DSA_SOLVE", "confidence": 0.95, "rationale": "clear"}'
     )
-    raw = RawInput(text="Can you help me find the two sum pattern for this problem?")
+    raw = RawInput(text="Can you help me find the pair that sums to the target?")
 
     result = await run_graph(raw, llm=fake, retriever=retriever)
 

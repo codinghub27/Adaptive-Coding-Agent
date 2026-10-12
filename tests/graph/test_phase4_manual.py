@@ -306,6 +306,14 @@ def _node_inputs() -> dict[str, tuple[RawInput, FakeLLMClient]]:
                 chat_content='{"intent": "CODE_EXPLAIN", "confidence": 0.95, "rationale": "n/a"}'
             ),
         ),
+        "assess_agent": (
+            RawInput(text="ask me 5 basic questions to test what I know"),
+            FakeLLMClient(
+                chat_content=(
+                    '{"intent": "KNOWLEDGE_CHECK", "confidence": 0.95, "rationale": "n/a"}'
+                )
+            ),
+        ),
         "practice_agent": (
             RawInput(text="give me a two pointer problem to practise"),
             FakeLLMClient(

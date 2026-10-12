@@ -12,7 +12,7 @@ Trust boundaries, field by field:
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field
 
@@ -23,6 +23,8 @@ from app.schemas.input import ActiveProblem, CodeBlock
 from app.schemas.plan import AssistanceLevel
 
 __all__ = [
+    "FOUNDATION_TOPICS",
+    "MAX_QUIZ_QUESTIONS",
     "AnswerGrade",
     "ConceptRubric",
     "ExecutionView",
@@ -34,6 +36,9 @@ __all__ = [
     "PendingKind",
     "PendingView",
     "PracticeRecord",
+    "QuizGrade",
+    "QuizItem",
+    "QuizState",
     "Reaction",
     "SessionProgress",
     "TutoringView",
@@ -133,7 +138,50 @@ class PracticeRecord(APIModel):
     statement: str | None = Field(default=None, max_length=2000)
 
 
-LastThread = Literal["problem", "plan", "explanation"]
+LastThread = Literal["problem", "plan", "explanation", "quiz", "code"]
+
+#: The most questions one knowledge check asks.
+MAX_QUIZ_QUESTIONS: Final = 10
+
+#: Topics a knowledge check may be about that the corpus has no page for.
+#: They are skill-map keys like any pattern slug, but they are also ordinary
+#: words ("strings", "arrays", "sorting"): `app.agents.planner` never reads
+#: one out of a problem statement or code as that turn's topic.
+FOUNDATION_TOPICS: Final[tuple[str, ...]] = (
+    "python_basics",
+    "complexity",
+    "arrays",
+    "strings",
+    "recursion",
+    "sorting",
+)
+
+
+class QuizItem(APIModel):
+    """One question of a knowledge check, with the answer it is marked against.
+
+    `topic` is a key of the learner's skill map (a corpus pattern or a
+    foundation topic, `app.agents.assess.quiz_topics`): a closed vocabulary.
+    `question` and `expected` are the tutor's own text; `expected` is never
+    shown before the learner has answered.
+    """
+
+    question: str = Field(min_length=1, max_length=600)
+    topic: str = Field(min_length=1, max_length=64)
+    expected: str = Field(min_length=1, max_length=800)
+
+
+class QuizState(APIModel):
+    """The knowledge check the tutor asked and is waiting on."""
+
+    items: list[QuizItem] = Field(min_length=1, max_length=MAX_QUIZ_QUESTIONS)
+
+
+class QuizGrade(APIModel):
+    """How one answered quiz question was marked: evidence for one topic."""
+
+    topic: str = Field(min_length=1, max_length=64)
+    grade: Grade
 
 
 class SessionProgress(APIModel):
@@ -172,6 +220,10 @@ class SessionProgress(APIModel):
     #: The subject (`evidence_key`) on which the learner asked not to be given
     #: the answer. Cleared when they ask for the code or move to a new subject.
     withhold_key: str | None = Field(default=None, max_length=96)
+    #: The knowledge check the tutor asked last and has not marked yet. It is
+    #: open only while it is also the last thing the tutor said
+    #: (`last_thread == "quiz"`); cleared once it is marked.
+    quiz: QuizState | None = None
 
     @classmethod
     def empty(cls) -> "SessionProgress":

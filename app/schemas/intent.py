@@ -37,6 +37,10 @@ class Intent(StrEnum):
     TEST_CASE_ANALYSIS = "TEST_CASE_ANALYSIS"
     APPROACH_DISCUSSION = "APPROACH_DISCUSSION"
     PRACTICE_REQUEST = "PRACTICE_REQUEST"
+    #: The learner asks to be ASKED questions so the tutor can see what they
+    #: know ("ask me 10 basic questions", "test me on arrays"). Not a request
+    #: for one problem to solve (`PRACTICE_REQUEST`).
+    KNOWLEDGE_CHECK = "KNOWLEDGE_CHECK"
     #: Not about a specific problem, piece of code or single concept: study
     #: plans, roadmaps, interview/career advice, greetings and small talk
     #: (ADAPTIVE-upgrade P2, F7). Never enters the hint ladder.

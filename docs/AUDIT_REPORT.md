@@ -1074,3 +1074,142 @@ What was run and READ on the changed code, one run each unless said:
 - Two tests that pinned the old behaviour were rewritten, not extended:
   `test_unparseable_output_falls_back_to_the_references_themselves` and
   `test_debug_patch_never_revealed_when_not_fixed`.
+
+## 17. A conversation the owner pasted, 2026-10-12: code questions, a knowledge check, topics
+
+Branch `main`, on top of `b702978`. Method as in section 16: read the stored
+turns in Postgres, find where each reply was decided, change that, run it
+live, READ the reply, have the diff reviewed, fix what the review found.
+
+### What the stored turns showed
+
+Twelve turns in two conversations of one account (`1582f9cc`, `6cecc279`),
+all on commit `b702978`. The 3Sum and `maxArea` turns in the same paste are
+older than the fixes of section 16 (16:24 and 16:38 UTC on 10-11; the fixes
+landed at 16:35 and 16:53) and were replayed instead.
+
+| Turn | Tutor did | Decided in | Cause |
+|---|---|---|---|
+| "what is the output of this code" + `a=b=[]` ... | "Structure: module (lines 1-3)", "Space: O(n)", "Execution (your code): not executed". The output was never stated | `explain_agent` -> `run_explain` | The code explainer has no execution path and cannot answer a question: it prints a fixed report |
+| "why b as contains the same value as a" | The outline and the cost again | same | A follow-up with the stored code and no line explanations renders two of the three report sections |
+| both, in the learner model | Recorded under topic `dfs` | `analyze_problem` | The retrieval query was "a b" (the code's identifiers); it matched the dfs page at -1.13 and the floor for every turn was -5.0 |
+| "ask me 10 dsa basic question to test how much knowledge i have" | One MEDIUM dfs problem (Clone Graph) | classifier, `practice_agent` | No intent for being asked questions; PRACTICE_REQUEST was the nearest. The topic was the wrong `dfs` above |
+| the same in a new conversation, five times | "Tell me which pattern you want to practise", word for word | `practice_agent` | No topic, so the choice was handed back (invariant 2) |
+| "start from basic not directly in DSA" | A three-week stack and queue plan | `_concept_answer` | Read as a new plan request and grounded on the DSA curriculum |
+| the profile after all of it | Every skill 0.50, `skill_seen` empty | `update_learner_model` | Nothing the learner did was evidence, and nothing asked them anything |
+
+### What changed
+
+| Item | Change |
+|---|---|
+| A question about code | `app/agents/code_answer.py`. The code is run as a script in the sandbox; one call answers the question with the real output in its prompt. The output shown is the sandbox's. `run_explain` is the fallback when no model answers. No "not executed" under an answer |
+| A follow-up on it | `last_thread == "code"`; `_continues_code_answer` keeps the next question on that code unless it is confidently something else, and the prompt gets the exchange |
+| Explanations and the step-tutoring line | `_answer_pitch`: a direct answer (about code, or a concept explanation) gets the pitch but not "if they did not follow, switch to a worked example". Read live, that line turned a one-sentence answer into a table and a trace, and "explain binary search code line by line" into a walk on `[2, 5]` that "stops one move short" -- the same sentence as in the owner's 3Sum reply |
+| Code nobody called buggy | `_question_about_working_code` in `debug_agent`: a code-only turn that is a debug turn only by rule, with no error reported, whose program runs and prints something, is answered. The decision record is updated (`move="explain"`, reason `ran_clean_answered`). Definitions-only code and crashes are debugged as before |
+| A knowledge check | Intent `KNOWLEDGE_CHECK`, route `assess`, `app/agents/assess.py`. Questions written from the ask and the profile (`standing_note`), stored with their keys on the conversation, marked by a second call. Each marked answer is one event, `evidence_source="quiz"`, on its own topic. The plain asks are read by rule (`_QUIZ_ASK_RE`), so they do not wait on the classifier. A built-in set with no model; unmarked answers record nothing |
+| Quiz evidence in the profile | `apply_event`: a quiz answer moves the topic's own key, starting from the family's estimate; soft evidence on a topic with no family moves that key. Capped at `CONCEPT_CEILING` like every soft source |
+| Topic for a short message | `analyze_problem(question_query=...)`: when the query was the learner's question (no statement, no usable names in the code) the floor is 2.5, or a named listed problem (`_named_problem`). One-letter identifiers no longer form a query. Foundation topics are never read out of a statement or code |
+| Practice with no topic | The weakest evidenced area, else `hashing`; always easy when the tutor chose |
+| "Don't give me the code" with no classifier | `planner.declines_the_answer`: the fallback phrase lists found "give me the final code" inside it. Seen live under rate limits (scenario 15) |
+| Three "not verified" lines | "Correctness could not be checked" is dropped under the Execution line that says the same |
+
+### Measured
+
+Topic inference against the live retriever:
+
+| | Old rule | First attempt (floor 2.5 for every turn without a statement) | Final |
+|---|---|---|---|
+| 30-probe set (`tests/graph/test_topic_accuracy.py`) | 29 / 30 | 26 / 30 | 29 / 30 |
+| 17 short messages: 7 name a problem, 10 name nothing | 3 of the 10 got a topic; "two sum" got `sliding_window` | | 7 / 7 keep the right topic, 10 / 10 get none |
+
+The first attempt was caught by the review, not by the probe test (its bar
+is 80%).
+
+Suites: 2156 passed, 2 skipped. pyright strict on `app`: 0 errors. ruff clean.
+
+Live, `openai/gpt-oss-120b`, a second server on port 8001:
+
+- The owner's conversation in its original order, one run, read in full: the
+  output stated first ("The code prints: [1]") with the sandbox note and one
+  prediction question; the "why" answered about that code in five lines;
+  five questions asked; five skips marked with the answers given; five skills
+  moved to 0.475 on the profile; "start from basic not directly in DSA" got
+  five Python questions; "give me a problem" got one without asking which
+  pattern.
+- A quiz answered with a mix: 3 of 10 marked correct (all three were); the
+  next set was easier questions on the topics missed and one harder on a
+  topic that was right.
+- `maxArea`, "find bugs" then "give bug fixed code of my code" (section 16's
+  fix, not seen live until now): all three bugs numbered; the fixed code
+  shown; "Execution (your code): failed 1/6", "(suggested fix): passed 6/6".
+
+`live_scenarios`, runs passed. The code changed between the columns, so a
+row is not five runs of one build.
+
+| # | Scenario | Before review fixes (1 run) | After them (2 runs) | Last build measured (2 runs) | What the failures were |
+|---|---|---|---|---|---|
+| 1 | Beginner, Two Sum | 1/1 | 2/2 | | |
+| 2 | KeyError debug | 1/1 | 2/2 | | |
+| 3 | Challenge mode | 1/1 | | | |
+| 5 | BFS vs DFS, eight turns | 1/1 | | | |
+| 22 | Asking for the code four ways | 1/1 | 2/2 | | |
+| 27 | A quiz, then "start from basic not directly in DSA" | 1/1 | 2/2 | | |
+| 25 | "what is the output of this code", then "why" | 0/1 | 2/2 | 2/2 | The first failure was the check's own wording |
+| 26 | "ask me 10 questions", answered, profile moves | 1/1 | 1/2 | 2/2 | Classifier rate-limited: the ask went to "I can't tell what that refers to". Now read by rule |
+| 24 | "explain the code of 3sum line by line", then binary search | 0/1 | 0/2 | 1/2 | Turn 2 was the "stops one move short" trace (fixed, then walked line by line), and the no-response fallback under rate limits (not fixed) |
+| 4 | Max Path Sum misconception | 0/1 | 2/2 | 1/2 | Read as CODE_EXPLAIN: the misconception is still explained and the answer graded, but the code gets no sandbox verdict |
+| 15 | Buggy code, "explain it, but no final code yet" | 0/1 | 0/2 | 1/2 | Three different causes: the fallback lists reading "give me the final code" inside the refusal (fixed); read as CODE_EXPLAIN (prompt changed, then routed to debug 2/2); and a reply that was only "Execution (your code): ran in the sandbox, not verified" when the debugger's model calls returned nothing (NOT fixed, seen three times under rate limits) |
+
+Scenarios 4 and 15 passed 2/2 at the section 16 baseline. They are worse now
+on the runs measured, for the reason in the next list, and that is a
+regression this round introduced and only partly took back.
+
+### What the review found (`/code-review medium`, 10 findings)
+
+Nine were fixed before the commit: quiz answers lost when the conversation's
+subject was code (the owner's own order; now decided first, in `_decide`);
+an unread message with a quiz open getting the same canned line forever (an
+unmatched message closes the wait); foundation topics such as `strings`
+read out of problem statements as that turn's topic; a quiz answer shadowing
+a strong family estimate; a bare-substring test hiding the real output when
+the code prints `1`; the output block dropped on a follow-up that had never
+shown it; the floor change costing three correct topics (table above); the
+shortcut answering "this gives the wrong answer" about a bare function; the
+decision record not matching what the debug node did.
+
+One stands as a recorded exception to "one decision per turn":
+`_question_about_working_code` settles answer-or-debug inside `debug_agent`,
+because it takes a sandbox run and `decide_turn` has no I/O. It costs a
+second run of the learner's code when it declines.
+
+### What still does not match the target
+
+- **A debugging session leaves nothing on the profile when the code has no
+  recognisable topic.** `maxArea` (three real bugs, 1/6 then 6/6) recorded no
+  event: no topic was inferred (-9.3) and a synthesised suite's verdict is
+  not trusted without a statement. What this learner does most is still
+  invisible to their profile.
+- **The profile holds skills and catalog mistakes only.** "What learning
+  method the learner follows" is `learning_preferences`: three booleans set
+  through the API, never from behaviour.
+- **The classifier's label still decides between an answer and a debug
+  report for a code turn.** Widening CODE_EXPLAIN to cover "what does it
+  print" made the model call two debug cases CODE_EXPLAIN (scenario 4, an
+  attempt with a stated belief; scenario 15, "gives the wrong answer.
+  Explain it"). The prompt now names both as CODE_DEBUG; see the table for
+  what was measured after that.
+- Under rate limits a concept or explain turn still ends in "I wasn't able
+  to put together a full response" (scenario 24, turn 2, two runs of six).
+- The quiz is one message of answers: no question-by-question mode, no
+  partial marking across messages.
+- Marking is one model's judgement against a key the same model wrote. It
+  was right on the answers read here; it is soft evidence for that reason.
+- No UI check: the quiz and the code answer render through the same
+  `explanation` text path as before; the skill panel was not opened in a
+  browser.
+- `eval/behavior/replay.py` has no example for either new behaviour;
+  scenarios 25 to 27 are the only live checks.
+- The local Ollama model was not used: the cloud keys kept answering, with
+  short per-minute waits. `main` has no Ollama provider (it lives on
+  `experiment/local-ollama`), so using it for a measurement means running
+  that branch, and its numbers would describe a different model.

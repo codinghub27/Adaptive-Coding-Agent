@@ -12,7 +12,9 @@ def test_intent_has_exactly_twelve_members() -> None:
     # handed a practice problem its own intent and route. Thirteen since
     # ADAPTIVE-upgrade P2 added GENERAL_GUIDANCE (study plans, advice, small
     # talk), which must never be forced into a DSA intent and the hint ladder.
-    assert len(Intent) == 13
+    # Fourteen with KNOWLEDGE_CHECK: being asked questions is not being handed
+    # a problem.
+    assert len(Intent) == 14
 
 
 def test_intent_result_rejects_confidence_above_one() -> None:

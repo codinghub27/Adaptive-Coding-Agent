@@ -44,6 +44,7 @@ from app.schemas.plan import (
     TeachingPlan,
 )
 from app.schemas.profile import LearnerProfileView
+from app.schemas.tutoring import FOUNDATION_TOPICS
 
 __all__ = [
     "DSA_ROUTE_INTENTS",
@@ -84,6 +85,7 @@ INTENT_DEFAULTS: Final[Mapping[Intent, tuple[AssistanceLevel, SolutionStrategy]]
             Intent.DSA_SOLVE: ("concept", "socratic_hints"),
             Intent.APPROACH_DISCUSSION: ("concept", "socratic_hints"),
             Intent.PRACTICE_REQUEST: ("hint", "socratic_hints"),
+            Intent.KNOWLEDGE_CHECK: ("hint", "socratic_hints"),
             Intent.CODE_DEBUG: ("hint", "guided_debugging"),
             Intent.ERROR_EXPLANATION: ("concept", "guided_debugging"),
             Intent.TEST_CASE_ANALYSIS: ("hint", "guided_debugging"),
@@ -162,15 +164,38 @@ DEBUG_ROUTE_INTENTS: Final[frozenset[Intent]] = frozenset(
 )
 
 
+#: "don't give me the final code yet", "without showing the solution", "no
+#: spoilers", "I want to solve it myself". The phrase lists above find "give
+#: me the final code" INSIDE the first of these. Read live with the classifier
+#: rate-limited: the learner who asked not to be given the code was handed it.
+_DECLINE_RE: Final = re.compile(
+    r"\b(?:don'?t|do not|never|without|not)\s+(?:\w+\s+){0,2}?"
+    r"(?:give|giving|show|showing|tell|telling|write|writing|reveal|revealing|post|send)\b"
+    r"[^.?!\n]{0,40}\b(?:code|solution|answer|fix|algorithm)\b"
+    r"|\bno spoilers?\b"
+    r"|\b(?:solve|write|fix|do|try) (?:it|this) (?:myself|on my own|by myself)\b"
+)
+
+
+def declines_the_answer(text: str | None) -> bool:
+    """Does `text` ask NOT to be given the code, the fix or the answer?
+
+    The fallback for `IntentResult.no_solution` when no model read the turn.
+    """
+    return bool(_DECLINE_RE.search((text or "").lower()))
+
+
 def explicit_ask_phrase(text: str) -> bool:
     """Whether `text` contains a fixed explicit-solution-ask phrase."""
-    return bool(_EXPLICIT_ASK_RE.search(text.lower()))
+    return bool(_EXPLICIT_ASK_RE.search(text.lower())) and not declines_the_answer(text)
 
 
 def asks_for_fix(text: str | None) -> bool:
     """Whether `text` asks for the corrected code on a debugging turn: either a
     fix ask ("fix this code") or a plain ask for the code ("give full code")."""
     lowered = (text or "").lower()
+    if declines_the_answer(lowered):
+        return False
     return bool(_FIX_ASK_RE.search(lowered) or _EXPLICIT_ASK_RE.search(lowered))
 
 
@@ -464,6 +489,29 @@ def _title_match(inp: StructuredInput | None, context: Sequence[RetrievalHit]) -
     return min(ranked, key=lambda p: (_rank(p, context), p in vocab.umbrellas, p))
 
 
+def _named_problem(prose: str, context: Sequence[RetrievalHit]) -> str | None:
+    """The pattern of a curated problem the message NAMES ("how to solve
+    3sum", "a hint for coin change"), among the patterns this turn's
+    retrieval surfaced.
+
+    A short message scores low against a whole page even when it is about
+    that page: "how to solve 3sum" tops out on `two_pointers` at -1.60, in the
+    same band as "what is the output of this code" (-3.71, `intervals`). The
+    score cannot tell them apart; the name can. The title must appear as a
+    whole run of words, the longest listed title wins, and a pattern counts
+    only when retrieval also returned it -- "count subsets with sum k" names
+    "Subsets" but retrieval does not return `backtracking` for it.
+    """
+    vocab = _corpus_vocab()
+    padded = f" {' '.join(_tokens(prose))} "
+    named = [title for title in vocab.titles if f" {title} " in padded]
+    for title in sorted(named, key=lambda t: (-len(t.split()), -len(t), t)):
+        ranked = [p for p in vocab.titles[title] if _rank(p, context) < len(context)]
+        if ranked:
+            return min(ranked, key=lambda p: (_rank(p, context), p in vocab.umbrellas, p))
+    return None
+
+
 #: Siblings the reranker scores within this margin of the top hit are
 #: treated as tied, and the corpus's own cues break the tie. Measured: the
 #: misfiled sibling pairs sat 0.6-1.5 apart (`bfs` -3.6 vs `dfs` -5.1,
@@ -559,6 +607,7 @@ def analyze_problem(
     *,
     inherited_topic: str | None = None,
     concept_question: bool = False,
+    question_query: bool | None = None,
 ) -> ProblemAnalysis:
     """Infer a topic and skill level for this turn.
 
@@ -566,6 +615,13 @@ def analyze_problem(
     problem or code: its topic comes from retrieval only on a strong hit
     (`MIN_CONCEPT_TOPIC_SCORE`). A weak one is no topic at all -- a recursion
     question must not be labelled with whichever page happened to rank first.
+
+    `question_query` says the retrieval query was the learner's QUESTION, not
+    a problem statement and not names read out of their code
+    (`app.graph.nodes.build_retrieval_query`). `None` works it out from the
+    input: no statement and no code. Such a query is on the same scale as a
+    concept question and is held to the same floor, with one more way to a
+    topic: naming a problem the corpus lists (`_named_problem`).
 
     Resolution order, first match wins:
     1. an explicit `topic_hint` ("hint"),
@@ -618,7 +674,13 @@ def analyze_problem(
 
     prose = _prose(inp).lower()
     if prose:
-        matched = _best_topic_match(profile.skill_levels, prose)
+        known = profile.skill_levels
+        if inp is not None and (inp.problem or inp.code):
+            # A foundation topic is an everyday word. "Given an array of
+            # strings strs, group the anagrams" is not a turn about `strings`
+            # because the learner once answered a quiz question on them.
+            known = {k: v for k, v in known.items() if k not in FOUNDATION_TOPICS}
+        matched = _best_topic_match(known, prose)
         if matched is not None:
             return ProblemAnalysis(
                 topic=matched,
@@ -634,7 +696,31 @@ def analyze_problem(
             topic_source="title",
         )
 
-    floor = MIN_CONCEPT_TOPIC_SCORE if concept_question else MIN_RETRIEVAL_TOPIC_SCORE
+    # The low floor is calibrated for a problem STATEMENT and for a query
+    # made of the names in the learner's code (the 30-probe set,
+    # tests/graph/test_topic_accuracy.py: 29 of 30). A short QUESTION sent as
+    # the query is on another scale, where a weak hit is noise: "what is the
+    # output of this code" tops out on `intervals` at -3.71, "why does my
+    # loop never end" on `sliding_window` at -4.37 -- and a question about
+    # Python lists was recorded on the learner's profile as a graph skill
+    # (owner's conversation, 2026-10-12). Between the two floors such a
+    # message gets a topic only by naming a problem the corpus lists.
+    if question_query is None:
+        question_query = inp is not None and not inp.problem and not inp.code
+    short_query = concept_question or question_query
+    floor = MIN_CONCEPT_TOPIC_SCORE if short_query else MIN_RETRIEVAL_TOPIC_SCORE
+    if (
+        short_query
+        and not concept_question
+        and context
+        and context[0].score >= MIN_RETRIEVAL_TOPIC_SCORE
+        and _on_reranker_scale(context[0])
+    ):
+        named = _named_problem(prose, context)
+        if named is not None:
+            return ProblemAnalysis(
+                topic=named, skill_level=skill_for(profile, named), topic_source="title"
+            )
     if context and (context[0].score >= floor or not _on_reranker_scale(context[0])):
         chunk = context[0].chunk
         slug = _signal_choice(prose, context, inp) or chunk.pattern or chunk.topic

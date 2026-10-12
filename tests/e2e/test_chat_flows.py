@@ -273,12 +273,49 @@ _LINE_EXPLANATIONS_JSON = json.dumps(
 )
 
 
+#: A phrase only the direct code-answer prompt carries (`app.agents.code_answer`).
+_CODE_ANSWER_MARK = "asked something about it"
+
+
+async def test_a_question_about_code_is_answered_not_reported(
+    make_settings: MakeSettings,
+) -> None:
+    """Owner's conversation, 2026-10-12: "what is the output of this code" got
+    an outline, a cost and "Execution: not executed"; the question was never
+    answered."""
+    answer = "It returns the indices of the two numbers that add up to the target."
+    fake = _RoutedLLM(
+        routes=[
+            ("intent classifier", _EXPLAIN_INTENT_JSON),
+            (_CODE_ANSWER_MARK, answer),
+        ],
+        default="not valid json at all",
+    )
+
+    async with _client_for(make_settings, fake) as client:
+        response = await client.post("/chat", data={"text": _EXPLAIN_TEXT})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["route"] == "explain"
+    kinds = [section["kind"] for section in body["generated"]["sections"]]
+    assert "explanation" in kinds
+    assert "structure" not in kinds
+    assert "complexity" not in kinds
+    assert body["response"].startswith(answer)
+    # No verdict is invented for code nobody tested.
+    assert "Execution" not in body["response"]
+
+
 async def test_explain_turn_renders_structure_and_lines_even_without_a_rationale(
     make_settings: MakeSettings,
 ) -> None:
     fake = _RoutedLLM(
         routes=[
             ("intent classifier", _EXPLAIN_INTENT_JSON),
+            # The direct answer comes back empty, so the turn falls back to
+            # the structural report this case is about.
+            (_CODE_ANSWER_MARK, ""),
             ("For each numbered line shown", _LINE_EXPLANATIONS_JSON),
         ],
         # The complexity-rationale call falls through to this: unparseable,

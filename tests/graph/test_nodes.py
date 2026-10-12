@@ -64,6 +64,7 @@ _NODE_NAMES: Sequence[str] = (
     "debug_agent",
     "explain_agent",
     "practice_agent",
+    "assess_agent",
     # ADAPTIVE-tutoring Q1: grades a reply to the agent's pending question.
     "grade_answer",
     "execute_code",
