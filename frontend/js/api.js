@@ -199,7 +199,35 @@ function normalizeStoredMessage(message) {
     // nothing about the learner had changed.
     adapted: Boolean(message.adapted),
     adaptations: message.adaptation || [],
+    hasImage: Boolean(message.image_mime),
   };
+}
+
+/** What the server stores as the text of a message that was only an image. */
+const IMAGE_ONLY_CONTENT = "[image]";
+
+/**
+ * Attach the stored image to each message that was sent with one. The image
+ * endpoint needs the bearer token, so it is fetched here and handed to the
+ * renderer as an object URL (the same `attachment` shape a just-sent message
+ * has). A failed fetch leaves the message without its picture, never broken.
+ */
+async function withStoredImages(conversationId, messages) {
+  await Promise.all(
+    messages
+      .filter((message) => message.hasImage)
+      .map(async (message) => {
+        try {
+          const response = await authFetch(`/conversations/${conversationId}/messages/${message.id}/image`);
+          if (!response.ok) return;
+          message.attachment = { name: "Shared image", data: URL.createObjectURL(await response.blob()) };
+          if (message.content === IMAGE_ONLY_CONTENT) message.content = "";
+        } catch {
+          /* the text of the message is still shown */
+        }
+      }),
+  );
+  return messages;
 }
 
 /** Deterministic-ish local id for the optimistic user bubble. */
@@ -256,7 +284,7 @@ export const api = {
     const rows = await request(`/conversations/${id}/messages`, {
       fallbackError: "Unable to load this conversation",
     });
-    return rows.map(normalizeStoredMessage);
+    return withStoredImages(id, rows.map(normalizeStoredMessage));
   },
 
   async createConversation(title = null) {

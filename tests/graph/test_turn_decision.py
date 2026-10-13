@@ -110,7 +110,11 @@ def test_a_technique_named_about_the_problem_is_a_follow_up() -> None:
     for text in ("can i solve this with two pointers", "is it a greedy problem?"):
         update = _decide(_state(text, intent=_unsure(), active=_active()))
         assert update.get("problem_relation") == "followup", text
-        assert update.get("route") == "dsa", text
+        # CHANGED 2026-10-13: still about the open problem, and now ANSWERED
+        # as a question about it (`discuss`) instead of taking the next rung.
+        assert update.get("route") == "discuss", text
+        decision = update.get("decision")
+        assert decision is not None and decision.subject == "active", text
 
 
 async def test_nothing_to_anchor_on_asks_for_what_is_missing() -> None:
@@ -137,8 +141,18 @@ async def test_an_unanchored_turn_names_the_subject_the_conversation_has() -> No
         active=_active(),
     )
     update = _decide(state)
-    assert update.get("route") == "clarify"
-    reply = await clarify(state.model_copy(update=dict(update)), _Runtime())  # type: ignore[arg-type]
+    # CHANGED 2026-10-13: a message read with confidence that no specialist
+    # takes is answered as talk, with the conversation's subject in front of
+    # the tutor. It used to be asked "is that about 678 or something new?".
+    assert update.get("route") == "discuss"
+    decision = update.get("decision")
+    assert decision is not None
+    assert (decision.subject, decision.move) == ("active", "discuss")
+    # With no model to write the reply, the old question is what is said.
+    reply = await clarify(
+        state.model_copy(update={**dict(update), "route": "clarify"}),
+        _Runtime(),  # type: ignore[arg-type]
+    )
     outcome = reply.get("agent_output")
     assert outcome is not None
     assert "678. Valid Parenthesis String" in outcome.text
@@ -289,16 +303,26 @@ def test_a_response_is_not_a_demand_for_the_code() -> None:
     )
     decision = _decision(_state("add one to it", intent=both, active=_active()))
     assert decision.wants_code is False
-    assert decision.move == "step"
+    # CHANGED 2026-10-13: their reasoning is answered as talk (`discuss`); it
+    # was the solver's next rung. Either way it is not a demand for the code.
+    assert decision.move == "discuss"
     assert decision.evidence == "correct"
     # A listed phrase in the message itself is still a demand.
     asked = _decision(_state("give me the code", intent=both, active=_active()))
     assert asked.wants_code is True
 
 
-def test_a_reply_about_shared_code_goes_to_the_debugger() -> None:
+def test_a_reply_about_shared_code_is_about_that_code() -> None:
+    """CHANGED 2026-10-13: the learner's own answer about the code they shared
+    is talk about THAT code (it used to re-run the debugger, which read live
+    handed over the fix). A confident ask to debug it still goes to the
+    debugger."""
     reply = _sure(Intent.CODE_EXPLAIN, refers_to_previous=True, learner_showed="correct")
     update = _decide(_state("return 1 + max(left, right)", intent=reply, active=_code_subject()))
+    assert update.get("route") == "discuss"
+    assert update.get("problem_relation") == "followup"
+    asked = _sure(Intent.CODE_DEBUG, refers_to_previous=True)
+    update = _decide(_state("where is the bug?", intent=asked, active=_code_subject()))
     assert update.get("route") == "debug"
 
 

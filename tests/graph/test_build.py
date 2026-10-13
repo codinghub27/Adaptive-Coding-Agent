@@ -25,6 +25,10 @@ _EXPECTED_EDGES: frozenset[tuple[str, str]] = frozenset(
         ("plan_teaching", "debug_agent"),
         ("plan_teaching", "explain_agent"),
         ("plan_teaching", "practice_agent"),
+        # A turn of talk: the tutor's reply in words. It writes no code, so
+        # it skips execute/verify like `clarify`.
+        ("plan_teaching", "discuss_agent"),
+        ("discuss_agent", "final_response"),
         # A knowledge check: questions asked, then the answers marked.
         ("plan_teaching", "assess_agent"),
         ("plan_teaching", "clarify"),

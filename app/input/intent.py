@@ -31,7 +31,10 @@ __all__ = [
     "asks_about_a_concept",
     "classify_intent",
     "fallback_intent",
+    "asks_for_buggy_code",
     "names_a_request",
+    "opens_as_a_lesson_ask",
+    "opens_as_a_question",
     "rule_intent",
 ]
 
@@ -120,7 +123,8 @@ Reply with ONLY a single JSON object and nothing else, in exactly this shape:
 "refers_to_previous": <true|false>, "earlier_subject": <true|false>, \
 "asks_for_code": <true|false>, "about_conversation": <true|false>, \
 "continues_last_reply": <true|false>, "learner_showed": "<label>", \
-"no_solution": <true|false>, "rationale": "<one short sentence>"}
+"no_solution": <true|false>, "wants_lesson": <true|false>, \
+"wants_buggy_code": <true|false>, "rationale": "<one short sentence>"}
 - refers_to_previous: true when the message is about the active_subject (a follow-up, \
 an answer to the tutor, "that problem", "it"); false when it stands on its own or starts \
 something new.
@@ -157,6 +161,30 @@ message that is a response is never also asks_for_code.
 - no_solution: true only when the learner explicitly asks NOT to be given the answer, the \
 fix or the code ("don't give me the final code yet", "I want to solve it myself", "no \
 spoilers", "don't tell me the algorithm"). Otherwise false.
+
+- wants_lesson: true only when the learner asks to be TAUGHT a topic as a whole: \
+"explain binary search", "what is a trie", "teach me recursion with examples", "explain \
+the code of 3sum line by line". false when they ask ONE specific question about their own \
+problem, approach, code, doubt or situation, even if it names a technique: "I usually use \
+DFS for this, is that fine?", "why do we move the shorter line?", "what does 'distinct' \
+mean in this problem?", "why is dp[i] = dp[i-1] + dp[i-2]?", "so is the pattern just two \
+pointers?", "why while instead of if?". false for anything that is not a question about a \
+concept.
+
+- wants_buggy_code: true only when the learner asks to be GIVEN code that contains a bug \
+so that they can find and fix it themselves ("give me code with a bug and I'll fix it", \
+"give 2 problems with bugs to fix myself", "give bug code of two sum", "a debugging \
+exercise please"). Use intent PRACTICE_REQUEST for it, and asks_for_code false: they are \
+not asking for a solution. false when they share their OWN code and say it has a bug.
+
+A message that asks a question about the problem, the approach or the code being worked \
+on ("why does that work?", "what about the odd case?", "is it just two pointers?") is a \
+QUESTION, not an answer: learner_showed is "none" for it, whatever pending_question says. \
+A message that states what the learner thinks ("I think I move left until the duplicate \
+is gone", "so return one side but update the answer with both?") is their reasoning: set \
+learner_showed, and asks_for_code false.
+When last_reply is a short answer in a discussion, a message that carries that \
+discussion on has continues_last_reply true.
 
 Lower the confidence value whenever the request is genuinely ambiguous between two or more \
 intents.
@@ -340,6 +368,8 @@ class _LLMIntentOutput(BaseModel):
     continues_last_reply: bool | None = None
     learner_showed: str | None = None
     no_solution: bool | None = None
+    wants_lesson: bool | None = None
+    wants_buggy_code: bool | None = None
 
 
 def _parse_llm_output(content: str) -> _LLMIntentOutput | None:
@@ -439,6 +469,8 @@ async def _classify_with_llm(
         continues_last_reply=parsed.continues_last_reply if sure else None,
         learner_showed=_evidence_label(parsed.learner_showed) if sure else None,
         no_solution=parsed.no_solution if sure else None,
+        wants_lesson=parsed.wants_lesson if sure else None,
+        wants_buggy_code=parsed.wants_buggy_code if sure else None,
     )
 
 
@@ -539,6 +571,40 @@ def names_a_request(text: str) -> bool:
     return _keyword_intent(text.lower(), has_code=False, has_error_field=False) is not None
 
 
+#: How a request to be taught a topic opens. The fallback for
+#: `IntentResult.wants_lesson` when no model read the turn.
+_LESSON_ASK_RE: Final = re.compile(
+    r"(?i)^\s*(?:please\s+|can you\s+|could you\s+)?"
+    r"(?:explain|teach|describe|define|introduce|what\s+(?:is|are|\'s)|tell me about|"
+    r"give me an? (?:overview|introduction)|difference between|how does .{1,40} work)\b"
+)
+
+
+#: A request to be handed code that has a bug in it. The fallback for
+#: `IntentResult.wants_buggy_code` when no model read the turn: the request
+#: verb, then "bug"/"buggy" beside "code"/"problem" in either order.
+_BUGGY_CODE_ASK_RE: Final = re.compile(
+    r"(?i)\b(?:give|show|send|write|create|make|want|need|get)\b[^.?!\n]{0,40}?"
+    r"(?:\b(?:bug(?:gy|ged|s)?|broken|faulty)\b[^.?!\n]{0,25}\b(?:code|problem|program|"
+    r"function|solution|exercise)s?\b"
+    r"|\b(?:code|problem|program|function|solution)s?\b[^.?!\n]{0,25}\bbugs?\b"
+    r"|\bdebugging (?:exercise|problem|challenge|practice)\b)"
+)
+
+
+def asks_for_buggy_code(text: str | None) -> bool:
+    """Does `text` ask to be given code with a bug to fix ("give a code with
+    bug and i will fix it")?"""
+    return _BUGGY_CODE_ASK_RE.search(text or "") is not None
+
+
+def opens_as_a_lesson_ask(text: str | None) -> bool:
+    """Does `text` open as a request to be taught a topic ("explain binary
+    search", "what is a trie")? A specific question about the learner's own
+    problem ("I usually use DFS. Is that fine?") does not."""
+    return _LESSON_ASK_RE.match(text or "") is not None
+
+
 def asks_about_a_concept(text: str | None) -> bool:
     """Is `text` shaped as a question about a concept ("what is a trie",
     "explain binary search", "difference between BFS and DFS")? The keyword
@@ -559,6 +625,16 @@ def asks_about_a_concept(text: str | None) -> bool:
 #: The grammatical shape of a question that stands on its own, and of one that
 #: points back at the conversation. Shapes, not a vocabulary of requests.
 _OPENS_AS_A_QUESTION_RE: Final = re.compile(r"(what|how|why|when|which|explain|define|describe)\b")
+
+
+def opens_as_a_question(text: str | None) -> bool:
+    """Does `text` open the way a question does ("what does distinct mean
+    here?", "why does that work?") and end as one? Used only where no model
+    read the turn, to tell a question back from an answer to the tutor."""
+    lowered = (text or "").lower().strip()
+    return lowered.endswith("?") and _OPENS_AS_A_QUESTION_RE.match(lowered) is not None
+
+
 _POINTS_AT_THE_SUBJECT_RE: Final = re.compile(
     r"\b(this|that|it|here|above|my (code|solution|attempt|approach)|the problem)\b"
 )

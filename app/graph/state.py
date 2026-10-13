@@ -61,7 +61,9 @@ __all__ = [
     "SuiteSource",
 ]
 
-RouteKey = Literal["dsa", "debug", "explain", "practice", "assess", "clarify", "grade", "meta"]
+RouteKey = Literal[
+    "dsa", "debug", "explain", "discuss", "practice", "assess", "clarify", "grade", "meta"
+]
 
 # Where this turn's `TestSuite` (if any) came from -- see `debug_agent` and the
 # review branch of `explain_agent` in `app.graph.nodes`, and the gating this
@@ -150,6 +152,11 @@ class AgentState(BaseModel):
     #: -- exposure creates a key without moving it, so it has no delta.
     skill_deltas: dict[str, float] = Field(default_factory=dict[str, float])
     recent_context: list[MessageView] = Field(default_factory=list[MessageView])
+    #: What was read from this turn's image, stored with the message.
+    image_text: str | None = None
+    #: This turn hands the learner code with a planted bug to fix
+    #: (`app.agents.bug_exercise`), settled by `decide_turn`.
+    bug_exercise: bool = False
     plan: TeachingPlan | None = None
     topic_source: TopicSource | None = None
     retrieved_context: list[RetrievalHit] = Field(default_factory=list[RetrievalHit])
@@ -227,6 +234,8 @@ class AgentStateUpdate(TypedDict, total=False):
     profile: LearnerProfileView | None
     skill_deltas: dict[str, float]
     recent_context: list[MessageView]
+    image_text: str | None
+    bug_exercise: bool
     plan: TeachingPlan | None
     topic_source: TopicSource | None
     retrieved_context: list[RetrievalHit]
@@ -283,3 +292,6 @@ class GraphContext:
     retriever: Retriever | None = None
     knowledge_top_k: int = DEFAULT_KNOWLEDGE_TOP_K
     runner: CodeRunner | None = None
+    #: The image sent with this turn, kept here (never in the state, which is
+    #: traced) only so the turn can be stored with it.
+    image: bytes | None = None

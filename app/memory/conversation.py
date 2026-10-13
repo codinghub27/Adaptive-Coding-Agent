@@ -31,6 +31,9 @@ __all__ = [
     "delete_conversation",
     "get_active_problem",
     "get_owned_conversation",
+    "IMAGE_ONLY_CONTENT",
+    "IMAGE_TEXT_LEAD",
+    "get_message_image",
     "get_recent_context",
     "learning_activity_hours",
     "get_tutoring_state",
@@ -100,6 +103,9 @@ async def add_turn(
     content: str,
     intent: Intent | None = None,
     adaptation: Sequence[str] | None = None,
+    image: bytes | None = None,
+    image_mime: str | None = None,
+    image_text: str | None = None,
 ) -> MessageView:
     """Append a message to a conversation, assigning the next sequence number.
 
@@ -121,6 +127,9 @@ async def add_turn(
         content=content,
         intent=intent.value if intent is not None else None,
         adaptation=list(adaptation) if adaptation else None,
+        image=image,
+        image_mime=image_mime if image is not None else None,
+        image_text=image_text,
     )
     session.add(message)
     await session.flush()
@@ -153,7 +162,51 @@ async def get_recent_context(
     result = await session.execute(stmt)
     messages = list(result.scalars())
     messages.reverse()
-    return [MessageView.model_validate(message) for message in messages]
+    return [_with_image_text(MessageView.model_validate(message)) for message in messages]
+
+
+#: The stored content of a message that was an image and no words.
+IMAGE_ONLY_CONTENT: Final = "[image]"
+#: Introduces what was read from an image, inside a message shown to a model.
+IMAGE_TEXT_LEAD: Final = "[shared an image; it showed:]"
+
+
+def _with_image_text(message: MessageView) -> MessageView:
+    """`message` as the tutor should remember it: with what its image showed.
+
+    A message sent with an image stores the learner's words in `content`
+    ("how to solve this prob", or nothing at all). What the image said is the
+    subject of the turn; without it a later turn reads the history as a bare
+    "[image]" and cannot tell what was shared.
+    """
+    if not message.image_text:
+        return message
+    said = "" if message.content == IMAGE_ONLY_CONTENT else message.content
+    content = f"{said}\n{IMAGE_TEXT_LEAD}\n{message.image_text}".strip()
+    return message.model_copy(update={"content": content})
+
+
+async def get_message_image(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+) -> tuple[bytes, str] | None:
+    """The image shared with one message and its media type, or `None`.
+
+    Raises `ConversationNotFoundError` if the conversation is missing or not
+    owned by `user_id`.
+    """
+    await get_owned_conversation(session, user_id, conversation_id)
+    stmt = select(Message.image, Message.image_mime).where(
+        Message.id == message_id,
+        Message.conversation_id == conversation_id,
+        Message.user_id == user_id,
+    )
+    row = (await session.execute(stmt)).one_or_none()
+    if row is None or row[0] is None:
+        return None
+    return bytes(row[0]), str(row[1] or "application/octet-stream")
 
 
 def _to_summary(

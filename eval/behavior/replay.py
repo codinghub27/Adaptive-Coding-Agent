@@ -2,7 +2,7 @@
 
     .\\venv\\Scripts\\python.exe -m eval.behavior.replay --base-url http://127.0.0.1:8000
 
-Each conversation in `adaptive_examples.jsonl` is driven turn by turn: only
+Each conversation in `reference_examples.jsonl` is driven turn by turn: only
 the LEARNER turns are sent (the assistant turns are the reference behaviour,
 never sent), on a FRESH account, through `/chat/stream` exactly like the web
 UI, never with a `topic` form field. After every learner turn the checks
@@ -39,7 +39,7 @@ from eval.transcript_probes import Api, Turn
 
 __all__ = ["CHECKS", "ExampleResult", "execution_lines_ok", "main"]
 
-EXAMPLES_PATH: Final = Path(__file__).with_name("adaptive_examples.jsonl")
+EXAMPLES_PATH: Final = Path(__file__).with_name("reference_examples.jsonl")
 RESULTS_DIR: Final = Path(__file__).resolve().parent.parent / "results"
 
 ASSISTANCE_ORDER: Final = ("hint", "concept", "pseudocode", "partial", "full")

@@ -126,7 +126,12 @@ _EXPLICIT_ASK_RE: Final = re.compile(
     r"(?:solution|answer|code|implementation)|"
     r"show me the (?:full |complete )?(?:solution|code|answer)|"
     r"(?:full|complete|entire) solution|"
-    r"the answer|"
+    # Not a bare "the answer": in talk about a solution it is the result being
+    # computed. Read live, "why can the answer use both sides but the return
+    # can't?" and "so update the answer with both sides?" were taken as asks
+    # for the code, and the fix was handed to a learner who had asked not to
+    # be given it.
+    r"what(?:'s| is) the answer|"
     r"solve (?:it|this) for me|"
     r"i give up|"
     r"tell me the answer|"
@@ -171,9 +176,9 @@ DEBUG_ROUTE_INTENTS: Final[frozenset[Intent]] = frozenset(
 _DECLINE_RE: Final = re.compile(
     r"\b(?:don'?t|do not|never|without|not)\s+(?:\w+\s+){0,2}?"
     r"(?:give|giving|show|showing|tell|telling|write|writing|reveal|revealing|post|send)\b"
-    r"[^.?!\n]{0,40}\b(?:code|solution|answer|fix|algorithm)\b"
+    r"[^.?!\n]{0,40}\b(?:code|solution|answer|fix|algorithm|technique|approach|pattern)\b"
     r"|\bno spoilers?\b"
-    r"|\b(?:solve|write|fix|do|try) (?:it|this) (?:myself|on my own|by myself)\b"
+    r"|\b(?:solve|write|fix|do|try|code) (?:it|this|the \w+) (?:myself|on my own|by myself)\b"
 )
 
 
@@ -182,7 +187,7 @@ def declines_the_answer(text: str | None) -> bool:
 
     The fallback for `IntentResult.no_solution` when no model read the turn.
     """
-    return bool(_DECLINE_RE.search((text or "").lower()))
+    return bool(_DECLINE_RE.search((text or "").lower().replace("’", "'")))
 
 
 def explicit_ask_phrase(text: str) -> bool:
@@ -207,8 +212,28 @@ _LEARNING_ASK_RE: Final = re.compile(
     r"\b(help|how|hint|nudge|start|understand|explain|why|stuck|don'?t know|not sure|"
     # "give me step by step to solve ..." asks to be walked through it, not for
     # the finished code (measured live: read as a code ask one run in two).
-    r"walk me|teach|guide|step by step|steps?|approach|idea)\b"
+    r"walk me|teach|guide|step by step|steps?|approach|idea|"
+    # "can I try the code and you review it?": they are offering to WRITE it
+    # (read live as a demand for the solution, which was then handed over).
+    r"try|attempt|review|myself|my own|check my)\b"
 )
+#: The learner says THEY will write the code ("let me try", "can I write it
+#: and you review it", "I'll code it myself").
+#: The verb must follow directly: "can I get the code" and "I need the code"
+#: are asks, and so is "I can't do it myself, give me the code".
+_OFFERS_TO_WRITE_RE: Final = re.compile(
+    r"\b(?:can i|could i|may i|let me|i'll|i will|i want to|i would like to|i'd like to)\s+"
+    r"(?:first |just |now )?(?:try|write|attempt|implement|code (?:it|this|that))\b"
+    r"|\b(?:you|and) review (?:it|my|the)\b"
+    r"|\b(?:try|write|do|solve|code|implement) (?:it|this|that|the \w+) "
+    r"(?:myself|on my own|by myself)\b"
+)
+#: A question that opens "how do/does/would/should/can ...", after at most a
+#: few words ("yes. but how does that become code?").
+_HOW_QUESTION_RE: Final = re.compile(
+    r"^\W*(?:[\w']+\W+){0,3}?how (?:do|does|did|would|should|can|could|to|is|are)\b"
+)
+_HAND_OVER_VERB_RE: Final = re.compile(r"\b(give|show|write|explain|provide|send|share)\b")
 _MAX_DEMAND_WORDS: Final = 14
 #: A message that NAMES the code may be longer and still be an ask for it:
 #: "Explain how to solve this problem and explain with code line by line of
@@ -236,6 +261,17 @@ def wants_the_code(intent: IntentResult, question: str | None, *, fix: bool = Fa
         return listed
     if not intent.asks_for_code:
         return False
+    if _OFFERS_TO_WRITE_RE.search(text):
+        # "Can I try the code and you review it?": the learner is offering to
+        # WRITE it. Read live, the model called that an ask for the code and
+        # the full solution was handed to someone who wanted to try.
+        return listed
+    if _HOW_QUESTION_RE.search(text) and not _HAND_OVER_VERB_RE.search(text):
+        # "But how does that become code?" asks HOW to get from the idea to
+        # code: the way is described and the writing is theirs. Read live it
+        # was answered with the finished solution. "Show me how in code" and
+        # "explain with code" carry a hand-over verb and are still asks.
+        return listed
     short = len(text.split()) <= _MAX_DEMAND_WORDS
     if short and _LEARNING_ASK_RE.search(text) is None:
         return True

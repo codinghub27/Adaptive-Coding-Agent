@@ -136,6 +136,18 @@ _PATTERN_GAP_RULE: Final = (
     "input and the required output, and which property of the input matters (sorted? "
     "contiguous? symmetric? a graph?). Then ask which technique that property points to."
 )
+#: The first reply on a problem. Read live against the owner's targets: "I
+#: don't know where to start, don't give me code yet" on Longest Palindromic
+#: Substring was answered with the whole expand-around-centre idea in the
+#: first sentence, which is the thing the learner was to find.
+_OPENING_RULE: Final = (
+    "This is your FIRST reply on this problem. Do not describe the approach and do not "
+    "name a technique or a data structure yet. Start from the problem itself: what the "
+    "answer has to be (a pair? a contiguous part? a count?) and which property it must "
+    "satisfy, or what checking every candidate would cost. End with ONE question that has "
+    "the learner say that in their own words. Exception: when the learner's message itself "
+    "already names the technique, or asks one specific question, answer what they asked."
+)
 #: What the learner's last message showed, as the kind of help it calls for.
 #: One confused step is not weakness at a whole family of algorithms.
 _GAP_RULE: Final[Mapping[str, str]] = {
@@ -268,7 +280,12 @@ def adapt(
         now = "none"
     struggles = streak(evidence_log, now, STRUGGLE)
     successes = streak(evidence_log, now, SUCCESS)
-    tutoring = decision is not None and decision.move in ("step", "grade", "explain")
+    tutoring = decision is not None and decision.move in (
+        "step",
+        "grade",
+        "explain",
+        "discuss",
+    )
     wants_code = decision is not None and decision.wants_code
 
     representation: Representation = "plain"
@@ -385,6 +402,8 @@ def tutor_state_block(decision: TurnDecision | None, adaptation: Adaptation | No
             )
         if adaptation.pattern_gap:
             lines.append(f"recurring_gap: pattern recognition. {_PATTERN_GAP_RULE}")
+        elif adaptation.opening and decision is not None and decision.move == "step":
+            lines.append(f"opening: {_OPENING_RULE}")
         if decision is not None and decision.evidence in _GAP_RULE:
             lines.append(f"gap: {_GAP_RULE[decision.evidence]}")
         if adaptation.skip_ahead:

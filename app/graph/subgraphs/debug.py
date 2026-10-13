@@ -59,6 +59,7 @@ from app.agents.debugger import (
 )
 from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
+from app.input.snippet import is_partial_fragment
 from app.response.plain_python import has_type_hints, without_type_hints
 from app.schemas.agent_results import BugLocation, DebugResult, StaticFinding
 from app.schemas.execution import (
@@ -521,6 +522,19 @@ class DebugRunResult:
     execution_request: ExecutionRequest | None
 
 
+_PARTIAL_CODE_LABEL: Final = (
+    "Not executed: this is part of a function (it uses variables set in lines you did not "
+    "share), so it cannot be run on its own. This is your code as you shared it."
+)
+#: Trusted, fixed text put in front of the reader's prompt for such code.
+_PARTIAL_CODE_NOTE: Final = (
+    "<code_is_partial>\nThe code below is only PART of the learner's function: its first "
+    "lines (the `def` line and where its variables are first set) were not shared, and the "
+    "`def` line you see was added so the fragment parses. Variables that look unset are set "
+    "in the missing lines: never report them, a NameError or a missing initialisation as a "
+    "bug. Judge only the lines shown, against the problem the learner named and the failure "
+    "they reported.\n</code_is_partial>"
+)
 _NOT_EXECUTED_LABEL: Final = (
     "Not executed: the code sandbox is not available. This is your code as you shared it "
     "(made runnable)."
@@ -528,7 +542,12 @@ _NOT_EXECUTED_LABEL: Final = (
 
 
 async def _static_review(
-    state: AgentState, runtime: Runtime[GraphContext], *, wants_code: bool, offset: int
+    state: AgentState,
+    runtime: Runtime[GraphContext],
+    *,
+    wants_code: bool,
+    offset: int,
+    partial: bool = False,
 ) -> DebugRunResult:
     """No sandbox: the `ast` checks plus ONE model call reading the code
     (owner decision A-15). Nothing ran, so nothing is claimed: both verdicts
@@ -559,19 +578,27 @@ async def _static_review(
             ("common_mistakes", "when_not_to_use"),
         ),
         failure_established=False,
-        turn_context=_turn_context(state),
+        turn_context="\n".join(
+            part for part in (_PARTIAL_CODE_NOTE if partial else "", _turn_context(state)) if part
+        ),
     )
+    # Part of a function is not handed back as "your code": what would be
+    # shown is the wrapper added around it, which the learner never wrote.
+    wants_code = wants_code and not partial
     result = DebugResult(
         static_findings=findings,
         inferred_approach=reading.approach,
         bug_explanation=reading.explanation,
         bug_location=localize_bug(findings, None),
         presented_code=code if wants_code else None,
-        presented_label=_NOT_EXECUTED_LABEL if wants_code else None,
+        presented_label=(
+            (_PARTIAL_CODE_LABEL if partial else _NOT_EXECUTED_LABEL) if wants_code else None
+        ),
         initial_verdict=skipped,
         final_verdict=skipped,
         fixed=False,
         not_executed=True,
+        partial_code=partial,
         citations=reading.citations,
     )
     return DebugRunResult(result=result, execution_request=None)
@@ -737,6 +764,12 @@ async def run_debug(
     offset = blocks[0].line_offset if len(blocks) == 1 else 0
     if runtime.context.runner is None:
         return await _static_review(state, runtime, wants_code=wants_code, offset=offset)
+    if is_partial_fragment(extract_learner_code(problem)):
+        # Part of a function: run as it is, it fails on the lines that are
+        # missing, and that failure is not the learner's bug. It is read.
+        return await _static_review(
+            state, runtime, wants_code=wants_code, offset=offset, partial=True
+        )
 
     available_tests = (
         state.execution_request.tests if state.execution_request is not None else None

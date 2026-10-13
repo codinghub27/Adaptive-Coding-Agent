@@ -255,6 +255,9 @@ class DebugResult(APIModel):
     presented_notes: list[str] = Field(default_factory=list[str])
     #: Why nothing was run (no sandbox). The reply then says "Not executed".
     not_executed: bool = False
+    #: Not executed because the code is only part of a function (it reads
+    #: variables set in lines that were not shared), not for want of a sandbox.
+    partial_code: bool = False
     attempts: int = Field(default=0, ge=0)
     initial_verdict: Verdict | None = None
     final_verdict: Verdict | None = None

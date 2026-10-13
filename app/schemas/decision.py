@@ -68,11 +68,16 @@ EVIDENCE_LABELS: Final[frozenset[str]] = frozenset(
 #: The smallest useful intervention. `step` is one tutoring step on a problem
 #: (how much it reveals is the hint ladder's level, moved by `scaffold`);
 #: `code` is the full solution or the fix, because the learner asked for it.
+#: `discuss` is the tutor's next turn in the conversation: an answer to what
+#: the learner just said or asked about the subject on the table, in words
+#: (`app.agents.dialogue`). `explain` is a lesson on a topic they asked to be
+#: taught.
 Move = Literal[
     "step",
     "code",
     "debug",
     "explain",
+    "discuss",
     "review",
     "plan",
     "practice",

@@ -208,6 +208,27 @@ async def test_manual_2_ambiguous_message_routes_to_clarify(chat_content: str) -
 # --------------------------------------------------------------------------
 
 _PLAIN_QUESTION: Final = "Can you help me understand this better?"
+_CODE: Final = "```python\ndef add(a, b):\n    return a - b\n```"
+_STATEMENT: Final = (
+    "Given an array of integers nums and an integer target, return the indices of the two "
+    "numbers that add up to target.\n\nExample 1:\nInput: nums = [2,7,11,15], target = 9\n"
+    "Output: [0,1]\n\n"
+)
+#: CHANGED 2026-10-13: a specialist is reached by a message that brings what it
+#: works on. A bare "can you help me understand this better?" brings nothing
+#: for the debugger, the reviewer or the explainer to read, whatever label it
+#: is given, and is now answered as talk (`decide_turn`, route `discuss`).
+_BRINGS: Final[dict[Intent, str]] = {
+    Intent.GENERAL_GUIDANCE: "Give me a study plan for interviews",
+    Intent.CODE_DEBUG: f"this gives the wrong answer\n\n{_CODE}",
+    Intent.ERROR_EXPLANATION: f"this gives the wrong answer\n\n{_CODE}",
+    Intent.TEST_CASE_ANALYSIS: f"why does add(2, 2) fail?\n\n{_CODE}",
+    Intent.CODE_REVIEW: f"review this\n\n{_CODE}",
+    Intent.OPTIMIZATION: f"can this be faster?\n\n{_CODE}",
+    Intent.CODE_EXPLAIN: "Explain binary search",
+    Intent.CONCEPT_EXPLANATION: "Explain binary search",
+    Intent.APPROACH_DISCUSSION: f"{_STATEMENT}how should I think about this?",
+}
 
 
 @pytest.mark.parametrize("intent", list(Intent))
@@ -228,8 +249,7 @@ async def test_each_intent_routes_end_to_end(intent: Intent) -> None:
 
     # GENERAL_GUIDANCE is the classifier's catch-all, so a study plan needs an
     # explicit ask in the text itself; a plain question with that label clarifies.
-    text = "Give me a study plan for interviews" if intent is Intent.GENERAL_GUIDANCE else None
-    result = await run_graph(RawInput(text=text or _PLAIN_QUESTION), llm=fake)
+    result = await run_graph(RawInput(text=_BRINGS.get(intent, _PLAIN_QUESTION)), llm=fake)
     state = result.state
 
     expected_route = INTENT_ROUTES[intent]
@@ -241,8 +261,11 @@ async def test_each_intent_routes_end_to_end(intent: Intent) -> None:
     # explainer had nothing to read and the reply was the generic fallback.
     # The route, which is what this test is about, is the same.
     settled = Intent.CONCEPT_EXPLANATION if intent is Intent.CODE_EXPLAIN else intent
-    assert state.intent.intent == settled
-    assert state.route == expected_route
+    if not (state.structured_input is not None and state.structured_input.code):
+        # Code with no statement is a debug turn whatever it was called
+        # (user-code-first); the label is only checked for turns without code.
+        assert state.intent.intent == settled
+        assert state.route == expected_route
     assert state.response is not None
     assert "stub" not in state.response.lower()
 
@@ -277,7 +300,7 @@ _DSA_RULE_TEXT: Final = (
     "- -10^9 <= nums[i] <= 10^9\n"
 )
 
-_EXPLAIN_LLM_TEXT: Final = "What does this approach generally accomplish?"
+_EXPLAIN_LLM_TEXT: Final = "Explain what this approach generally accomplishes"
 
 
 def _node_inputs() -> dict[str, tuple[RawInput, FakeLLMClient]]:
@@ -312,6 +335,13 @@ def _node_inputs() -> dict[str, tuple[RawInput, FakeLLMClient]]:
                 chat_content=(
                     '{"intent": "KNOWLEDGE_CHECK", "confidence": 0.95, "rationale": "n/a"}'
                 )
+            ),
+        ),
+        # A question read with confidence that no specialist takes: talk.
+        "discuss_agent": (
+            RawInput(text="I practise every day but hard problems feel impossible, why?"),
+            FakeLLMClient(
+                chat_content='{"intent": "GENERAL_GUIDANCE", "confidence": 0.95, "rationale": "x"}'
             ),
         ),
         "practice_agent": (

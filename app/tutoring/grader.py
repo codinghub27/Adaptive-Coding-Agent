@@ -37,10 +37,12 @@ from app.tutoring.bank import RECOGNITION_PREFIX, base_question_id, pattern_term
 
 __all__ = [
     "MIN_CORRECT_CONFIDENCE",
+    "asks_for_a_hint",
     "asks_for_help",
     "grade_deterministic",
     "grade_reply",
     "is_dont_know",
+    "plain_quotes",
     "looks_like_injection",
 ]
 
@@ -152,12 +154,38 @@ def looks_like_injection(reply: str) -> bool:
 
 def is_dont_know(reply: str) -> bool:
     """An explicit "I don't know" / "I'm stuck" (a fixed phrase list)."""
-    return _DONT_KNOW_RE.search(reply) is not None
+    return _DONT_KNOW_RE.search(plain_quotes(reply)) is not None
 
 
 def asks_for_help(reply: str) -> bool:
     """An explicit request for a hint / the solution / an explanation -- not an answer."""
-    return _HELP_RE.search(reply.strip()) is not None
+    return _HELP_RE.search(plain_quotes(reply).strip()) is not None
+
+
+_HINT_ASK_RE: Final = re.compile(
+    r"\b(hint|nudge|clue|next step|stuck|help me (?:solve|start|with)|"
+    r"where (?:do|should) i start)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_a_hint(reply: str) -> bool:
+    """An ask for the next step on the problem ("a hint please", "I'm stuck",
+    "where do I start?"), as against a question about it ("why does that
+    work?"), which `asks_for_help` also matches."""
+    return _HINT_ASK_RE.search(plain_quotes(reply)) is not None
+
+
+def plain_quotes(text: str) -> str:
+    """`text` with typographic apostrophes and quotes made plain. A phone
+    keyboard writes "I don\u2019t know"; read live, that reply was not seen
+    as "I don't know" by any of the fixed phrase lists."""
+    return (
+        text.replace("\u2019", "'")
+        .replace("\u2018", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+    )
 
 
 def _grade(

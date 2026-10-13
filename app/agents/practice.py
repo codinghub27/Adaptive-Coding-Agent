@@ -33,6 +33,7 @@ from app.schemas.knowledge import KnowledgeChunk
 from app.schemas.plan import Difficulty
 
 __all__ = [
+    "named_corpus_problem",
     "PracticeProblem",
     "render_practice_problem",
     "select_practice_problem",
@@ -122,6 +123,32 @@ def _nearest(problems: Sequence[PracticeProblem], wanted: Difficulty) -> Practic
     )
 
 
+def _squashed(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+#: Shorter titles than this ("Subsets", "Pow") are ordinary words in a request.
+_MIN_NAMED_TITLE_CHARS: Final = 6
+
+
+def named_corpus_problem(
+    text: str | None, chunks_by_pattern: Mapping[str, Sequence[KnowledgeChunk]]
+) -> PracticeProblem | None:
+    """The corpus problem `text` names by its title, ignoring spacing and
+    punctuation ("bug code of twosum" names Two Sum), or `None`. The longest
+    title wins, so "Two Sum II" is not read as "Two Sum"."""
+    said = _squashed(text or "")
+    best: PracticeProblem | None = None
+    for pattern, chunks in chunks_by_pattern.items():
+        for problem in _candidates(chunks, pattern):
+            title = _squashed(problem.title)
+            if len(title) < _MIN_NAMED_TITLE_CHARS or title not in said:
+                continue
+            if best is None or len(title) > len(_squashed(best.title)):
+                best = problem
+    return best
+
+
 def select_practice_problem(
     topic: str | None, difficulty: Difficulty, chunks: Sequence[KnowledgeChunk]
 ) -> PracticeProblem | None:
@@ -184,23 +211,39 @@ def select_session_problem(
     return chosen.model_copy(update={"cue": _cue(chunks_by_pattern.get(chosen.topic, ()))})
 
 
-def render_practice_problem(problem: PracticeProblem, statement: str | None = None) -> str:
+def render_practice_problem(
+    problem: PracticeProblem, statement: str | None = None, *, challenge: bool = False
+) -> str:
     """Render `problem` as the learner-facing text of a practice turn.
 
     `statement` is a curated problem statement (trusted bank text) when one
     exists. The corpus cue is a signal of the PATTERN and is worded that way:
     it used to read as if it described this specific problem.
+
+    `challenge`: the learner asked to work it out alone ("don't tell me the
+    technique unless I ask"). Then nothing here may name the technique: not
+    the topic it was drawn from, not the pattern's signal. Read live, that
+    request got "a problem to practise `hashing`" and "a general signal of
+    this pattern: does the complement of this value exist".
     """
-    lines = [
-        f"Here is a **{problem.difficulty}** problem to practise `{problem.topic}`:",
-        "",
-        f"**{problem.title}** — {problem.url}",
-    ]
+    lead = (
+        f"Here is a **{problem.difficulty}** challenge:"
+        if challenge
+        else f"Here is a **{problem.difficulty}** problem to practise `{problem.topic}`:"
+    )
+    lines = [lead, "", f"**{problem.title}** — {problem.url}"]
     if statement:
         body = (
             statement.split("\n", 1)[1].strip() if statement.startswith("Problem:") else statement
         )
         lines += ["", body]
+    if challenge:
+        lines += [
+            "",
+            "Try it yourself: tell me your approach first, or send your code when you have "
+            "it. I'll hold back the technique unless you ask for a hint or get stuck.",
+        ]
+        return "\n".join(lines)
     if problem.cue:
         lines += ["", f"A general signal of this pattern: {problem.cue}"]
     lines += [

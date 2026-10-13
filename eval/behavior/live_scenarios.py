@@ -11,7 +11,9 @@ by hand in `docs/LIVE_BEHAVIOR.md`; this file makes that scoring repeatable,
 so a model's run-to-run variance shows up as a pass RATE rather than as one
 lucky or unlucky transcript.
 
-Scenarios 1-5 send the learner turns of `adaptive_examples.jsonl`.
+Scenarios 1-5 send the learner turns of `reference_examples.jsonl` (the earlier
+reference set; `adaptive_examples.jsonl` now holds the owner's target conversations,
+replayed by `eval.behavior.target_replay`).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from typing import Any, Final
 
 import httpx
 
-EXAMPLES: Final = Path(__file__).with_name("adaptive_examples.jsonl")
+EXAMPLES: Final = Path(__file__).with_name("reference_examples.jsonl")
 
 Turn = dict[str, Any]
 Check = tuple[str, Callable[[list[Turn]], bool]]

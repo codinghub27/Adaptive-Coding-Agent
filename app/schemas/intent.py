@@ -72,6 +72,13 @@ class IntentResult(APIModel):
     earlier_subject: bool | None = None
     asks_for_code: bool | None = None
     about_conversation: bool | None = None
+    #: The learner asks to be TAUGHT a topic as a whole ("explain binary
+    #: search", "what is a trie"), as against asking one specific question
+    #: about their own problem, approach or doubt ("is DFS fine here?").
+    wants_lesson: bool | None = None
+    #: The learner asks to be GIVEN code that has a bug in it, to find and fix
+    #: themselves ("give me buggy code and I'll fix it").
+    wants_buggy_code: bool | None = None
     #: The message follows up on the tutor's LAST reply (a study plan or an
     #: explanation) rather than on the active problem.
     continues_last_reply: bool | None = None

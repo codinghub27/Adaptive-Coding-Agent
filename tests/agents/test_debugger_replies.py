@@ -54,7 +54,7 @@ async def test_a_traceback_without_code_is_read_on_its_own() -> None:
     )
     system = _system(llm)
     assert "NOT the code" in system
-    assert "ask for ONLY that" in system
+    assert "asking for ONLY the few lines" in system
     assert "inferred_approach" not in system  # there is no approach to name
 
 

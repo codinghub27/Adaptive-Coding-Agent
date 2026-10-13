@@ -70,6 +70,8 @@ ROUTE_NODES: Final[Mapping[RouteKey, str]] = MappingProxyType(
         "dsa": "dsa_agent",
         "debug": "debug_agent",
         "explain": "explain_agent",
+        # The tutor's next turn in the conversation, in words. It runs no code.
+        "discuss": "discuss_agent",
         "practice": "practice_agent",
         # A knowledge check: the questions are asked, and on the next turn the
         # learner's answers are marked and folded into their profile.

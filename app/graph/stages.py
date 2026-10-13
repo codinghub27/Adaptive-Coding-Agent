@@ -31,6 +31,7 @@ STAGE_LABELS: Final[Mapping[str, str]] = MappingProxyType(
         # Also answers concept questions and study-plan requests with no code
         # (P3), so the label must not claim code was read (F9).
         "explain_agent": "Working through your question",
+        "discuss_agent": "Thinking about what you said",
         "practice_agent": "Picking a problem for you",
         "assess_agent": "Checking what you know",
         "grade_answer": "Checking your answer",

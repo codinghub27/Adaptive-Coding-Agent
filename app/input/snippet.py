@@ -23,6 +23,7 @@ from typing import Final
 __all__ = [
     "submission_interface",
     "WRAPPER_NAME",
+    "is_partial_fragment",
     "is_sample_data",
     "line_offset",
     "repair_snippet",
@@ -153,6 +154,96 @@ def _free_names(tree: ast.AST) -> list[str]:
         ):
             free.append(node.id)
     return free
+
+
+def _header_loads(stmt: ast.stmt) -> list[ast.expr]:
+    """The expressions a statement evaluates BEFORE anything inside it runs."""
+    if isinstance(stmt, (ast.While, ast.If)):
+        return [stmt.test]
+    if isinstance(stmt, (ast.For, ast.AsyncFor)):
+        return [stmt.iter]
+    if isinstance(stmt, ast.AugAssign):
+        return [stmt.value]
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.Return, ast.Expr)):
+        return [stmt.value] if stmt.value is not None else []
+    return []
+
+
+def _blocks(stmt: ast.stmt) -> list[list[ast.stmt]]:
+    """The statement lists nested directly inside a compound statement."""
+    if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+        return [stmt.body, stmt.orelse]
+    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+        return [stmt.body]
+    if isinstance(stmt, ast.Try):
+        return [stmt.body, stmt.orelse, stmt.finalbody]
+    return []
+
+
+def _reads_unset_local(body: list[ast.stmt], assigned: set[str], local: set[str]) -> bool:
+    """Does `body`, run from its first line, read a name it only assigns later?"""
+    known = set(assigned)
+    for stmt in body:
+        if (
+            isinstance(stmt, ast.AugAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.target.id in local
+            and stmt.target.id not in known
+        ):
+            return True  # `count += 1` reads `count` first
+        for expr in _header_loads(stmt):
+            # A comprehension's own variable is set inside the expression.
+            own = {
+                node.id
+                for node in ast.walk(expr)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+            }
+            for node in ast.walk(expr):
+                if (
+                    isinstance(node, ast.Name)
+                    and isinstance(node.ctx, ast.Load)
+                    and node.id in local
+                    and node.id not in known
+                    and node.id not in own
+                ):
+                    return True
+        if isinstance(stmt, (ast.For, ast.AsyncFor)):
+            # The loop variable is set before the loop body runs.
+            known |= {node.id for node in ast.walk(stmt.target) if isinstance(node, ast.Name)}
+        for block in _blocks(stmt):
+            if _reads_unset_local(block, known, local):
+                return True
+        known |= {
+            node.id
+            for node in ast.walk(stmt)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+    return False
+
+
+def is_partial_fragment(code: str | None) -> bool:
+    """Is `code` only PART of a function: a body that reads variables its
+    missing first lines set?
+
+    "Here's the end of my function" followed by a `while left <= right:` loop
+    is made a function by `repair_snippet` (`def solve(nums, target):`), but
+    `left` and `right` were initialised in the lines the learner did not
+    paste. Run as it is, that function stops with UnboundLocalError on every
+    input. Read live: the sandbox's "0 of 6 passed" was then reported to the
+    learner as their bug ("you never initialise left and right").
+
+    Such code is read, never run: what the sandbox says about it is about the
+    missing lines, not about the learner's work.
+    """
+    tree = _parse((code or "").replace("\r\n", "\n"))
+    if tree is None:
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == WRAPPER_NAME:
+            params = {arg.arg for arg in [*node.args.args, *node.args.kwonlyargs]}
+            local = _bound_names(node) - params - {node.name}
+            return _reads_unset_local(node.body, params, local)
+    return False
 
 
 def _wrap_body(source: str, tree: ast.Module) -> str:

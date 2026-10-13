@@ -244,7 +244,9 @@ _FOLLOW_UP_RULE: Final = (
 )
 _NO_MARKERS_RULE: Final = (
     "Never write reference numbers in the answer -- no [3], no bracketed citation marks, no "
-    '"family 14": name things in words and cite only through the "used" list. '
+    '"family 14": name things in words and cite only through the "used" list. Never write '
+    'a "Reference:" or "References:" line, a list of sources, or where a fact came from '
+    '("own knowledge", "from the curriculum") anywhere in the answer. '
 )
 _CHECK_RULE: Final = (
     'Put ONE short question in "check" that makes the learner use what you just said (for a '
@@ -385,8 +387,10 @@ _GUIDANCE_SYSTEM: Final = (
     "your own knowledge instead of forcing an unrelated family onto it. "
     "ADAPT: when a <learner_profile> block is present, build the plan around it -- start "
     "where they are weak, move quickly through what they are strong in, and name the "
-    "mistakes they keep making at the step where each one bites. Say in one line how the "
-    "plan was adapted. With no <learner_profile> you know NOTHING about this learner: never "
+    "mistakes they keep making at the step where each one bites. Say how the plan was "
+    "adapted in ONE plain sentence spoken to the learner (\"I've put recursion first "
+    'because ..."), with no label in front of it: never "Adaptation note:". With no '
+    "<learner_profile> you know NOTHING about this learner: never "
     "write that they already know something or that the plan was tailored to them. Say in "
     "one line which level you ASSUMED and ask them to tell you if that is off. "
     "SHAPE: order from fundamentals to advanced, size it to the time frame they give (for a "
@@ -442,6 +446,10 @@ _MARKER_RE: Final = re.compile(
     r"\u3010[^\u3011]{0,16}\u3011"  # the model's own citation brackets
     r"|(?i:\b(?:famil(?:y|ies)|refs?|references?)\s*)\[\d+(?:\s*,\s*\d+)*\]"
     r"|(?<=[\s(])\[\d{1,2}\](?=[\s.,;:)]|$)"
+    # "(ref 14)", "*(ref 11)*", "(references 4, 15)": read live under a study plan.
+    r"|[*_]{0,2}\((?i:refs?|references?)\.?\s*\d+(?:\s*(?:,|and)\s*\d+)*\)[*_]{0,2}"
+    # A whole "Reference: 11" / "References: 14 (stack), own knowledge" line.
+    r"|(?m:^[ \t>*_-]*(?i:references?)\s*:[^\n]*$)"
 )
 
 

@@ -5,6 +5,7 @@ functions touch is **untrusted user data**: they only parse and reshape
 text, never execute or evaluate it.
 """
 
+import json
 import re
 from typing import Final
 
@@ -41,6 +42,18 @@ def extract_json_object(raw: str) -> str | None:
     object itself. Returns `None` if no `{...}` span can be found.
     """
     text = raw.strip()
+
+    if text.startswith("{") and text.endswith("}"):
+        # Already one object. A fence INSIDE one of its strings (a reply that
+        # quotes a small trace or a line of code) is content, not a wrapper:
+        # read live, such a reply was unwrapped at its inner fence, came back
+        # as "no JSON", and the learner got "I couldn't put a reply together".
+        try:
+            json.loads(text)
+        except ValueError:
+            pass
+        else:
+            return text
 
     fence_match = _JSON_FENCE_RE.search(text)
     if fence_match is not None:

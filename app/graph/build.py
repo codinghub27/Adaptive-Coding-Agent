@@ -41,6 +41,7 @@ from app.graph.nodes import (
     classify_intent,
     debug_agent,
     decide_turn,
+    discuss_agent,
     dsa_agent,
     execute_code,
     explain_agent,
@@ -98,6 +99,7 @@ NODE_FUNCTIONS: Final[Mapping[str, Node]] = MappingProxyType(
         "dsa_agent": dsa_agent,
         "debug_agent": debug_agent,
         "explain_agent": explain_agent,
+        "discuss_agent": discuss_agent,
         "practice_agent": practice_agent,
         "assess_agent": assess_agent,
         "grade_answer": grade_answer,
@@ -155,10 +157,13 @@ def build_graph(node_overrides: Mapping[str, Node] | None = None) -> _CompiledGr
     # execution/verification by omission.
     clarify_node = ROUTE_NODES["clarify"]
     grade_node = ROUTE_NODES["grade"]
+    discuss_node = ROUTE_NODES["discuss"]
     for agent_node in ROUTE_NODES.values():
-        if agent_node not in (clarify_node, grade_node):
+        if agent_node not in (clarify_node, grade_node, discuss_node):
             builder.add_edge(agent_node, "execute_code")
     builder.add_edge(clarify_node, "final_response")
+    # A turn of talk writes no code, so there is nothing to run or verify.
+    builder.add_edge(discuss_node, "final_response")
     # ADAPTIVE-tutoring: a graded reply is answered directly (it runs no code),
     # except a "don't know" on a problem, which hands the next rung to the DSA
     # agent -- and through it to execute/verify like any other DSA turn.
@@ -201,6 +206,7 @@ def _build_run_context(
     retriever: Retriever | None,
     knowledge_top_k: int,
     runner: CodeRunner | None,
+    image: bytes | None = None,
 ) -> tuple[BudgetedLLMClient, GraphContext]:
     """Build the `BudgetedLLMClient` + `GraphContext` pair shared by `run_graph`
     and `stream_graph`, so the two entry points cannot drift apart."""
@@ -213,6 +219,7 @@ def _build_run_context(
         retriever=retriever,
         knowledge_top_k=knowledge_top_k,
         runner=runner,
+        image=image,
     )
     return budgeted, context
 
@@ -318,6 +325,7 @@ async def run_graph(
         retriever=retriever,
         knowledge_top_k=knowledge_top_k,
         runner=runner,
+        image=raw.image,
     )
 
     async def _invoke_graph() -> AgentState:
@@ -435,6 +443,7 @@ async def stream_graph(
         retriever=retriever,
         knowledge_top_k=knowledge_top_k,
         runner=runner,
+        image=raw.image,
     )
 
     queue: asyncio.Queue[GraphStreamEvent | BaseException | None] = asyncio.Queue()

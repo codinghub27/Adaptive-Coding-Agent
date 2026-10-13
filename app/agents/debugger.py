@@ -697,7 +697,16 @@ _READ_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "every line that matters (a loop whose condition is never true hides everything inside "
     "it). If you find none, say plainly that you "
     "found no bug, and name the input you traced and the result it gives. Never invent a bug "
-    'to have something to report. Write TO the learner ("you"), and do not '
+    "to have something to report. "
+    'What the learner TELLS you is evidence too. When they name the problem ("LeetCode 704 '
+    'Binary Search") judge the code against what THAT problem asks for -- what it must '
+    "return, including when the thing searched for is absent -- and not against a similar "
+    'problem with a different contract. When they say which kind of input fails ("it '
+    'fails when the target is not in the array"), trace exactly that kind of input and '
+    "find what the code returns for it that the problem does not want: a failure they have "
+    "seen is real, so do not answer that the code is fine. If the code is only part of a "
+    "function, read the part you were given and do not report the missing lines as a bug. "
+    'Write TO the learner ("you"), and do not '
     "rewrite their function. If trusted <reference_notes> are provided, use the ones that "
     'genuinely apply and list their numbers in "used"; never cite a note you did not use. '
     'Set "found_bug" to true only when you named at least one definite bug. '
@@ -754,10 +763,14 @@ _REPLY_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
 _TRACEBACK_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "The learner shared an error or a traceback but NOT the code. Read it: name the "
     "exception, the file and line that failed and the expression on it, and say what the "
-    "error means about the actual type or value involved. Give the most likely root cause. "
-    "Do not invent code you cannot see and do not rewrite their program. If the traceback "
-    "is not enough to establish where the bad value comes from, say exactly what is missing "
-    "and ask for ONLY that (for example, the lines where the value is created). You have not "
+    "error means about the actual type or value involved: what the failing expression "
+    "expects, and what it was actually given. Keep what the traceback SHOWS apart from what "
+    "it does not: it shows the type mismatch at that line, not where the wrong value came "
+    "from. Do not invent code you cannot see and do not rewrite their program. When the "
+    "traceback does not show where the bad value was created or passed in, do not guess a "
+    "root cause: say that this part is not visible, and end by asking for ONLY the few lines "
+    "that would show it (where the variable is assigned and where the function is called). "
+    "You have not "
     'seen their file: state a cause you cannot confirm as a possibility ("most likely", '
     '"one of"), never as fact, and never say you inspected code that was not shown. A '
     "SyntaxError on a line that is valid modern Python (type hints such as `x: int` or "
@@ -958,6 +971,9 @@ _PATCH_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "bug in it -- the one in <debug_context> is only the first thing that went wrong; read "
     "each line and fix a wrong condition, a wrong operator or an undefined name wherever it "
     "is -- while preserving their overall approach and their names as much as possible. "
+    'When the learner asks for it in LeetCode form ("the LeetCode code", "in the '
+    'LeetCode way"), write it as `class Solution:` with one method named as their function '
+    "is. Never define TreeNode or ListNode: those classes are provided. "
     "If a previous "
     "patch attempt is included and it still failed, try a different fix. Reply with ONLY a "
     'single JSON object and nothing else: {"patched_code": "<the complete corrected source>"}'

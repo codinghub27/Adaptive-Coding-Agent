@@ -106,17 +106,6 @@ function answerBody(generated, hasHintCard, hasQuestionCard = false) {
     .join("\n\n");
 }
 
-/**
- * The corpus sources this answer actually drew on (server-computed: only what
- * the prompt contained and the model reported using). Previously sent but
- * never shown.
- */
-function withReferences(body, citations) {
-  if (!citations || !citations.length) return body;
-  const list = citations.map((label) => `- ${label}`).join("\n");
-  return `${body}\n\n## References\n\n${list}`;
-}
-
 /** Turn a finished `ChatResponse` into the workspace's message shape. */
 /**
  * The agent's pending closed-choice question (tutoring), as option buttons.
@@ -139,7 +128,9 @@ function buildMessage(payload, steps) {
     // No fallback to `payload.response` when a hint card is shown: on a turn
     // whose whole answer is the hint, that text IS the hint, and it rendered
     // twice (once here, once in the card).
-    content: withReferences(answerBody(generated, Boolean(hint), Boolean(question)) || (hint ? "" : payload.response), generated?.citations),
+    // The reply is shown as the tutor said it. The corpus sources it drew on
+    // stay in `citations` (data); a "References" list is not printed under it.
+    content: answerBody(generated, Boolean(hint), Boolean(question)) || (hint ? "" : payload.response),
     concept: buildConcept(payload),
     work: steps.map(({ name, node, durationMs }) => ({ name, node, durationMs, status: "completed" })),
     hint,

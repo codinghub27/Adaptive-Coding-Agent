@@ -271,7 +271,14 @@ def _render_debug(
         # overclaiming here is exactly what the "never trust an LLM's claim of
         # correctness" rule exists to prevent.
         body = result.bug_explanation
-        if result.not_executed:
+        if result.partial_code:
+            body = (
+                body
+                + "\n\n_Not executed -- this is part of a function (it uses variables set in"
+                + " lines you did not share), so it cannot be run on its own. This is a"
+                + " reading of your code, not a test of it._"
+            )
+        elif result.not_executed:
             body = (
                 body
                 + "\n\n_Not executed -- the code sandbox is not available, so this is a"

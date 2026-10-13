@@ -70,12 +70,19 @@ _INTENTS: dict[str, Intent] = {
 }
 
 
+_TALK_REPLY = (
+    "Your reasoning is right: two ends moving inward is the mechanism. Here the usual name "
+    "is a greedy range of open counts. What is the smallest the count can be after '*'?"
+)
+
+
 class _ScriptedLLM:
     """Answers by which prompt is calling; records which prompts were used."""
 
     def __init__(self) -> None:
         self.systems: list[str] = []
         self.solver_users: list[str] = []
+        self.talk_users: list[str] = []
         self.solver_calls = 0
 
     async def chat(
@@ -109,6 +116,9 @@ class _ScriptedLLM:
             )
         elif system.startswith("You are a DSA mentor"):
             content = json.dumps({"answer": "## 6-Week DSA Study Plan", "used": [1]})
+        elif system.startswith("You are a coding tutor in the middle of a conversation"):
+            self.talk_users.append(user)
+            content = json.dumps({"reply": _TALK_REPLY, "learner_showed": "terminology_error"})
         else:
             content = "{}"
         return ChatResult(content=content, provider="fake", model="fake")
@@ -169,7 +179,9 @@ def store(monkeypatch: pytest.MonkeyPatch) -> _Store:
         content: str,
         intent: Any = None,
         adaptation: Any = None,
+        **image: Any,
     ) -> MessageView:
+        del image  # the picture sent with a turn: stored, not read here
         view = MessageView(
             id=uuid4(),
             conversation_id=cid,
@@ -357,14 +369,20 @@ async def test_a_technique_named_in_reply_to_the_tutor_is_an_answer(store: _Stor
     chat = _Conversation()
     await chat.turn("how to solve this prob", image=_PNG)
     answer = await chat.turn("two pointers?")
-    assert answer.state.route == "dsa"
+    # CHANGED 2026-10-13: their answer is replied to as talk about the problem
+    # (`discuss`), with the problem and the conversation in the prompt. It
+    # used to be the solver's next rung. Still on the problem, still no lecture.
+    assert answer.state.route == "discuss"
     assert answer.state.problem_relation == "followup"
-    assert "two pointers?" in chat.llm.solver_users[-1]
-    assert "<conversation_so_far>" in chat.llm.solver_users[-1]
-    # The solver's verdict on their reasoning picks the opening line: a right
-    # idea under the wrong name is credited, never "Not quite".
-    assert _reply(answer).startswith("Your reasoning is right -- only the name is different.")
+    prompt = chat.llm.talk_users[-1]
+    assert "two pointers?" in prompt
+    assert "<conversation_so_far>" in prompt
+    assert "<subject>" in prompt and "Valid Parenthesis String" in prompt
+    assert _reply(answer).startswith("Your reasoning is right")
     assert "Not quite" not in _reply(answer)
+    # What the tutor read in their answer reaches the decision as evidence.
+    assert answer.state.decision is not None
+    assert answer.state.decision.evidence == "terminology_error"
 
     # An actual question about another concept is still its own question.
     other = await chat.turn("what is a trie?")

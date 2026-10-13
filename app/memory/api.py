@@ -13,9 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
 from app.db.session import get_session
+from app.input.vision import ALLOWED_IMAGE_TYPES
 from app.memory.conversation import (
     ConversationNotFoundError,
     delete_conversation,
+    get_message_image,
     learning_activity_hours,
     list_conversations,
     list_messages,
@@ -36,6 +38,8 @@ from app.schemas.profile import LearnerProfileView, LearningActivity, LearningPr
 __all__ = ["router"]
 
 router = APIRouter(tags=["memory"])
+
+DETAIL_IMAGE_NOT_FOUND = "image not found"
 
 #: Fixed detail string -- never interpolate a caller-supplied conversation id
 #: into an error response.
@@ -138,6 +142,33 @@ async def read_conversation_messages(
         )
     except ConversationNotFoundError:
         raise HTTPException(status_code=404, detail=DETAIL_CONVERSATION_NOT_FOUND) from None
+
+
+@router.get("/conversations/{conversation_id}/messages/{message_id}/image")
+async def read_message_image(
+    conversation_id: UUID,
+    message_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> Response:
+    """Return the image the learner shared with one of their own messages.
+
+    The bytes were validated as an image when they were uploaded
+    (`app.input.vision.validate_image`) and are served back only to the
+    account that sent them, never rendered as a page.
+    """
+    try:
+        found = await get_message_image(session, current_user.id, conversation_id, message_id)
+    except ConversationNotFoundError:
+        raise HTTPException(status_code=404, detail=DETAIL_CONVERSATION_NOT_FOUND) from None
+    if found is None:
+        raise HTTPException(status_code=404, detail=DETAIL_IMAGE_NOT_FOUND)
+    data, media_type = found
+    return Response(
+        content=data,
+        media_type=media_type if media_type in ALLOWED_IMAGE_TYPES else "application/octet-stream",
+        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.patch("/profile/preferences", response_model=LearnerProfileView)

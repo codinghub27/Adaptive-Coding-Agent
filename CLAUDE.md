@@ -99,7 +99,8 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
 - **ONE decision per turn.** `decide_turn` (`nodes._decide`) is the only place
   that settles what the turn is about, which agent handles it, and the
   `TurnDecision` record (`app/schemas/decision.py`): `subject`, `evidence`
-  (what the learner showed, target behaviour section 2.2 labels), `move`,
+  (what the learner showed, target behaviour section 2.2 labels), `move`
+  (`step`, `code`, `debug`, `explain`, `discuss`, `review`, `plan`, ...),
   `scaffold`, `wants_code`, `withhold`. Retrieval, the planner, every agent
   prompt, the response layer and the learner model READ it. Do not work any of
   it out again downstream, and do not add a second place that relabels a turn.
@@ -245,6 +246,65 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   patterns plus `FOUNDATION_TOPICS`. With no model the built-in fundamentals
   set is asked; answers that could not be marked record nothing and the quiz
   stays open.
+- **Talk is its own move** (`discuss` -> route `discuss`, `app/agents/dialogue.py`,
+  2026-10-13). Most messages after the first are talk about what is already on
+  the table: a question about the step just taken, the learner's own
+  reasoning, a restatement to check they understood. `nodes._is_talk` settles
+  it inside `decide_turn`, after the route is chosen: a message that BRINGS
+  something (a statement, code, an error) is its specialist's; a hint, "I
+  don't know" and an ask for the code keep the ladder; a request to be TAUGHT
+  a topic (`IntentResult.wants_lesson`, fallback `opens_as_a_lesson_ask`) is a
+  lesson; an answer to the tutor's open curated question is graded.
+  Everything else in words is ONE model call with the subject, ten messages of
+  conversation and `<tutor_state>` in front of it. It never writes solution
+  code (`writes_the_solution`; code that comes back twice is cut and the words
+  kept). It returns what the learner showed, which lands on
+  `decision.evidence` like the solver's reading. A turn no specialist takes is
+  talk when it is inside a conversation or was read with confidence; only a
+  FIRST message nobody could read is still asked about (`clarify`). The
+  representation switch applies to talk only when THIS message says the
+  learner did not follow, never on an opening message and never while the
+  answer is withheld (`_talk_pitch`).
+- **A conversation that opens on a problem has a subject from its first
+  message** (`nodes._described_problem`). Only a CURATED title used to be
+  stored; "how should I solve Longest Substring Without Repeating
+  Characters?" stored nothing and the next unsure turn got "there is no
+  problem or code in this conversation yet". The learner's own description is
+  stored as the statement when nothing is.
+- **"The answer" is a word, not an ask.** The bare phrase was in
+  `_EXPLICIT_ASK_RE`: "why can the answer use both sides?" handed over the fix
+  after "don't give full code yet". Offering to write the code ("can I try it
+  and you review it?", `_OFFERS_TO_WRITE_RE`) is never an ask for it. The
+  fixed phrase lists read typographic apostrophes (`grader.plain_quotes`).
+- **An attempt at the open problem is checked first.** Code sent about the
+  active problem goes to the debugger even when it was called a review; a
+  passing attempt gets "this is correct, and why", not a style report.
+- **A debugging exercise** ("give me code with a bug and I will fix it":
+  `IntentResult.wants_buggy_code`, fallback `asks_for_buggy_code`, settled
+  first in `decide_turn`; `app/agents/bug_exercise.py`). A reference solution
+  must PASS its cases in the sandbox, one model call plants ONE bug, and the
+  result must FAIL the same cases or nothing is handed out. The failing case
+  shown is the sandbox's. The problem becomes the conversation's subject, its
+  cases are cached, `withhold` is set, and the learner's fix is their own work
+  (`SessionProgress.bug_exercise_key` exempts it from `_is_the_tutors_code`).
+- **A challenge names no technique.** A practice request with `withhold`
+  ("don't tell me the algorithm") is rendered without the topic, the pattern
+  signal, the bank's opening question or the watch-outs.
+- **Part of a function is read, never run** (`snippet.is_partial_fragment`).
+  "Here's the end of my function" is wrapped so it parses, but it reads
+  variables its missing lines set: run, it fails on every input and that was
+  reported as the learner's bug. The debugger takes its not-executed path with
+  a fixed note, and its reader is told to judge the code against the problem
+  the learner NAMED and the failure they reported.
+- **A shared image is stored with its message** (`messages.image`,
+  `image_mime`, `image_text`; `GET /conversations/{id}/messages/{mid}/image`,
+  owner only). It used to live only in the browser tab. `image_text` is what
+  was read from it; `get_recent_context` appends it to the message, so history
+  no longer says "[image]". The bytes travel in `GraphContext.image`, never in
+  the traced state.
+- **No reference list is printed.** `generated.citations` is still returned as
+  data; the UI does not render it, and `concept.strip_markers` removes
+  "(ref 14)" and "Reference: 11" lines a model writes into an answer.
 - **A short message gets a topic only from a strong hit or a named problem.**
   With no problem statement the floor is `MIN_CONCEPT_TOPIC_SCORE`; between
   the two floors a topic is taken only when the message names a problem the
@@ -267,7 +327,12 @@ frontend/            # web UI (js/, css/); built bundle is served by app/main.py
   `FailoverLLMClient` moves on, waiting out only a short `retry-after`.
   `LLM_HTTP_LOG_PATH` records every provider call (metadata only);
   `LLM_CLASSIFIER_MODEL` (off) moves classification to a smaller model.
-- **Measuring behaviour.** `eval.behavior.live_scenarios --runs N` gives a pass
+- **Measuring behaviour.** `eval.behavior.target_replay --out FILE` replays the
+  owner's target conversations (`adaptive_examples.jsonl`,
+  `docs/target_behavior2.md`, the learner turns of `docs/current-behavior.md`)
+  and writes each reply beside the target reply; its checks are a floor, the
+  score is the reading (`docs/TARGET_REPLAY.md`). The earlier reference set is
+  `reference_examples.jsonl`. `eval.behavior.live_scenarios --runs N` gives a pass
   rate per scenario and per check. One live transcript proves little: the
   classifier's reading varies between runs. Tests with a scripted model prove
   less: every defect in section 14 of the audit was found by reading one live

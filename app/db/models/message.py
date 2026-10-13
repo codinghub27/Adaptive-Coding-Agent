@@ -9,13 +9,14 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, deferred, mapped_column
 
 from app.db.base import Base
 
@@ -53,4 +54,12 @@ class Message(Base):
     #: What changed in this reply because of the learner (fixed sentences from
     #: `app.tutoring.adaptation`), or NULL: a user message, or nothing changed.
     adaptation: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    #: The image the learner shared with this message, or NULL. Loaded only by
+    #: the endpoint that serves it (`deferred`): history and prompts never
+    #: carry the bytes.
+    image: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
+    image_mime: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: What was read from that image (the problem, code or error in it), so a
+    #: later turn can still see what the learner showed.
+    image_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

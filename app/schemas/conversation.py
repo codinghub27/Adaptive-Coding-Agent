@@ -76,6 +76,11 @@ class MessageView(APIModel):
     #: What changed in this reply because of the learner; empty or absent when
     #: nothing did. The "Adapted to your level" badge is `adapted`, never more.
     adaptation: list[str] | None = None
+    #: Set when an image was shared with this message; the bytes are served by
+    #: `GET /conversations/{id}/messages/{message_id}/image`.
+    image_mime: str | None = None
+    #: What was read from that image. Untrusted data, like `content`.
+    image_text: str | None = None
     created_at: datetime
 
     @computed_field

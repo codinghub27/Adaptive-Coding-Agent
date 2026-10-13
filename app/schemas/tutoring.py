@@ -138,7 +138,7 @@ class PracticeRecord(APIModel):
     statement: str | None = Field(default=None, max_length=2000)
 
 
-LastThread = Literal["problem", "plan", "explanation", "quiz", "code"]
+LastThread = Literal["problem", "plan", "explanation", "quiz", "code", "discussion"]
 
 #: The most questions one knowledge check asks.
 MAX_QUIZ_QUESTIONS: Final = 10
@@ -211,6 +211,10 @@ class SessionProgress(APIModel):
     #: problem -- measured: asked after a roadmap, it got the next hint on a
     #: problem from the day before.
     last_thread: LastThread | None = None
+    #: The subject (problem key) of a debugging exercise the tutor set: code it
+    #: wrote with one planted bug. The learner's fix to it is THEIR work, even
+    #: though most of its lines are the tutor's.
+    bug_exercise_key: str | None = Field(default=None, max_length=96)
     #: What the learner showed on recent turns of ONE subject (`evidence_key`),
     #: oldest first, in the section 2.2 labels. Requests are not logged. It is
     #: what lets the tutor change representation after repeated struggle and
