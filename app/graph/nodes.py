@@ -937,7 +937,11 @@ async def decide_turn(state: AgentState, runtime: Runtime[GraphContext]) -> Agen
 
 
 def _decide(state: AgentState) -> AgentStateUpdate:
-    if answers_open_quiz(state):
+    # A request for code with a bug is never a set of quiz answers. Read live
+    # with the classifier unavailable: while a quiz was still open, "give a
+    # code with bug and i will fix it" got "I couldn't mark those just now",
+    # four messages running.
+    if not _asks_for_a_bug_exercise(state) and answers_open_quiz(state):
         # The tutor's last message was a set of questions and this one answers
         # them. Settled first: read as a follow-up on an OLDER subject (code
         # shared earlier in the conversation), ten "skip" lines were relabelled

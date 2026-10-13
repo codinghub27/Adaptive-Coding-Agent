@@ -330,3 +330,20 @@ def test_history_remembers_what_an_image_showed() -> None:
 def test_the_exercise_key_is_remembered_with_the_conversation() -> None:
     progress = SessionProgress.empty().model_copy(update={"bug_exercise_key": "_pabc"})
     assert SessionProgress.model_validate(progress.model_dump()).bug_exercise_key == "_pabc"
+
+
+def test_a_request_for_buggy_code_is_not_a_set_of_quiz_answers() -> None:
+    """Read live with the classifier unavailable: while a quiz was still open
+    (its answers could not be marked), "give a code with bug and i will fix
+    it" was taken as answers to it and got "I couldn't mark those just now"."""
+    from app.schemas.tutoring import QuizItem, QuizState
+
+    quiz = QuizState(items=[QuizItem(question="Q1?", topic="arrays", expected="K1")])
+    waiting = SessionProgress.empty().model_copy(update={"quiz": quiz, "last_thread": "quiz"})
+    asked = _state("give a code with bug and i will fix it", intent=_unsure(), progress=waiting)
+    update = _decide(asked)
+    assert update.get("route") == "practice"
+    assert update.get("bug_exercise") is True
+    # Answers to the quiz are still its answers.
+    answers = _state("1. O(1)", intent=_unsure(Intent.DSA_HINT), progress=waiting)
+    assert _decide(answers).get("route") == "assess"
