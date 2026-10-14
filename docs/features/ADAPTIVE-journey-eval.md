@@ -440,6 +440,33 @@ measured count on the last cloud run: grade/evidence topic and severity
 (~8), intent and route labels (~12, strict), plan level and difficulty (~10),
 recorded memory facts (~5).
 
+### Verification protocol (section 8), final state
+
+| step | result |
+|---|---|
+| `alembic check` | no new upgrade operations |
+| `pyright app tests` (strict) | 0 errors |
+| `ruff check .`, `ruff format --check app tests eval` | clean |
+| `pytest tests -q -m "not sandbox"` | 2184 passed, 2 skipped |
+| `pytest tests -q -m sandbox` | 25 passed (two isolation tests errored once while `eval.run` held the sandbox; 17/17 on rerun; the e2e test needed the I1 guide-prompt marker) |
+| `python -m eval.run`, same local model, `main` vs this branch | routing 80.0 -> 80.0, topic 86.7 -> 93.3, hint_safety 100 -> 100, debug_fix 100 -> 100, groundedness 50 -> 40 (one case fewer with citations, a different mix of cases; n = 1 on a 9B model) |
+| `python -m eval.run` on the cloud | not valid today (rate-limited turns fell back to clarify) |
+| `eval.behavior.replay`, transcript probes | not run: no cloud quota left, and a local run would not be comparable with their recorded cloud numbers |
+| journey replay | see Results above |
+| overfitting grep (`overfit_check`) | 0 new hits |
+| UI spot-check (playwright) | a live session-1-style opening on the local model; light and dark themes and phone width after the UI changes |
+| LangSmith | not inspected: tracing was off for the local runs, and the cloud runs today were voided |
+
+### UI (owner's live test, 2026-10-14)
+
+Reply paragraphs (`dialogue.in_paragraphs` + prompt rule 11), non-algorithm
+explanations without a cost section and with "In an interview, say:" lines
+(`concept._DEPTH_RULE`), framework code read or labelled "not run" instead of
+reported as failing (`app/execution/imports.py`), light-mode contrast
+(`--accent-text` and light status colours in `frontend/css/variables.css`),
+and the reference design's SIZES only (`frontend/css/theme-refresh.css`; the
+owner kept the workspace's own colours).
+
 Not done, and why: no `resolved` state for a mistake (needs a profile schema
 change; additive, but not reached today); the floor-vs-ceil binary-search
 mistake stays `blocked_by: catalog` (the corpus does not name it, and a
