@@ -91,173 +91,66 @@ html body .composer .chip { font-size: 13px; }
 
 
 /* ==========================================================================
- * Reference layout and components (owner's "UI Design for coding agent").
- * Three columns: sessions 280px | chat | profile 310px, one 60px top band
- * across all three, chat column at most 860px.
+ * Sizes and layout from the owner's reference design ("UI Design for coding
+ * agent"). SIZES ONLY: the colours stay the workspace's own (owner,
+ * 2026-10-14: "keep the previous chat colours, change only the sizes").
+ * Three columns: sessions 280px | chat | profile 310px, one 60px band across
+ * all three, chat column at most 860px.
  * ========================================================================== */
-html body { font-family: var(--font-ui); background: var(--bg); color: var(--text); }
-
 @media (min-width: 1101px) {
   html body .app-shell {
     grid-template-columns: var(--sidebar-width) minmax(480px, 1fr) var(--profile-width);
   }
 }
-html body .workspace { grid-template-rows: var(--topbar-height) 1fr; background: var(--bg); }
+html body .workspace { grid-template-rows: var(--topbar-height) 1fr; }
 
 /* --- sessions column ----------------------------------------------------- */
-html body .sidebar { background: var(--surface); border-right: 1px solid var(--line); }
 html body .sidebar-head {
   height: var(--topbar-height);
   margin: -22px -16px 0;
   padding: 0 20px;
   border-bottom: 1px solid var(--line);
 }
-html body .brand strong {
-  font-size: 18px;
-  font-weight: 700;
-  background: var(--brand-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-html body .brand-mark {
-  background: var(--accent-gradient);
-  border: 0;
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-glow);
-}
-html body .brand-mark i { background: #ffffff; }
-html body .new-chat {
-  height: 42px;
-  margin: 16px 0 18px;
-  border: 0;
-  border-radius: var(--radius);
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: #ffffff;
-  font-size: 14px;
-  font-weight: 600;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
-}
-html body .new-chat:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5); }
-html body .new-chat kbd { color: rgba(255, 255, 255, 0.8); border-color: rgba(255, 255, 255, 0.3); background: transparent; }
+html body .brand strong { font-size: 18px; font-weight: 700; }
+html body .new-chat { height: 42px; margin: 16px 0 18px; font-size: 14px; border-radius: var(--radius); }
 html body .history-label span {
   font: 600 12px var(--font-ui);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-3);
 }
-html body .session-item { font-size: 13.5px; color: var(--text-2); border-radius: var(--radius); }
-html body .session-item:hover { background: var(--surface-2); color: var(--text); }
-html body .session-item.active,
-html body .session-item[aria-current="true"] {
-  background: var(--accent-soft);
-  color: var(--accent-text);
-  border: 1px solid var(--accent-line);
-}
-html body .avatar { background: var(--accent-gradient); color: #ffffff; border: 0; }
+html body .session-item { font-size: 13.5px; border-radius: var(--radius); }
 
 /* --- top band ------------------------------------------------------------ */
-html body .topbar {
-  height: var(--topbar-height);
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  padding: 0 24px;
-}
-html body .conversation-title strong { font-size: 15px; font-weight: 600; color: var(--text); }
-html body .conversation-title span { font-size: 12px; color: var(--text-3); }
-html body .mode-pill { border-color: var(--line-strong); border-radius: var(--radius); background: var(--bg); }
-html body .mode-pill > span { font-size: 12px; }
-html body .mode-pill button { font-size: 13px; padding: 6px 12px; border-radius: var(--radius-sm); color: var(--text-2); }
-html body .mode-pill button.active {
-  background: var(--accent-soft);
-  color: var(--accent-text);
-  box-shadow: inset 0 0 0 1px var(--accent-line);
+html body .topbar { height: var(--topbar-height); padding: 0 24px; }
+html body .topbar-left { min-width: 0; flex: 1; }
+html body .conversation-title { min-width: 0; }
+html body .conversation-title strong {
+  display: block;
+  max-width: 100%;
+  font-size: 15px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+html body .conversation-title span { font-size: 12px; }
+html body .mode-pill > span { font-size: 12px; }
+html body .mode-pill button { font-size: 13px; padding: 6px 12px; }
 
 /* --- chat column ---------------------------------------------------------- */
 html body .message-list { width: min(100% - 48px, 860px); }
-html body .message-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius);
-  background: var(--accent-gradient);
-  color: #ffffff;
-  box-shadow: 0 0 12px rgba(99, 102, 241, 0.3);
-}
 html body .message { grid-template-columns: 36px 1fr; }
+html body .message-avatar { width: 36px; height: 36px; border-radius: var(--radius); }
 html body .user-bubble { border-radius: 16px 4px 16px 16px; padding: 14px 18px; }
-html body .agent-content code { color: var(--accent-text); }
-html body .working-card {
-  border: 1px solid rgba(6, 182, 212, 0.3);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-html body .working-toggle strong { color: var(--accent-2); font-size: 13px; }
-html body .composer {
-  border-radius: var(--radius-xl);
-  border-color: var(--line-strong);
-  background: var(--surface);
-  box-shadow: var(--shadow);
-  padding: 4px 6px;
-}
-html body .composer:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2), var(--shadow);
-}
-html body .send-button {
-  width: 38px;
-  height: 38px;
-  border-radius: var(--radius);
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: #ffffff;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
-}
+html body .working-toggle strong { font-size: 13px; }
+html body .composer { border-radius: var(--radius-xl); padding: 4px 6px; }
+html body .send-button { width: 38px; height: 38px; border-radius: var(--radius); }
 html body .send-button::before { left: 14px; top: 14px; }
 html body .send-button::after { left: 18px; top: 13px; }
-html body .hint-mode { color: var(--warning); font-size: 13px; }
+html body .hint-mode { font-size: 13px; }
 
 /* --- profile column ------------------------------------------------------- */
-html body .profile-panel { background: var(--surface); border-left: 1px solid var(--line); padding: 20px; }
-html body .panel-kicker {
-  font: 700 12px var(--font-ui);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  background: var(--brand-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-html body .panel-head h2 { font-size: 18px; font-weight: 700; }
-html body .profile-hero,
-html body .focus-card,
-html body .preference-grid > div {
-  background: var(--surface-2);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-}
-html body .section-label span,
-html body .profile-hero span,
-html body .focus-card > span {
-  font: 700 12px var(--font-ui);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-html body .profile-hero h3 { font-size: 16px; }
-html body .profile-panel .score-ring { stroke: var(--accent); }
-html body .skill-bar { height: 6px; border-radius: 9999px; background: var(--surface-3); }
-html body .skill-bar i { background: var(--accent-gradient); border-radius: 9999px; }
-html body .skill-meta { font-size: 13px; }
-html body .skill-meta b { color: var(--accent-2); }
-html body .focus-progress { height: 6px; border-radius: 9999px; }
-html body .focus-progress i { background: var(--accent-gradient); border-radius: 9999px; }
-html body .focus-card strong { color: var(--accent-text); font-size: 15px; }
-html body .preference-grid > div.on { border-color: var(--accent-line); background: var(--accent-soft); }
-html body .profile-settings { border-radius: var(--radius); font-size: 13px; }
-
-/* The profile header sits on the same 60px band as the top bar. */
-html body .profile-panel { padding-top: 0; }
+html body .profile-panel { padding: 0 20px 20px; }
 html body .panel-head {
   height: var(--topbar-height);
   margin: 0 -20px 20px;
@@ -267,18 +160,27 @@ html body .panel-head {
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
 }
-html body .panel-head h2 { margin: 2px 0 0; line-height: 1.2; }
-
-/* A long conversation title stays on one line inside the 60px band. */
-html body .topbar-left { min-width: 0; flex: 1; }
-html body .conversation-title { min-width: 0; }
-html body .conversation-title strong {
-  display: block;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+html body .panel-head h2 { font-size: 18px; font-weight: 700; margin: 2px 0 0; line-height: 1.2; }
+html body .panel-kicker { font-size: 12px; letter-spacing: 0.06em; }
+html body .section-label span,
+html body .profile-hero span,
+html body .focus-card > span {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
+html body .profile-hero,
+html body .focus-card,
+html body .preference-grid > div { border-radius: var(--radius-lg); }
+html body .profile-hero h3 { font-size: 16px; }
+html body .skill-bar,
+html body .focus-progress { height: 6px; border-radius: 9999px; }
+html body .skill-bar i,
+html body .focus-progress i { border-radius: 9999px; }
+html body .skill-meta { font-size: 13px; }
+html body .focus-card strong { font-size: 15px; }
+html body .profile-settings { border-radius: var(--radius); font-size: 13px; }
 
 /* Narrow screens: the time never breaks; the "Adapted" chip takes its own line. */
 html body .message-meta { flex-wrap: wrap; row-gap: 6px; }
