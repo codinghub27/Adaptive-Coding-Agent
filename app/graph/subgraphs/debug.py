@@ -323,6 +323,9 @@ async def _explain(state: DebugState, runtime: Runtime[GraphContext]) -> DebugSt
         failure_established=state.get("has_established_failure", False),
         turn_context=state.get("turn_context", ""),
         reply=state.get("is_reply", False),
+        # Below `full` the learner writes the fix: the failing case and one
+        # question at the faulty line, never the corrected line.
+        learner_fixes=not state.get("wants_code", False),
     )
     return {
         "bug_explanation": reading.explanation,

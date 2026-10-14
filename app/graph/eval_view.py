@@ -92,7 +92,7 @@ def _sandbox(state: AgentState) -> EvalSandbox | None:
 
 
 def _memory_used(state: AgentState) -> list[str]:
-    facts: list[str] = []
+    facts: list[str] = list(state.memory_facts)
     if state.adaptation is not None:
         facts += [f"common_errors.{tag}" for tag in state.adaptation.recurring]
     if state.tutoring is not None:

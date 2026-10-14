@@ -589,6 +589,49 @@
       "on_incorrect": "Marking after the pop lets every neighbour push its own copy first.",
       "scaffold": "Count how many times a node with five unvisited neighbours can be pushed before it is popped.",
       "lesson": "Rule: with an explicit stack, mark visited when you push."
+    },
+    "sliding_window.stale_index": {
+      "topic": "sliding_window",
+      "rubric_ref": "corpus:sliding_window#common_mistakes",
+      "question": "Trace `s = \"abcba\"` with your code. When you reach the final `a`, where was `a` last seen, is that position still inside the window, and where does `left` end up?",
+      "accepted_answers": [
+        "outside the window",
+        "not in the window",
+        "moves backward",
+        "moved backward",
+        "goes backward",
+        "went backwards",
+        "last_seen >= left",
+        "last_seen[ch] >= left",
+        "max(left"
+      ],
+      "expected_concepts": [
+        {
+          "id": "stale_index",
+          "keywords": [
+            "outside",
+            "not in the window",
+            "already left",
+            "backward",
+            "backwards",
+            ">= left",
+            "max(left",
+            "stale",
+            "old position"
+          ],
+          "follow_up": "Index 0 is where `a` was seen first. Is index 0 still between `left` and the current index when you reach the last `a`?"
+        }
+      ],
+      "wrong_answers": {},
+      "misconception_ids": [
+        "sliding_window.left_pointer_moves_backward"
+      ],
+      "then": "code_submission",
+      "then_question": "Right. Change the update so `left` can only move forward, and send the new version.",
+      "on_correct": "Exactly: that earlier position is outside the window, so it must not pull `left` back.",
+      "on_incorrect": "Look at where `left` is just before the last `a`, and compare it with the index stored for `a`.",
+      "scaffold": "Write the window after each character of \"abcba\": left, i, and last_seen. What is left just before the final a?",
+      "lesson": "Invariant: the left edge of a window never moves backward. A remembered position counts only while it is inside the window."
     }
   },
   "chains": [

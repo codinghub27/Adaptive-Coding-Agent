@@ -305,7 +305,51 @@ def _marks_after_pop(tree: ast.AST, *, queue: bool) -> bool:
     return False
 
 
+def _jumps_to_stored_index(node: ast.AST) -> str | None:
+    """`L = D[k] + 1`: the name a window edge is set to from a stored index."""
+    if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+        return None
+    target, value = node.targets[0], node.value
+    if not (
+        isinstance(target, ast.Name)
+        and isinstance(value, ast.BinOp)
+        and isinstance(value.op, ast.Add)
+        and isinstance(value.left, ast.Subscript)
+        and isinstance(value.right, ast.Constant)
+        and value.right.value == 1
+    ):
+        return None
+    return target.id
+
+
+def _left_jumps_to_stale_index(tree: ast.AST) -> bool:
+    """A window's left edge set to `last_seen[x] + 1` with nothing keeping it
+    from moving backward: no `max(...)` around it and no test of the edge in
+    the `if` that guards it. The edge must be used as a window bound (`i - L`)
+    elsewhere, so an unrelated `x = d[k] + 1` is not flagged."""
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            tested = _names(node.test)
+            for stmt in node.body:
+                for inner in ast.walk(stmt):
+                    edge = _jumps_to_stored_index(inner)
+                    if edge is not None and edge in tested:
+                        guarded.add(id(inner))
+    bounds = {
+        n.right.id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Sub) and isinstance(n.right, ast.Name)
+    }
+    for node in ast.walk(tree):
+        edge = _jumps_to_stored_index(node)
+        if edge is not None and edge in bounds and id(node) not in guarded:
+            return True
+    return False
+
+
 _DETECTORS: Final[dict[str, Callable[[ast.AST], bool]]] = {
+    "left_jumps_to_stale_index": _left_jumps_to_stale_index,
     "checked_key_vs_accessed_key": _checked_key_vs_accessed_key,
     "list_scan_lookup": _list_scan_lookup,
     "returnable_vs_global_path": _returnable_vs_global_path,

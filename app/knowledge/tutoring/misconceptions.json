@@ -96,6 +96,18 @@
       "question_id": "dfs.visited_before_push",
       "detector": "mark_visited_after_pop",
       "lesson": "Rule: with an explicit stack, mark visited when you push."
+    },
+    {
+      "id": "sliding_window.left_pointer_moves_backward",
+      "pattern": "sliding_window",
+      "corpus_pattern": "sliding_window",
+      "corpus_quote": "which moves the left edge backward",
+      "name": "Moving the left edge backward to a stale index",
+      "correct_model": "The left edge only ever moves forward. A stored last-seen index matters only while it is inside the window (`last_seen[ch] >= left`); otherwise that earlier occurrence has already left the window and must be ignored, which is what `left = max(left, last_seen[ch] + 1)` does.",
+      "example": "s = \"abcba\". At the second b (index 3), left jumps to 2. At the final a (index 4), a was last seen at index 0, which is already outside the window; `left = 0 + 1` moves left BACK to 1 and the window \"bcba\" now holds two b's.",
+      "question_id": "sliding_window.stale_index",
+      "detector": "left_jumps_to_stale_index",
+      "lesson": "Invariant: the left edge of a window never moves backward. A remembered position counts only while it is inside the window."
     }
   ]
 }

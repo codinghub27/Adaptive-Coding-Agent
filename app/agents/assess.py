@@ -25,7 +25,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -47,8 +47,12 @@ __all__ = [
     "DEFAULT_QUIZ_QUESTIONS",
     "FOUNDATION_TOPICS",
     "MarkedQuiz",
+    "DRILL_QUESTIONS",
+    "ask_next",
     "builtin_quiz",
+    "mark_one",
     "mark_quiz",
+    "names_a_count",
     "quiz_topics",
     "render_marks",
     "render_quiz",
@@ -72,7 +76,18 @@ def quiz_topics() -> tuple[str, ...]:
     return (*FOUNDATION_TOPICS, *sorted(patterns - set(FOUNDATION_TOPICS)))
 
 
-_COUNT_RE: Final = re.compile(r"\b(\d{1,2})\b")
+#: A number of questions: "10 basic questions", "give me 3 questions". A
+#: number that counts something else ("I solved 4 of 5 today") is not one.
+_COUNT_RE: Final = re.compile(
+    r"\b(\d{1,2})\s+(?:[a-z-]+\s+){0,2}?(?:questions?|qs?|mcqs?|problems?)\b", re.I
+)
+#: How many questions a drill asks, one per turn, when no number was asked for.
+DRILL_QUESTIONS: Final = 3
+
+
+def names_a_count(request: str | None) -> bool:
+    """Did the request say how many questions it wants?"""
+    return any(int(m.group(1)) >= 1 for m in _COUNT_RE.finditer(request or ""))
 
 
 def requested_count(request: str | None, *, default: int | None = None) -> int:
@@ -157,6 +172,11 @@ _WRITE_SYSTEM: Final = (
     "choose one structure over another. No trick questions. A snippet goes inside the "
     "question in backticks on one line, statements separated by '; '.\n"
     "5. A question never contains its own answer or a hint toward it.\n"
+    "5b. When the learner asks to practise RECOGNISING which technique or pattern fits, "
+    "every question is a one-line problem statement in plain words (what is given, what is "
+    'asked) followed by "Which approach, and what in the statement gives it away?". Never '
+    "name a technique, pattern or data structure in such a question. `expected` names the "
+    "technique and the words that signal it. Use a different technique for each question.\n"
     "6. `topic` is exactly one slug from <topics>.\n"
     "7. `expected` is the marking key: the correct answer in one or two sentences, including "
     "the reason when the question asks why.\n\n"
@@ -339,9 +359,17 @@ _QUIZ_CLOSE: Final = (
 )
 
 
+def ask_next(quiz: QuizState) -> str:
+    """The question a one-at-a-time quiz is waiting on, as the learner sees it."""
+    return f"**#{quiz.current + 1}:** {quiz.items[quiz.current].question}"
+
+
 def render_quiz(quiz: QuizState, *, built_in: bool = False) -> str:
     """The questions as the learner sees them. Never the marking keys."""
     count = len(quiz.items)
+    if quiz.one_at_a_time:
+        # One question per turn: the next one comes after this answer is marked.
+        return f"{count} quick ones, one at a time. Short answers are fine.\n\n{ask_next(quiz)}"
     noun = "question" if count == 1 else "questions"
     lead = f"Here are {count} {noun} to see where you are."
     if built_in:
@@ -521,6 +549,46 @@ def _without_echo(feedback: str) -> str:
     front of it ("Correct. Correct - indexing is O(1)")."""
     trimmed = _ECHO_RE.sub("", feedback, count=1)
     return trimmed[:1].upper() + trimmed[1:] if trimmed else feedback
+
+
+def mark_one(quiz: QuizState, marked: MarkedQuiz) -> tuple[QuizState | None, str, list[QuizGrade]]:
+    """One answer of a one-at-a-time quiz marked: (the quiz moved on to its
+    next question, or `None` when that was the last; what the tutor says; the
+    evidence the answer is).
+
+    `marked` is the marking of a quiz holding only the current question. The
+    reply is the feedback on that answer, then the next question, or, after
+    the last, where the whole set leaves them.
+    """
+    verdict = marked.verdicts[0]
+    if verdict == "unanswered":
+        # One question was waiting and this message answers it: an answer
+        # that misses the question is a wrong answer, not a skipped one.
+        verdict = "incorrect"
+        marked = MarkedQuiz(quiz=marked.quiz, verdicts=(verdict,), feedback=marked.feedback)
+    said = marked.feedback[0] or (quiz.items[quiz.current].expected if verdict != "correct" else "")
+    line = f"{_VERDICT_WORDS[verdict]} {_without_echo(said)}".strip()
+    verdicts = [*quiz.verdicts, verdict]
+    following = quiz.current + 1
+    if following < len(quiz.items):
+        moved = quiz.model_copy(update={"current": following, "verdicts": verdicts})
+        return moved, f"{line}\n\n{ask_next(moved)}", marked.grades
+    grades = [
+        QuizGrade(topic=item.topic, grade=cast("Grade", v))
+        for item, v in zip(quiz.items, verdicts, strict=False)
+        if v != "unanswered"
+    ]
+    right = sum(1 for grade in grades if grade.grade == "correct")
+    solid, shaky = _standing(grades)
+    told = [f"That's the set: **{right} of {len(grades)}**."]
+    if solid:
+        told.append("Solid: " + _listed(solid) + ".")
+    if shaky:
+        told.append("To work on: " + _listed(shaky) + ". I've recorded that on your profile.")
+        told.append(f"Want to start with {_name(shaky[0])}: a one-line explanation, or a problem?")
+    else:
+        told.append("Want a harder set, or a problem on one of these?")
+    return None, f"{line}\n\n" + " ".join(told), marked.grades
 
 
 def render_marks(marked: MarkedQuiz) -> str:

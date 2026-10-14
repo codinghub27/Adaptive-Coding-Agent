@@ -127,20 +127,51 @@ DISCUSS_SYSTEM: Final = (
     "sections, no summary of the conversation. Direct and friendly; no empty praise, and "
     'never "great question".\n'
     "12. If, even with the conversation in front of you, you cannot tell what the message "
-    "refers to, ask one specific question that names the most likely reading.\n\n"
+    "refers to, ask one specific question that names the most likely reading.\n"
+    "13. WHERE THEY ARE. When the message tells you how things are going (a deadline, a "
+    "struggle, a bad result, how they feel) and names no task:\n"
+    "   - First sentence: acknowledge what they said, in plain words and their terms. No "
+    'flattery, no "don\'t worry", no exclamation marks.\n'
+    "   - A doubt about themselves is answered with EVIDENCE: what <learner_record> shows "
+    "they have solved or improved, named concretely. Never invent history the record does "
+    "not show; with no record, say what the next few minutes will find out instead.\n"
+    "   - If they name a problem they could not do, offer to work through it now, and say "
+    "it is also fine to stop for today.\n"
+    "   - Otherwise DIAGNOSE before advising: no plan, no schedule, no list of topics. Say "
+    "you will check where they get stuck, then give ONE one-line problem statement and "
+    "ask which approach they would reach for, no code. When they answer, say in one "
+    "sentence whether it fits and why, then give the next one-line statement, on a "
+    "different pattern. After three, say what the answers showed and where to start.\n"
+    "   How they feel shapes this turn only; it is not a fact about them to remember.\n"
+    "14. A NEW SESSION. When <conversation_so_far> is empty and the message names no task "
+    '("I\'m back", "what\'s next"), and <learner_record> has a recorded mistake from an '
+    "earlier session: welcome them in a few words and open with a 10-second warm-up "
+    "question on that mistake (a tiny input where it would show), saying it is from last "
+    "time. Use only what <learner_record> says; never invent a past session.\n\n"
     "Also report what the learner's message SHOWED, judged on their reasoning and not their "
     'vocabulary: "correct", "terminology_error" (right reasoning, a term misnamed), '
     '"partially_correct", "conceptual_misconception", "incomplete", "incorrect", "stuck" '
     '(they say they do not know or did not follow), or "none" when the message is a '
-    "question or a request and shows nothing either way.\n\n"
+    "question or a request and shows nothing either way. When the message answers a "
+    "question the tutor asked in its last turn, judge it as an answer to THAT question: "
+    'naming a technique that does not fit what was asked is "incorrect", even when the '
+    "technique is real. Judge against what was ASKED: an answer that gets right everything "
+    'the question asked for is "correct" even when it is short, informal or leaves out '
+    'things nobody asked for; "partially_correct" only when part of what was asked is '
+    "missing or wrong.\n\n"
+    "Also report the TOPIC the learner's message is evidence about: when it answers the "
+    "tutor's last question, the topic that question was testing (what a right answer would "
+    "use), not the one the learner named; otherwise the topic of the reasoning they gave. "
+    'Use one slug from <topics>, or "none" when nothing fits or the message shows nothing.'
+    "\n\n"
     'Reply with ONLY a JSON object: {"reply": "<your turn, as markdown>", '
-    '"learner_showed": "<one label>"}'
+    '"learner_showed": "<one label>", "topic": "<one slug or none>"}'
 )
 
 _AGAIN: Final = (
     "Your reply broke a hard limit: it contained a block of code or a function definition "
     "(rule 6), or it was not one JSON object. Write the turn again, in words, as ONE JSON "
-    'object {"reply": "...", "learner_showed": "..."}.'
+    'object {"reply": "...", "learner_showed": "...", "topic": "..."}.'
 )
 
 _FENCE_RE: Final = re.compile(r"```")
@@ -160,6 +191,9 @@ class DialogueReply:
 
     text: str
     learner_showed: Evidence = "none"
+    #: The topic the message is evidence about, from the closed list the call
+    #: was given; `None` when the model named none or one outside the list.
+    topic: str | None = None
 
 
 class _Output(BaseModel):
@@ -167,6 +201,7 @@ class _Output(BaseModel):
 
     reply: str
     learner_showed: str = "none"
+    topic: str = "none"
 
 
 def _cut(text: str, limit: int) -> str:
@@ -223,7 +258,9 @@ def _without_code(text: str) -> str:
 _MIN_WORDS_LEFT: Final = 80
 
 
-def _parsed(content: str, *, last_try: bool = False) -> DialogueReply | None:
+def _parsed(
+    content: str, *, last_try: bool = False, topics: Sequence[str] = ()
+) -> DialogueReply | None:
     raw = extract_json_object(content)
     if raw is None:
         return None
@@ -242,7 +279,10 @@ def _parsed(content: str, *, last_try: bool = False) -> DialogueReply | None:
         return None
     label = out.learner_showed.strip().lower()
     showed: Evidence = label if label in EVIDENCE_LABELS else "none"  # type: ignore[assignment]
-    return DialogueReply(text=text, learner_showed=showed)
+    # A topic becomes a key on the learner's profile: only a slug from the
+    # closed list given to the call is kept.
+    topic = out.topic.strip().lower()
+    return DialogueReply(text=text, learner_showed=showed, topic=topic if topic in topics else None)
 
 
 async def discuss(
@@ -253,6 +293,7 @@ async def discuss(
     tutor_state: str = "",
     conversation: Sequence[tuple[str, str]] = (),
     profile_note: str | None = None,
+    topics: Sequence[str] = (),
 ) -> DialogueReply | None:
     """The tutor's reply to `message`, or `None` when the model gave nothing
     usable. Never raises.
@@ -261,7 +302,8 @@ async def discuss(
     (`app.tutoring.adaptation.tutor_state_block`); `conversation` is (role,
     content) pairs, oldest first; `subject` is the problem statement or code
     the conversation is about; `profile_note` is the tutor's own record of
-    where the learner stands (topic slugs and levels only).
+    where the learner stands (topic slugs and levels only); `topics` is the
+    closed vocabulary the reply's `topic` must come from.
     """
     if not message.strip():
         return None
@@ -270,6 +312,8 @@ async def discuss(
         parts.append(tutor_state)
     if profile_note:
         parts.append(f"<learner_record>\n{profile_note}\n</learner_record>")
+    if topics:
+        parts.append(f"<topics>\n{', '.join(topics)}\n</topics>")
     if subject and subject.strip():
         parts.append(_fenced("subject", subject.strip(), _MAX_SUBJECT_CHARS))
     block = dialogue_block(conversation)
@@ -285,7 +329,7 @@ async def discuss(
             result = await llm.chat(messages, temperature=0.2, max_tokens=_TOKENS)
         except LLMError:
             return None
-        reply = _parsed(result.content, last_try=attempt + 1 == _ATTEMPTS)
+        reply = _parsed(result.content, last_try=attempt + 1 == _ATTEMPTS, topics=topics)
         if reply is not None:
             return reply
         messages = [*messages[:2], ChatMessage(role="user", content=_AGAIN)]

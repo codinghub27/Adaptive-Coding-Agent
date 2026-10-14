@@ -687,6 +687,29 @@ _EXPLAIN_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
 )
 
 
+#: The same established failure, when the learner is to write the fix
+#: themselves (help below `full`, no ask for the code). Measured on the
+#: journey replay: the explanation above stated the corrected expression
+#: ("use ceil") on every failing run, so the learner never wrote the fix.
+_GUIDE_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
+    "A sandbox has already run the learner's code and established that it fails; that failure is "
+    "FACT, not something for you to re-judge or contradict. The trusted <debug_context> holds the "
+    "failing case. The learner will write the fix themselves, so do NOT give it.\n"
+    "Write, TO the learner and in at most five sentences: the failing case (input, what it "
+    "should return, what their code returned), copied from <debug_context>; the ONE line or "
+    "expression where it goes wrong, quoted from their code; that line traced on the failing "
+    "case, showing the value it produces at the step it goes wrong. Then ask ONE question "
+    "that makes them find the fix (what that value should be at that step, or why it is not "
+    "it). Never state the corrected line, the right expression, the right operator or the "
+    "function that would fix it, in words or in code, and never write code. If there are "
+    "other definite bugs, add one sentence saying there is one more thing to check once "
+    "this one is fixed, without saying what. If trusted <reference_notes> are provided, use "
+    'only the ones that genuinely apply and list their numbers in "used". '
+    'Reply with ONLY a single JSON object and nothing else: {"bug_explanation": "<your '
+    'reply>", "used": [<note numbers>]}'
+)
+
+
 _READ_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "No failure has been established for the learner's code: the sandbox either had no test "
     "cases to check it against or could not run it. Do NOT assume the code is wrong. Read it "
@@ -866,6 +889,7 @@ async def read_code(
     passed: bool = False,
     traceback_only: bool = False,
     reply: bool = False,
+    learner_fixes: bool = False,
 ) -> CodeReading:
     """ONE LLM call that both names the learner's approach and explains the
     bug (or reports that none was found). Replaces the separate
@@ -890,6 +914,8 @@ async def read_code(
     if notes:
         parts.append(notes)
     system = _EXPLAIN_SYSTEM if failure_established else _READ_SYSTEM
+    if failure_established and learner_fixes:
+        system, name_approach = _GUIDE_SYSTEM, False
     if reply:
         system, name_approach = _REPLY_SYSTEM, False
     if passed:

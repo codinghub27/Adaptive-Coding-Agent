@@ -175,6 +175,13 @@ class QuizState(APIModel):
     """The knowledge check the tutor asked and is waiting on."""
 
     items: list[QuizItem] = Field(min_length=1, max_length=MAX_QUIZ_QUESTIONS)
+    #: Asked one question per turn (a drill: no number of questions was asked
+    #: for) instead of as one numbered list.
+    one_at_a_time: bool = False
+    #: The question waiting for an answer, when asked one at a time.
+    current: int = Field(default=0, ge=0)
+    #: Verdicts on the questions answered so far, in order (one at a time).
+    verdicts: list[str] = Field(default_factory=list[str])
 
 
 class QuizGrade(APIModel):

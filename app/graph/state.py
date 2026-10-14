@@ -152,6 +152,9 @@ class AgentState(BaseModel):
     #: -- exposure creates a key without moving it, so it has no delta.
     skill_deltas: dict[str, float] = Field(default_factory=dict[str, float])
     recent_context: list[MessageView] = Field(default_factory=list[MessageView])
+    #: Profile facts this turn was given and steered by (`app.tutoring.recall`),
+    #: as `common_errors.<id>` / `skills.<topic>`. Never learner text.
+    memory_facts: list[str] = Field(default_factory=list[str])
     #: What was read from this turn's image, stored with the message.
     image_text: str | None = None
     #: This turn hands the learner code with a planted bug to fix
@@ -234,6 +237,7 @@ class AgentStateUpdate(TypedDict, total=False):
     profile: LearnerProfileView | None
     skill_deltas: dict[str, float]
     recent_context: list[MessageView]
+    memory_facts: list[str]
     image_text: str | None
     bug_exercise: bool
     plan: TeachingPlan | None

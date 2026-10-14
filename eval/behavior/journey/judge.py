@@ -168,7 +168,9 @@ class Judge:
         ]
         for attempt in range(3):
             try:
-                result = await self._client.chat(messages, temperature=0.0, max_tokens=400)
+                # A reasoning model (gpt-oss) spends part of the budget thinking;
+                # 400 tokens left most replies empty.
+                result = await self._client.chat(messages, temperature=0.0, max_tokens=2000)
             except LLMError:
                 await asyncio.sleep(20.0 * (attempt + 1))
                 continue

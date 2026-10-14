@@ -15,8 +15,10 @@
     "_doc": "dataset misconception id -> id in app/knowledge/tutoring/misconceptions.json, or null when the closed catalog has no such entry. A null is an AGENT gap (the catalog cannot record it), not a mapping to be invented here.",
     "bfs.dfs_for_unweighted_shortest_path": "bfs.dfs_for_unweighted_shortest_path",
     "trees.returnable_vs_global_path": "trees.returnable_vs_global_path",
-    "sliding_window.left_pointer_moves_backward": null,
-    "binary_search_on_answer.floor_instead_of_ceil": null
+    "sliding_window.left_pointer_moves_backward": "sliding_window.left_pointer_moves_backward",
+    "binary_search_on_answer.floor_instead_of_ceil": null,
+    "sliding_window.shrink_once_instead_of_while": null,
+    "binary_search_on_answer.lower_bound_below_feasible": null
   },
   "intents": {
     "_doc": "Same names on both sides (app/schemas/intent.py). Compared exactly, only on the turns whose meta carries an intent.",
@@ -27,31 +29,42 @@
     "equivalences": [
       {
         "dataset": "dsa",
-        "agent": ["debug"],
+        "agent": [
+          "debug"
+        ],
         "when": "learner_turn_has_code",
         "reason": "User-code-first (CLAUDE.md): a turn that carries the learner's code is read and run by the debugger whatever the conversation is on. The dataset labels the same turn `dsa` because it stays inside a DSA conversation."
       },
       {
         "dataset": "explain",
-        "agent": ["debug"],
+        "agent": [
+          "debug"
+        ],
         "when": "learner_turn_has_code",
         "reason": "Session 7 sends working code and asks why it works. The agent checks an attempt first and answers a question about passing code from the debug node (`_question_about_working_code`)."
       },
       {
         "dataset": "dsa",
-        "agent": ["practice"],
+        "agent": [
+          "practice"
+        ],
         "when": "learner_asks_for_a_problem",
         "reason": "The dataset itself labels 'give me another tree problem' `practice` (session 6) and 'give me the sliding window problem' `dsa` (session 2). Handing out a problem is the agent's `practice` route."
       },
       {
         "dataset": "practice",
-        "agent": ["dsa"],
+        "agent": [
+          "dsa"
+        ],
         "when": "learner_asks_for_a_problem",
         "reason": "Mirror of the row above."
       },
       {
         "dataset": "clarify",
-        "agent": ["discuss", "assess"],
+        "agent": [
+          "discuss",
+          "assess"
+        ],
         "when": "always",
         "reason": "The dataset uses `clarify` for a conversational turn that asks the learner something and involves no specialist (diagnosis, recall warm-up, the friend-like reply, the drill). Since 2026-10-13 the agent calls that `discuss` (talk) or `assess` (a knowledge check); its own `clarify` now means only 'a first message nobody could read'."
       }
@@ -61,9 +74,17 @@
   "assistance_levels": {
     "_doc": "Agent order: hint < concept < pseudocode < partial < full. The dataset uses hint, concept and full. Scored EXACT; the band match is reported next to it.",
     "bands": {
-      "no_code": ["hint", "concept"],
-      "structure": ["pseudocode", "partial"],
-      "full": ["full"]
+      "no_code": [
+        "hint",
+        "concept"
+      ],
+      "structure": [
+        "pseudocode",
+        "partial"
+      ],
+      "full": [
+        "full"
+      ]
     }
   },
   "grades": {
@@ -82,9 +103,19 @@
   },
   "evidence_provenance": {
     "_doc": "dataset evidence.provenance -> LearningEventCreate.evidence_source values that count as it.",
-    "sandbox": ["extracted", "synthesised"],
-    "concept_check": ["concept_check", "tutor_reply", "quiz"],
-    "exposure": ["help_needed", "none"]
+    "sandbox": [
+      "extracted",
+      "synthesised"
+    ],
+    "concept_check": [
+      "concept_check",
+      "tutor_reply",
+      "quiz"
+    ],
+    "exposure": [
+      "help_needed",
+      "none"
+    ]
   },
   "skill_labels": {
     "_doc": "Thresholds are the agent's own (app/agents/planner.py WEAK_SKILL / HARD_SKILL) and equal the dataset's.",

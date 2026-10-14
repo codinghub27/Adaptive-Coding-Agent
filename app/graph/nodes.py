@@ -33,8 +33,12 @@ from uuid import UUID
 from langgraph.runtime import Runtime
 
 from app.agents.assess import (
+    DRILL_QUESTIONS,
     builtin_quiz,
+    mark_one,
     mark_quiz,
+    names_a_count,
+    quiz_topics,
     render_marks,
     render_quiz,
     requested_count,
@@ -83,6 +87,7 @@ from app.execution.testgen import extract_test_suite, select_entrypoint, top_lev
 from app.execution.verification import verify as verify_result
 from app.graph.routing import (
     answers_open_quiz,
+    asks_for_a_study_plan,
     asks_for_guidance,
     meta_followup,
     open_quiz,
@@ -107,6 +112,7 @@ from app.input.intent import (
     asks_about_a_concept,
     asks_for_buggy_code,
     is_small_talk,
+    names_a_request,
     opens_as_a_lesson_ask,
     opens_as_a_question,
 )
@@ -212,6 +218,7 @@ from app.tutoring.grader import (
 )
 from app.tutoring.misconceptions import detect_in_code, get_misconception, is_catalog_id
 from app.tutoring.progression import requested_difficulty, session_difficulty
+from app.tutoring.recall import Recall, recall_for_opening
 from app.tutoring.step import StepBrief, spoken_step
 from app.tutoring.turn import (
     Reacted,
@@ -1026,6 +1033,55 @@ _DEBUG_ASK_INTENTS: Final = frozenset(
 #: change the system prompt?"). Shorter ones that nobody could read point at
 #: something that is not there ("can you look at this thing").
 _SELF_CONTAINED_WORDS: Final = 12
+#: A message that opens the way a request does ("give me step by step ...",
+#: "can you ...", "let's ..."): a request, not an answer.
+_OPENS_AS_A_REQUEST_RE: Final = re.compile(
+    r"(?i)^\s*(?:please\s+|ok(?:ay)?[,.]?\s+|so\s+)?(?:give|show|tell|explain|teach|walk|help|"
+    r"solve|write|send|make|provide|continue|next|another|can you|could you|would you|"
+    r"let'?s|i want|i need|i'?d like)\b"
+)
+#: A reply that opens by answering a yes/no question.
+_OPENS_YES_NO_RE: Final = re.compile(r"(?i)^\s*(?:yes|yeah|yep|yup|no|nope|nah)\b")
+
+
+def tutor_asked_last(state: AgentState) -> bool:
+    """Did the tutor's last message in this conversation end on a question?
+
+    Read from the stored reply itself, so a question any agent wrote counts,
+    not only a curated one with a pending record.
+    """
+    for message in reversed(state.recent_context):
+        if message.role != "assistant":
+            continue
+        paragraphs = [p for p in message.content.strip().split("\n\n") if p.strip()]
+        return bool(paragraphs) and "?" in paragraphs[-1]
+    return False
+
+
+def _answers_the_tutor(original: AgentState, question: str) -> bool:
+    """Is this message an answer to the question the tutor just asked?
+
+    Measured on the journey replay: a bare technique name with a question
+    mark, or a one-line description of an approach, sent right after the
+    tutor's own question, was answered with a 300-580 word lesson on the
+    technique it named, with code, and nothing was graded. A reply to a
+    question is an answer unless it OPENS as a request to be taught
+    ("explain ...", "what is ..."): the classifier's lesson flag is not used
+    here, because it reads a bare technique name as a topic to teach.
+    """
+    progress = original.session_progress
+    if progress is not None and progress.last_thread == "quiz":
+        return False  # a set of questions has its own marker (`answers_open_quiz`)
+    if not tutor_asked_last(original):
+        return False
+    if opens_as_a_lesson_ask(question) or is_dont_know(question) or asks_for_a_hint(question):
+        return False
+    # A message that names a request ("give me step by step ...") is the
+    # request, unless it opens by answering yes or no ("yes, a bigger one
+    # works too" holds a word the checklist reads as an ask).
+    if _OPENS_YES_NO_RE.match(question) is not None:
+        return True
+    return not names_a_request(question) and _OPENS_AS_A_REQUEST_RE.match(question) is None
 
 
 def _wants_a_lesson(intent: IntentResult, question: str) -> bool:
@@ -1091,6 +1147,17 @@ def _is_talk(
     if settled.subject_switched:
         return False  # "go back to the earlier one": the solver resumes it
     question = inp.question
+    # A follow-up on a plan or an explanation keeps that reply's own prompt
+    # ("give another example"), unless the message was read as an answer.
+    answer_read = read.learner_showed in EVIDENCE_LABELS and read.learner_showed != "none"
+    if (
+        chosen != "grade"
+        and (not settled.thread_followup or answer_read)
+        and _answers_the_tutor(original, question)
+    ):
+        # The tutor asked; this is the answer. It is read and graded as one,
+        # by the agent that holds the conversation, not taught as a new topic.
+        return True
     in_conversation = bool(original.recent_context)
     if chosen == "clarify":
         # No specialist takes it. Inside a conversation the tutor can read
@@ -1146,7 +1213,12 @@ def _is_talk(
         if intent in _REVIEW_MOVE_INTENTS:
             return not has_code  # "can you review it when I've written it?"
         if intent is Intent.GENERAL_GUIDANCE:
-            return after_talk and not sure
+            # A plan only on an ask for one. A message that tells the tutor
+            # where the learner is (a deadline, a struggle, a bad result, a
+            # doubt about themselves) is talk: the tutor acknowledges it and finds
+            # out where they get stuck before advising anything (measured on
+            # the journey replay: both got a multi-week plan).
+            return (after_talk and not sure) or not asks_for_a_study_plan(question)
         if intent is not Intent.CONCEPT_EXPLANATION:
             return False
         if has_code:
@@ -1565,7 +1637,11 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
         and not _code_anchored(active)
         and _brings_only_code(inp)
         and intent is not None
-        and intent.refers_to_previous
+        # Code with no words at all, sent while a stated problem is open, can
+        # only be the attempt at it. Measured on the journey replay: such a
+        # paste was taken as anonymous code, its suite was written from the
+        # code itself, and four real passes and fails recorded nothing.
+        and (intent.refers_to_previous or not (inp.question or "").strip())
     ):
         # Code with no statement, which the classifier read as being ABOUT the
         # active problem ("here is my attempt"): it is judged against that
@@ -2925,15 +3001,28 @@ async def discuss_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         # Their last attempt at the problem is part of what is on the table.
         code = "\n\n".join(block.content.strip() for block in attempt)
         subject = "\n\n".join(p for p in (subject, f"Their last attempt:\n```\n{code}\n```") if p)
+    note = standing_note(state.profile)
+    recall = Recall()
+    if not state.recent_context:
+        # The first message of a conversation: what earlier sessions left on
+        # the profile (OD-1: never their transcripts) is put in front of the
+        # tutor, so a returning learner is not met cold.
+        recall = recall_for_opening(state.profile)
+        note = "\n".join(part for part in (note, recall.note()) if part) or None
     reply = await discuss(
         said,
         runtime.context.llm,
         subject=subject,
         tutor_state=tutor_state_block(state.decision, _talk_pitch(state)),
         conversation=[(message.role, message.content) for message in state.recent_context],
-        profile_note=standing_note(state.profile),
+        profile_note=note,
+        topics=quiz_topics(),
     )
     topic = state.plan.topic if state.plan is not None else None
+    if reply is not None and reply.topic is not None and reply.learner_showed != "none":
+        # What the message is evidence about (closed vocabulary): the topic of
+        # the tutor's question it answered, which the plan cannot know.
+        topic = reply.topic
     if reply is None:
         # No model answered. On a first message the fixed question that says
         # what is missing is still the most useful thing to say; inside a
@@ -2943,6 +3032,8 @@ async def discuss_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
     update: AgentStateUpdate = {
         "agent_output": AgentOutcome(text=reply.text, topic=topic, solved=None)
     }
+    if recall.facts:
+        update["memory_facts"] = recall.facts
     if (
         reply.learner_showed != "none"
         and state.decision is not None
@@ -3272,6 +3363,23 @@ async def assess_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Age
     said = (inp.question or "") if inp is not None else ""
     quiz = open_quiz(state.session_progress)
     asking = state.intent is not None and state.intent.intent is Intent.KNOWLEDGE_CHECK
+    if quiz is not None and not asking and quiz.one_at_a_time:
+        # One question per turn: mark the answer to the one waiting, then ask
+        # the next (or close the set). Each answer is evidence on its topic.
+        current = quiz.model_copy(
+            update={"items": [quiz.items[quiz.current]], "one_at_a_time": False, "current": 0}
+        )
+        marked = await mark_quiz(current, said, ctx.llm)
+        if marked is None:
+            return {"agent_output": AgentOutcome(text=_QUIZ_NOT_MARKED_TEXT, solved=None)}
+        moved, text, grades = mark_one(quiz, marked)
+        update: AgentStateUpdate = {
+            "quiz_grades": grades,
+            "agent_output": AgentOutcome(text=text, solved=None),
+        }
+        if moved is not None:
+            update["quiz"] = moved
+        return update
     if quiz is not None and not asking:
         marked = await mark_quiz(quiz, said, ctx.llm)
         if marked is None:
@@ -3283,7 +3391,11 @@ async def assess_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Age
             "agent_output": AgentOutcome(text=render_marks(marked), solved=None),
         }
 
-    count = requested_count(said, default=len(quiz.items) if quiz is not None else None)
+    # No number of questions asked for ("quiz me on graphs"): a short drill, one
+    # question per turn, so each answer is marked before the next is asked.
+    drill = not names_a_count(said)
+    default = DRILL_QUESTIONS if drill else (len(quiz.items) if quiz is not None else None)
+    count = requested_count(said, default=default)
     exchange = [(message.role, message.content) for message in state.recent_context[-4:]]
     written = await write_quiz(
         said,
@@ -3293,6 +3405,8 @@ async def assess_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Age
         context=turn_context(state.decision, state.adaptation, exchange),
     )
     asked = written or builtin_quiz(count)
+    if drill:
+        asked = asked.model_copy(update={"one_at_a_time": True})
     return {
         "quiz": asked,
         "agent_output": AgentOutcome(
@@ -4162,7 +4276,11 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
         topic_hint = plan.topic if plan is not None else None
         found += [m for m in detect_in_code(learner_code, topic_hint) if m not in found]
 
-    topic = (plan.topic if plan is not None else None) or (pending.topic if pending else None)
+    topic = (
+        (plan.topic if plan is not None else None)
+        or _answer_topic(state)
+        or (pending.topic if pending else None)
+    )
     if state.practice is not None:
         topic = state.practice.topic
     problem_key_now = _practice_key(state) or state.problem_key
@@ -4561,6 +4679,33 @@ def _misconception_topic(state: AgentState) -> str | None:
     return None
 
 
+def _answer_topic(state: AgentState) -> str | None:
+    """On a talk turn that answered the tutor's question, the topic that
+    question was testing (`DialogueReply.topic`, already checked against the
+    closed vocabulary), so naming technique A in answer to a question about B is
+    evidence about BFS. `None` on any other turn."""
+    if state.route != "discuss" or state.agent_output is None:
+        return None
+    topic = state.agent_output.topic
+    return topic if topic in quiz_topics() else None
+
+
+def _conversation_topic(state: AgentState) -> str | None:
+    """The topic this conversation has been on (`SessionProgress.last_topic`,
+    closed vocabulary), for the learner's code sent with no statement of its
+    own. Measured: after the talk had settled on binary search on the answer,
+    both runs of the learner's code (one failing, one passing) were recorded
+    as nothing because the plan found no topic in a bare function."""
+    if state.route != "debug" or not state.submitted_code:
+        return None
+    inp = state.structured_input
+    if inp is not None and inp.problem and inp.problem.strip():
+        return None  # a statement of its own: retrieval had its chance
+    progress = state.session_progress
+    topic = progress.last_topic if progress is not None else None
+    return topic if topic in quiz_topics() else None
+
+
 def _event_topic(plan: TeachingPlan | None) -> str | None:
     """The topic this turn is recorded under, or `None` to record nothing.
 
@@ -4603,8 +4748,14 @@ def _reply_grade(state: AgentState) -> ConceptGrade | None:
         return None
     if state.route == "discuss":
         # Their reasoning about the conversation's problem, as the tutor read
-        # it. Talk with no problem behind it is evidence about no topic.
-        if state.problem_relation != "followup" or _code_anchored(state.active_problem):
+        # it, or their answer to the tutor's own question (on whatever it was
+        # asked about, `_answer_topic`). Other talk with no problem behind it
+        # is evidence about no topic.
+        answered = _answer_topic(state) is not None
+        on_problem = state.problem_relation == "followup" and not _code_anchored(
+            state.active_problem
+        )
+        if not (answered or on_problem):
             return None
     elif state.route != "dsa":
         return None
@@ -5177,7 +5328,12 @@ async def update_learner_model(
     ):
         event: LearningEventCreate | None = None
         try:
-            topic = _event_topic(state.plan) or _misconception_topic(state)
+            topic = (
+                _answer_topic(state)
+                or _event_topic(state.plan)
+                or _misconception_topic(state)
+                or _conversation_topic(state)
+            )
             if topic is None and GAP_PATTERN in agent_output.errors:
                 topic = PATTERN_TOPIC
             if topic is not None:

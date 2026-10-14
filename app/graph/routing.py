@@ -93,6 +93,25 @@ _GUIDANCE_ASK_RE: Final = re.compile(
 )
 
 
+#: An ask for a study plan itself: the word for one, or a question about what
+#: to study. "exams start next month" and "I couldn't start it" describe
+#: a situation and ask for nothing; `_GUIDANCE_ASK_RE` matched both.
+_STUDY_PLAN_ASK_RE: Final = re.compile(
+    r"(?i)\b(?:plan|roadmap|road map|timetable|syllabus|schedule (?:for|to)|"
+    r"what (?:should|do|can) i (?:study|learn|practi[cs]e|focus on|do (?:first|next))|"
+    r"how (?:should|do|can) i (?:prepare|study|practi[cs]e|get better)|"
+    r"where (?:do|should) i (?:start|begin)|which (?:topics|patterns) (?:should|do))\b"
+)
+
+
+def asks_for_a_study_plan(text: str | None) -> bool:
+    """Does `text` ask for a plan or for what to study? Stricter than
+    `asks_for_guidance`: a message that only DESCRIBES where the learner is
+    (a deadline, a struggle, a bad result) is answered by finding out where
+    they get stuck first, never with a multi-week plan."""
+    return bool(text) and _STUDY_PLAN_ASK_RE.search(text or "") is not None
+
+
 def asks_for_guidance(text: str | None) -> bool:
     """Does `text` explicitly ask for a plan / roadmap / advice?
 

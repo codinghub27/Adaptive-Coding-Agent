@@ -402,6 +402,10 @@ def _debug_state_and_llm() -> tuple[AgentState, _RoutedLLM]:
                 _INFER_APPROACH_JSON,
             ),
             ("why the bug happens", _BUG_EXPLANATION_JSON),
+            # Journey packet I1: at `hint` the learner writes the fix, so the
+            # established failure is read with the guide prompt (failing case
+            # and one question), not the explain-the-fix prompt. Same reply.
+            ("The learner will write the fix themselves", _BUG_EXPLANATION_JSON),
             ("Produce a corrected, complete, runnable version", _PATCH_JSON),
         ]
     )

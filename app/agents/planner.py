@@ -842,6 +842,18 @@ def build_plan(
     if analysis.skill_level < WEAK_SKILL:
         assistance = "hint"
         rationale.append("weak_skill")
+    elif (
+        analysis.topic is not None
+        and analysis.topic not in profile.skill_levels
+        and assistance == "hint"
+        and intent.intent is not Intent.PRACTICE_REQUEST
+    ):
+        # A pattern this learner has no evidence on yet is introduced, not
+        # nudged: a hint assumes a picture of the idea they may not have
+        # (journey replay: a first binary-search-on-the-answer problem and a
+        # first tree recursion were pitched as hints).
+        assistance = "concept"
+        rationale.append("first_encounter")
 
     if prefers_hints:
         assistance = "hint"

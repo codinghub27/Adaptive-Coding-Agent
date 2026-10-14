@@ -240,15 +240,22 @@ def _wrong(check: PendingCheck, reply: str) -> tuple[bool, str | None]:
         if _compact(phrase) == compact:
             return True, misconception or None
     for phrase, misconception in sorted(check.wrong_answers.items(), key=lambda kv: -len(kv[0])):
-        if re.search(r"[\[\]<>=]", phrase):
-            if _compact(phrase) in compact:
-                return True, misconception or None
-        elif len(phrase) >= 3 and _has(reply, phrase) and not _names_expected(check, reply):
-            # A wrong phrase INSIDE a longer reply counts only when the reply
-            # shows none of the expected concepts ("checking complement but
-            # accessing num" names the right key and is not the wrong answer).
+        if re.search(r"[\[\]<>=]", phrase) and _compact(phrase) in compact:
             return True, misconception or None
     return False, None
+
+
+def _contains_wrong_phrase(check: PendingCheck, reply: str) -> bool:
+    """A wrong phrase INSIDE a longer reply that shows none of the expected
+    concepts ("checking complement but accessing num" names the right key and
+    is not the wrong answer). It is a reason to ask the judge, not a verdict:
+    measured on the journey replay, an answer that returned the height and
+    kept the two-sided sum in an outer variable held the wrong phrase and
+    was right."""
+    return any(
+        len(phrase) >= 3 and not re.search(r"[\[\]<>=]", phrase) and _has(reply, phrase)
+        for phrase in check.wrong_answers
+    ) and not _names_expected(check, reply)
 
 
 def _names_expected(check: PendingCheck, reply: str) -> bool:
@@ -372,7 +379,7 @@ def grade_deterministic(check: PendingCheck, reply: str) -> AnswerGrade | None:
     recognition = _recognition(check, text)
     if recognition is not None:
         return recognition
-    if _wrong_name_with_description(check, text):
+    if _wrong_name_with_description(check, text) or _contains_wrong_phrase(check, text):
         return None
     return _concepts(check, text)
 
