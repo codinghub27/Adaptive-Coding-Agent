@@ -507,9 +507,17 @@ export function finalizeStreamingMessage(article, message) {
 }
 
 /** Turn a snake_case topic/skill key into a readable label. */
+/** Words that are written in capitals in a topic name. */
+const ACRONYMS = new Set(["dp", "bfs", "dfs", "1d", "2d", "api", "sql", "oop", "ast", "lru", "bst"]);
+
 function humanizeKey(key) {
-  const words = String(key).replace(/[_-]+/g, " ").trim();
-  return words ? words[0].toUpperCase() + words.slice(1) : "";
+  const words = String(key)
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .map((word) => (ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word));
+  const text = words.join(" ");
+  return text ? text[0].toUpperCase() + text.slice(1) : "";
 }
 
 const FLUENCY_BANDS = [
@@ -521,24 +529,42 @@ const FLUENCY_BANDS = [
 ];
 
 function fluencyBand(overall) {
+  if (overall === null) return "Not measured yet";
   return (FLUENCY_BANDS.find(([floor]) => overall / 100 >= floor) || FLUENCY_BANDS.at(-1))[1];
 }
 
-/** Ordered skill entries, strongest first, as display percentages. */
-function skillEntries(profile) {
-  return Object.entries(profile?.skill_levels || {})
-    .map(([name, level]) => [humanizeKey(name), Math.round(level * 100), level])
-    .sort((a, b) => b[1] - a[1]);
+/** Every skill starts at this level; a topic still exactly here has been
+ * seen but has no outcome yet (`app.memory.profile.PRIOR`: exposure creates
+ * the key without moving it). */
+const PRIOR_LEVEL = 0.5;
+
+function assessed(level) {
+  return Math.abs(level - PRIOR_LEVEL) > 1e-9;
 }
 
+/** Ordered skill entries, strongest first, as display percentages:
+ * [label, percent, level, assessed]. Seen-only topics come last. */
+function skillEntries(profile) {
+  return Object.entries(profile?.skill_levels || {})
+    .map(([name, level]) => [humanizeKey(name), Math.round(level * 100), level, assessed(level)])
+    .sort((a, b) => Number(b[3]) - Number(a[3]) || b[1] - a[1]);
+}
+
+/** The mean over topics with real evidence; `null` when there are none, so
+ * a topic that was only seen never shows up as a 50% score. */
 function overallFluency(skills) {
-  if (!skills.length) return 0;
-  return Math.round(skills.reduce((total, entry) => total + entry[1], 0) / skills.length);
+  const measured = skills.filter((entry) => entry[3]);
+  if (!measured.length) return null;
+  return Math.round(measured.reduce((total, entry) => total + entry[1], 0) / measured.length);
 }
 
 /** r=38 -> circumference 239, which is the stroke-dasharray the CSS sets. */
 function ringOffset(overall) {
-  return Math.round(239 * (1 - overall / 100));
+  return Math.round(239 * (1 - (overall ?? 0) / 100));
+}
+
+function scoreHtml(overall) {
+  return overall === null ? `—<small></small>` : `${overall}<small>%</small>`;
 }
 
 function skillRows(skills) {
@@ -546,9 +572,10 @@ function skillRows(skills) {
     return `<p class="skill-empty">Your skill map fills in as you work through problems.</p>`;
   }
   return skills
-    .map(
-      (entry) =>
-        `<div class="skill-row"><div class="skill-meta"><span>${escapeHtml(entry[0])}</span><b>${entry[1]}%</b></div><div class="skill-bar"><i style="width:${entry[1]}%"></i></div></div>`,
+    .map((entry) =>
+      entry[3]
+        ? `<div class="skill-row"><div class="skill-meta"><span>${escapeHtml(entry[0])}</span><b>${entry[1]}%</b></div><div class="skill-bar"><i style="width:${entry[1]}%"></i></div></div>`
+        : `<div class="skill-row seen"><div class="skill-meta"><span>${escapeHtml(entry[0])}</span><b>Seen</b></div><div class="skill-bar"><i style="width:0%"></i></div></div>`,
     )
     .join("");
 }
@@ -637,16 +664,28 @@ export function renderStreak(timestamps = []) {
   host.title = `${streak === 1 ? "1 day" : `${streak} days`} in a row with at least one message · active ${activeThisWeek} of the last ${bars.length} days`;
 }
 
+/** A catalog id ("sliding_window.left_pointer_moves_backward") as the
+ * mistake and its topic. */
+function mistakeLabel(tag) {
+  const [topic, ...rest] = String(tag).split(".");
+  return rest.length
+    ? { name: humanizeKey(rest.join(" ")), topic: humanizeKey(topic) }
+    : { name: humanizeKey(topic), topic: "" };
+}
+
 function growthItems(profile) {
   const errors = profile?.common_errors || [];
   if (!errors.length) {
     return `<li><i></i><span><strong>No recurring errors</strong><small>Nothing to review right now</small></span></li>`;
   }
+  const counts = profile?.common_error_counts || {};
   return errors
-    .map(
-      (tag) =>
-        `<li class="weak"><i></i><span><strong>${escapeHtml(humanizeKey(tag))}</strong><small>Needs review</small></span></li>`,
-    )
+    .map((tag) => {
+      const { name, topic } = mistakeLabel(tag);
+      const seen = counts[tag] || 1;
+      const detail = [topic, `seen ${seen}×`].filter(Boolean).join(" · ");
+      return `<li class="weak"><i></i><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(detail)}</small></span></li>`;
+    })
     .join("");
 }
 
@@ -666,22 +705,25 @@ export function renderProfile(profile) {
   const ring = document.querySelector(".profile-panel .score-ring");
   if (ring) ring.style.strokeDashoffset = String(ringOffset(overall));
   const score = document.querySelector(".profile-panel .profile-score strong");
-  if (score) score.innerHTML = `${overall}<small>%</small>`;
+  if (score) score.innerHTML = scoreHtml(overall);
   const heroTitle = document.querySelector(".profile-panel .profile-hero h3");
   if (heroTitle) heroTitle.textContent = fluencyBand(overall);
   const heroNote = document.querySelector(".profile-panel .profile-hero p");
   if (heroNote) {
     // `suggested_focus` is the server's call on what to work on next (weakest
     // first); the panel shows it rather than ranking anything itself.
-    const focus = profile?.suggested_focus || [];
+    const focus = (profile?.suggested_focus || []).map(humanizeKey);
+    const measured = skills.filter((entry) => entry[3]).length;
     heroNote.textContent = focus.length
-      ? `Work on next: ${focus.join(", ")}`
-      : skills.length
-        ? `${skills.length} skill${skills.length === 1 ? "" : "s"} tracked`
-        : "No skills tracked yet";
+      ? `Work on next: ${focus.slice(0, 2).join(", ")}`
+      : measured
+        ? `${measured} skill${measured === 1 ? "" : "s"} measured`
+        : skills.length
+          ? "Topics seen; solve or answer one to be measured"
+          : "No skills tracked yet";
   }
   const topbarRing = document.querySelector(".profile-ring");
-  if (topbarRing) topbarRing.textContent = String(overall);
+  if (topbarRing) topbarRing.textContent = overall === null ? "–" : String(overall);
 
   // Current focus: the topic most recently backed by an observed outcome,
   // computed server-side (`current_focus`). It used to be "the weakest key",
@@ -698,12 +740,14 @@ export function renderProfile(profile) {
     const note = focusCard.querySelector("p");
     if (focus) {
       if (name) name.textContent = focus[0];
-      if (badge) badge.textContent = `Level ${Math.max(1, Math.ceil(focus[2] * 5))}`;
+      if (badge) badge.textContent = `Level ${Math.max(1, Math.ceil(focus[2] * 5))} of 5`;
       if (bar) bar.style.width = `${focus[1]}%`;
-      if (note) note.textContent = focus[1] >= 80 ? "Close to mastery" : "Keep practising this one";
+      if (note) {
+        note.textContent = `${focus[1]}% · ${focus[1] >= 80 ? "close to mastery" : "keep practising this one"}`;
+      }
     } else {
       if (name) name.textContent = "Not set yet";
-      if (badge) badge.textContent = "Level 1";
+      if (badge) badge.textContent = "";
       if (bar) bar.style.width = "0%";
       if (note) note.textContent = "Ask a question to start your map";
     }
@@ -732,11 +776,12 @@ export function showProfileModal({ user, profile, conversationCount = 0 }) {
       ? new Date(user.createdAt).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })
       : "—";
     const initials = (user?.username || "?").slice(0, 2).toUpperCase();
-    const sessionNote = `${skills.length} skill${skills.length === 1 ? "" : "s"} tracked · ${conversationCount} session${conversationCount === 1 ? "" : "s"}`;
+    const measured = skills.filter((entry) => entry[3]).length;
+    const sessionNote = `${measured} skill${measured === 1 ? "" : "s"} measured · ${conversationCount} session${conversationCount === 1 ? "" : "s"}`;
 
     root.innerHTML = `<div class="modal-backdrop" role="presentation"><section class="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
       <div class="profile-identity"><span class="avatar">${escapeHtml(initials)}</span><span><strong id="profile-modal-title">${escapeHtml(user?.username || "Your account")}</strong><small>Member since ${escapeHtml(joined)}</small></span></div>
-      <div class="profile-hero"><div class="profile-score"><svg viewBox="0 0 90 90"><circle cx="45" cy="45" r="38"></circle><circle class="score-ring" cx="45" cy="45" r="38" style="stroke-dashoffset:${ringOffset(overall)}"></circle></svg><strong>${overall}<small>%</small></strong></div><div><span>OVERALL FLUENCY</span><h3>${escapeHtml(fluencyBand(overall))}</h3><p>${escapeHtml(sessionNote)}</p></div></div>
+      <div class="profile-hero"><div class="profile-score"><svg viewBox="0 0 90 90"><circle cx="45" cy="45" r="38"></circle><circle class="score-ring" cx="45" cy="45" r="38" style="stroke-dashoffset:${ringOffset(overall)}"></circle></svg><strong>${scoreHtml(overall)}</strong></div><div><span>OVERALL FLUENCY</span><h3>${escapeHtml(fluencyBand(overall))}</h3><p>${escapeHtml(sessionNote)}</p></div></div>
       <section class="profile-section"><div class="section-label"><span>Full skill map</span><small>${profile?.language ? escapeHtml(humanizeKey(profile.language)) : "All languages"}</small></div>${skillRows(skills)}</section>
       <section class="profile-section"><div class="section-label"><span>How you learn best</span></div><div class="preference-grid" data-profile-preferences><div><i class="steps-icon"></i><span>STYLE</span><strong>${escapeHtml(labels.style)}</strong></div><div><i class="guide-icon"></i><span>HINTS</span><strong>${escapeHtml(labels.hints)}</strong></div></div></section>
       <section class="profile-section"><div class="section-label"><span>Recurring errors</span></div><ul class="growth-list">${growthItems(profile)}</ul></section>
