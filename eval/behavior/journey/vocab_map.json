@@ -1,131 +1,149 @@
 {
-  "_doc": "A0 reconciliation between the journey dataset's vocabulary and the agent's. Nothing here renames a corpus label. Every equivalence carries its reason; the harness reports STRICT and EQUIVALENT route accuracy side by side so an equivalence can never hide a miss.",
-  "topics": {
-    "_doc": "dataset topic id -> corpus pattern slug (app/knowledge/corpus/<slug>.md). All eight exist under the same name.",
-    "sliding_window": "sliding_window",
-    "two_pointers": "two_pointers",
-    "bfs": "bfs",
-    "binary_search_on_answer": "binary_search_on_answer",
-    "trees": "trees",
-    "topological_sort": "topological_sort",
-    "dp_1d": "dp_1d",
-    "monotonic_stack": "monotonic_stack"
-  },
-  "misconceptions": {
-    "_doc": "dataset misconception id -> id in app/knowledge/tutoring/misconceptions.json, or null when the closed catalog has no such entry. A null is an AGENT gap (the catalog cannot record it), not a mapping to be invented here.",
-    "bfs.dfs_for_unweighted_shortest_path": "bfs.dfs_for_unweighted_shortest_path",
-    "trees.returnable_vs_global_path": "trees.returnable_vs_global_path",
-    "sliding_window.left_pointer_moves_backward": "sliding_window.left_pointer_moves_backward",
-    "binary_search_on_answer.floor_instead_of_ceil": null,
-    "sliding_window.shrink_once_instead_of_while": null,
-    "binary_search_on_answer.lower_bound_below_feasible": null
-  },
-  "intents": {
-    "_doc": "Same names on both sides (app/schemas/intent.py). Compared exactly, only on the turns whose meta carries an intent.",
-    "exact": true
-  },
-  "routes": {
-    "_doc": "dataset route -> agent routes accepted as the same decision, each with the condition it holds under.",
-    "equivalences": [
-      {
-        "dataset": "dsa",
-        "agent": [
-          "debug"
-        ],
-        "when": "learner_turn_has_code",
-        "reason": "User-code-first (CLAUDE.md): a turn that carries the learner's code is read and run by the debugger whatever the conversation is on. The dataset labels the same turn `dsa` because it stays inside a DSA conversation."
-      },
-      {
-        "dataset": "explain",
-        "agent": [
-          "debug"
-        ],
-        "when": "learner_turn_has_code",
-        "reason": "Session 7 sends working code and asks why it works. The agent checks an attempt first and answers a question about passing code from the debug node (`_question_about_working_code`)."
-      },
-      {
-        "dataset": "dsa",
-        "agent": [
-          "practice"
-        ],
-        "when": "learner_asks_for_a_problem",
-        "reason": "The dataset itself labels 'give me another tree problem' `practice` (session 6) and 'give me the sliding window problem' `dsa` (session 2). Handing out a problem is the agent's `practice` route."
-      },
-      {
-        "dataset": "practice",
-        "agent": [
-          "dsa"
-        ],
-        "when": "learner_asks_for_a_problem",
-        "reason": "Mirror of the row above."
-      },
-      {
-        "dataset": "clarify",
-        "agent": [
-          "discuss",
-          "assess"
-        ],
-        "when": "always",
-        "reason": "The dataset uses `clarify` for a conversational turn that asks the learner something and involves no specialist (diagnosis, recall warm-up, the friend-like reply, the drill). Since 2026-10-13 the agent calls that `discuss` (talk) or `assess` (a knowledge check); its own `clarify` now means only 'a first message nobody could read'."
-      }
+ "_doc": "A0 reconciliation between the journey dataset's vocabulary and the agent's. Nothing here renames a corpus label. Every equivalence carries its reason; the harness reports STRICT and EQUIVALENT route accuracy side by side so an equivalence can never hide a miss.",
+ "topics": {
+  "_doc": "dataset topic id -> corpus pattern slug (app/knowledge/corpus/<slug>.md). All eight exist under the same name.",
+  "sliding_window": "sliding_window",
+  "two_pointers": "two_pointers",
+  "bfs": "bfs",
+  "binary_search_on_answer": "binary_search_on_answer",
+  "trees": "trees",
+  "topological_sort": "topological_sort",
+  "dp_1d": "dp_1d",
+  "monotonic_stack": "monotonic_stack"
+ },
+ "misconceptions": {
+  "_doc": "dataset misconception id -> id in app/knowledge/tutoring/misconceptions.json, or null when the closed catalog has no such entry. A null is an AGENT gap (the catalog cannot record it), not a mapping to be invented here.",
+  "bfs.dfs_for_unweighted_shortest_path": "bfs.dfs_for_unweighted_shortest_path",
+  "trees.returnable_vs_global_path": "trees.returnable_vs_global_path",
+  "sliding_window.left_pointer_moves_backward": "sliding_window.left_pointer_moves_backward",
+  "binary_search_on_answer.floor_instead_of_ceil": null,
+  "sliding_window.shrink_once_instead_of_while": null,
+  "binary_search_on_answer.lower_bound_below_feasible": null
+ },
+ "intents": {
+  "_doc": "Same names on both sides (app/schemas/intent.py), compared exactly (`intent_strict`, reported, not scored), and under the equivalences below (`intent`, scored). Two labels were added to the agent after the dataset was written; each names exactly one ask the dataset filed under an older label, and holds only under that condition.",
+  "exact": true,
+  "equivalences": [
+   {
+    "dataset": "DSA_SOLVE",
+    "agent": [
+     "PRACTICE_REQUEST"
     ],
-    "unchecked": "Assistant turns whose meta has no `route` (replies to an agent question) are not route-checked; the agent may use `grade`, `dsa`, `discuss` or `debug` there."
-  },
-  "assistance_levels": {
-    "_doc": "Agent order: hint < concept < pseudocode < partial < full. The dataset uses hint, concept and full. Scored EXACT; the band match is reported next to it.",
-    "bands": {
-      "no_code": [
-        "hint",
-        "concept"
-      ],
-      "structure": [
-        "pseudocode",
-        "partial"
-      ],
-      "full": [
-        "full"
-      ]
-    }
-  },
-  "grades": {
-    "_doc": "The dataset grade is correct / partial / incorrect. The agent grades a curated question (`AnswerGrade.grade`) or reads the reply (`TurnDecision.evidence`); the decision object reports the first when present, else the second mapped as below.",
-    "from_evidence": {
-      "correct": "correct",
-      "terminology_error": "partial",
-      "partially_correct": "partial",
-      "incomplete": "partial",
-      "conceptual_misconception": "incorrect",
-      "implementation_error": "incorrect",
-      "incorrect": "incorrect",
-      "stuck": "dont_know",
-      "none": null
-    }
-  },
-  "evidence_provenance": {
-    "_doc": "dataset evidence.provenance -> LearningEventCreate.evidence_source values that count as it.",
-    "sandbox": [
-      "extracted",
-      "synthesised"
+    "when": "learner_asks_for_a_problem",
+    "reason": "PRACTICE_REQUEST (asking to be GIVEN a problem) is newer than the dataset, which files the same ask under DSA_SOLVE. Same condition as the dsa<->practice route row."
+   },
+   {
+    "dataset": "APPROACH_DISCUSSION",
+    "agent": [
+     "KNOWLEDGE_CHECK"
     ],
-    "concept_check": [
-      "concept_check",
-      "tutor_reply",
-      "quiz"
+    "when": "learner_asks_to_be_tested",
+    "reason": "KNOWLEDGE_CHECK (2026-10-12: 'ask me questions', 'drill me') is newer than the dataset, which files a request to be drilled under APPROACH_DISCUSSION. Only when the learner asks to be quizzed or drilled."
+   }
+  ]
+ },
+ "routes": {
+  "_doc": "dataset route -> agent routes accepted as the same decision, each with the condition it holds under.",
+  "equivalences": [
+   {
+    "dataset": "dsa",
+    "agent": [
+     "debug"
     ],
-    "exposure": [
-      "help_needed",
-      "none"
-    ]
-  },
-  "skill_labels": {
-    "_doc": "Thresholds are the agent's own (app/agents/planner.py WEAK_SKILL / HARD_SKILL) and equal the dataset's.",
-    "weak_below": 0.42,
-    "strong_from": 0.68
-  },
-  "calibration_differences": {
-    "_doc": "Where the agent's learner model differs from the dataset's stated calibration. These are reported, never patched in the harness.",
-    "unsolved_score": "Agent: one failed run scores UNSOLVED_SCORE 0.25 (CLAUDE.md, 'one failed run is one bug'). Dataset: a failed run moves the skill with ALPHA 0.3 toward 0.",
-    "decay": "Agent decays a skill toward PRIOR with a 30-day half-life at read time; the dataset has no decay.",
-    "help_needed": "Agent lowers the family estimate slightly when the full solution is handed over (HELP_ALPHA 0.1); the dataset records exposure with no movement."
+    "when": "learner_turn_has_code",
+    "reason": "User-code-first (CLAUDE.md): a turn that carries the learner's code is read and run by the debugger whatever the conversation is on. The dataset labels the same turn `dsa` because it stays inside a DSA conversation."
+   },
+   {
+    "dataset": "explain",
+    "agent": [
+     "debug"
+    ],
+    "when": "learner_turn_has_code",
+    "reason": "Session 7 sends working code and asks why it works. The agent checks an attempt first and answers a question about passing code from the debug node (`_question_about_working_code`)."
+   },
+   {
+    "dataset": "dsa",
+    "agent": [
+     "practice"
+    ],
+    "when": "learner_asks_for_a_problem",
+    "reason": "The dataset itself labels 'give me another tree problem' `practice` (session 6) and 'give me the sliding window problem' `dsa` (session 2). Handing out a problem is the agent's `practice` route."
+   },
+   {
+    "dataset": "practice",
+    "agent": [
+     "dsa"
+    ],
+    "when": "learner_asks_for_a_problem",
+    "reason": "Mirror of the row above."
+   },
+   {
+    "dataset": "clarify",
+    "agent": [
+     "discuss",
+     "assess"
+    ],
+    "when": "always",
+    "reason": "The dataset uses `clarify` for a conversational turn that asks the learner something and involves no specialist (diagnosis, recall warm-up, the friend-like reply, the drill). Since 2026-10-13 the agent calls that `discuss` (talk) or `assess` (a knowledge check); its own `clarify` now means only 'a first message nobody could read'."
+   }
+  ],
+  "unchecked": "Assistant turns whose meta has no `route` (replies to an agent question) are not route-checked; the agent may use `grade`, `dsa`, `discuss` or `debug` there."
+ },
+ "assistance_levels": {
+  "_doc": "Agent order: hint < concept < pseudocode < partial < full. The dataset uses hint, concept and full. Scored EXACT; the band match is reported next to it.",
+  "bands": {
+   "no_code": [
+    "hint",
+    "concept"
+   ],
+   "structure": [
+    "pseudocode",
+    "partial"
+   ],
+   "full": [
+    "full"
+   ]
   }
+ },
+ "grades": {
+  "_doc": "The dataset grade is correct / partial / incorrect. The agent grades a curated question (`AnswerGrade.grade`) or reads the reply (`TurnDecision.evidence`); the decision object reports the first when present, else the second mapped as below.",
+  "from_evidence": {
+   "correct": "correct",
+   "terminology_error": "partial",
+   "partially_correct": "partial",
+   "incomplete": "partial",
+   "conceptual_misconception": "incorrect",
+   "implementation_error": "incorrect",
+   "incorrect": "incorrect",
+   "stuck": "dont_know",
+   "none": null
+  }
+ },
+ "evidence_provenance": {
+  "_doc": "dataset evidence.provenance -> LearningEventCreate.evidence_source values that count as it.",
+  "sandbox": [
+   "extracted",
+   "synthesised"
+  ],
+  "concept_check": [
+   "concept_check",
+   "tutor_reply",
+   "quiz"
+  ],
+  "exposure": [
+   "help_needed",
+   "none"
+  ]
+ },
+ "skill_labels": {
+  "_doc": "Thresholds are the agent's own (app/agents/planner.py WEAK_SKILL / HARD_SKILL) and equal the dataset's.",
+  "weak_below": 0.42,
+  "strong_from": 0.68
+ },
+ "calibration_differences": {
+  "_doc": "Where the agent's learner model differs from the dataset's stated calibration. These are reported, never patched in the harness.",
+  "unsolved_score": "Agent: one failed run scores UNSOLVED_SCORE 0.25 (CLAUDE.md, 'one failed run is one bug'). Dataset: a failed run moves the skill with ALPHA 0.3 toward 0.",
+  "decay": "Agent decays a skill toward PRIOR with a 30-day half-life at read time; the dataset has no decay.",
+  "help_needed": "Agent lowers the family estimate slightly when the full solution is handed over (HELP_ALPHA 0.1); the dataset records exposure with no movement."
+ }
 }

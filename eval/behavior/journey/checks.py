@@ -174,6 +174,20 @@ def band(level: str | None) -> str | None:
     return None
 
 
+#: The learner asks to be quizzed or drilled.
+_TESTED = re.compile(r"\b(drill|quiz|test me|ask me\b.*\bquestions?)\b", re.I)
+
+
+def intent_equivalent(expected: str, actual: str, *, asks_problem: bool, tested: bool) -> bool:
+    if expected == actual:
+        return True
+    conditions = {"learner_asks_for_a_problem": asks_problem, "learner_asks_to_be_tested": tested}
+    return any(
+        row["dataset"] == expected and actual in row["agent"] and conditions[row["when"]]
+        for row in VOCAB["intents"]["equivalences"]
+    )
+
+
 def route_equivalent(expected: str, actual: str, *, has_code: bool, asks_problem: bool) -> bool:
     if expected == actual:
         return True
@@ -205,10 +219,12 @@ def l1_checks(
     asks_problem = bool(re.search(r"\b(give me|another|next)\b.*\bproblem\b", learner_text, re.I))
 
     if "intent" in meta:
-        actual = decision.get("intent")
-        out.append(
-            Result("intent", "L1", actual == meta["intent"], f"{meta['intent']} vs {actual}")
-        )
+        actual = str(decision.get("intent"))
+        detail = f"{meta['intent']} vs {actual}"
+        out.append(Result("intent_strict", "L1", actual == meta["intent"], detail))
+        tested = bool(_TESTED.search(learner_text))
+        same = intent_equivalent(meta["intent"], actual, asks_problem=asks_problem, tested=tested)
+        out.append(Result("intent", "L1", same, detail))
 
     if "route" in meta:
         actual = str(decision.get("route"))

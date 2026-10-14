@@ -152,3 +152,71 @@ async def test_the_dialogue_names_a_topic_only_from_the_closed_list() -> None:
     llm = FakeLLMClient(chat_content=json.dumps({**reply, "topic": "made_up_topic"}))
     got = await discuss("dfs?", llm, topics=("bfs", "dfs"))
     assert got is not None and got.topic is None
+
+
+# --- later packets ------------------------------------------------------------
+
+
+def test_recall_comes_from_the_profile_and_names_its_facts() -> None:
+    from app.schemas.profile import LearnerProfileView
+    from app.tutoring.recall import recall_for_opening
+
+    profile = LearnerProfileView(
+        skill_levels={"sliding_window": 0.62, "graphs": 0.48},
+        learning_preferences={},
+        common_errors=["sliding_window.left_pointer_moves_backward", "not.a.catalog.id"],
+        common_error_counts={"sliding_window.left_pointer_moves_backward": 1},
+    )
+    recall = recall_for_opening(profile)
+    assert recall.facts == [
+        "common_errors.sliding_window.left_pointer_moves_backward",
+        "skills.sliding_window",
+    ]
+    note = recall.note()
+    assert note is not None and "Moving the left edge backward" in note
+    assert "graphs" not in note  # no evidence above the start
+    assert recall.used_in("Remember the sliding window from last time?") == [
+        "skills.sliding_window"
+    ]
+    assert recall_for_opening(None).facts == []
+
+
+async def test_the_dialogue_names_a_misconception_only_from_the_catalog() -> None:
+    body = {"reply": "BFS fits better here.", "learner_showed": "incorrect", "topic": "bfs"}
+    catalog = (("bfs.dfs_for_unweighted_shortest_path", "DFS for shortest paths"),)
+    llm = FakeLLMClient(
+        chat_content=json.dumps({**body, "misconception": "bfs.dfs_for_unweighted_shortest_path"})
+    )
+    got = await discuss("depth first?", llm, topics=("bfs",), misconceptions=catalog)
+    assert got is not None and got.misconception == "bfs.dfs_for_unweighted_shortest_path"
+    llm = FakeLLMClient(chat_content=json.dumps({**body, "misconception": "invented.id"}))
+    got = await discuss("depth first?", llm, topics=("bfs",), misconceptions=catalog)
+    assert got is not None and got.misconception is None
+
+
+def test_a_first_encounter_with_a_topic_starts_at_concept() -> None:
+    from app.agents.planner import ProblemAnalysis, build_plan
+    from app.schemas.profile import LearnerProfileView
+
+    profile = LearnerProfileView(
+        skill_levels={"trees": 0.55}, learning_preferences={}, common_errors=[]
+    )
+    hint = _sure(Intent.DSA_HINT)
+    new = ProblemAnalysis(
+        topic="binary_search_on_answer", skill_level=0.5, topic_source="retrieval"
+    )
+    seen = ProblemAnalysis(topic="trees", skill_level=0.55, topic_source="profile_match")
+    assert build_plan(hint, profile, new).assistance_level == "concept"
+    assert "first_encounter" in build_plan(hint, profile, new).rationale
+    assert build_plan(hint, profile, seen).assistance_level == "hint"
+
+
+def test_code_with_no_words_is_the_attempt_at_the_open_problem() -> None:
+    from tests.graph.test_turn_decision import _active  # pyright: ignore[reportPrivateUsage]
+
+    code = "def f(s):\n    best = 0\n    for ch in s:\n        best += 1\n    return best\n"
+    unread = _sure(Intent.CODE_DEBUG, refers_to_previous=False)
+    update = _decide(_state("", intent=unread, active=_active(), code=code))
+    assert update.get("problem_relation") == "same"
+    inherited = update.get("structured_input")
+    assert inherited is not None and inherited.problem  # the statement came with it

@@ -35,6 +35,23 @@ class Recall:
     def note(self) -> str | None:
         return "\n".join(self.lines) if self.lines else None
 
+    def used_in(self, reply: str) -> list[str]:
+        """The facts a reply visibly draws on: a recalled topic or mistake it
+        names. On an opening every fact steered the turn; later, only one the
+        reply talks about counts as recall."""
+        said = reply.lower().replace("-", " ")
+        used: list[str] = []
+        for fact in self.facts:
+            kind, _, key = fact.partition(".")
+            if kind == "skills":
+                named = key.replace("_", " ") in said
+            else:
+                item = get_misconception(key)
+                named = item is not None and item.name.lower() in said
+            if named:
+                used.append(fact)
+        return used
+
 
 def recall_for_opening(profile: LearnerProfileView | None) -> Recall:
     """The recorded mistake to revisit and the progress the record shows."""

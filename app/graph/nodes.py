@@ -216,9 +216,14 @@ from app.tutoring.grader import (
     is_dont_know,
     looks_like_injection,
 )
-from app.tutoring.misconceptions import detect_in_code, get_misconception, is_catalog_id
+from app.tutoring.misconceptions import (
+    catalog,
+    detect_in_code,
+    get_misconception,
+    is_catalog_id,
+)
 from app.tutoring.progression import requested_difficulty, session_difficulty
-from app.tutoring.recall import Recall, recall_for_opening
+from app.tutoring.recall import recall_for_opening
 from app.tutoring.step import StepBrief, spoken_step
 from app.tutoring.turn import (
     Reacted,
@@ -3001,22 +3006,20 @@ async def discuss_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         # Their last attempt at the problem is part of what is on the table.
         code = "\n\n".join(block.content.strip() for block in attempt)
         subject = "\n\n".join(p for p in (subject, f"Their last attempt:\n```\n{code}\n```") if p)
-    note = standing_note(state.profile)
-    recall = Recall()
-    if not state.recent_context:
-        # The first message of a conversation: what earlier sessions left on
-        # the profile (OD-1: never their transcripts) is put in front of the
-        # tutor, so a returning learner is not met cold.
-        recall = recall_for_opening(state.profile)
-        note = "\n".join(part for part in (note, recall.note()) if part) or None
+    # What earlier sessions left on the profile (OD-1: never their
+    # transcripts): the opening warm-up, a reassurance with evidence and an
+    # honest progress review are all built from it.
+    recall = recall_for_opening(state.profile)
+    note = "\n".join(part for part in (standing_note(state.profile), recall.note()) if part)
     reply = await discuss(
         said,
         runtime.context.llm,
         subject=subject,
         tutor_state=tutor_state_block(state.decision, _talk_pitch(state)),
         conversation=[(message.role, message.content) for message in state.recent_context],
-        profile_note=note,
+        profile_note=note or None,
         topics=quiz_topics(),
+        misconceptions=[(item.id, item.name) for item in catalog()],
     )
     topic = state.plan.topic if state.plan is not None else None
     if reply is not None and reply.topic is not None and reply.learner_showed != "none":
@@ -3029,11 +3032,16 @@ async def discuss_agent(state: AgentState, runtime: Runtime[GraphContext]) -> Ag
         # conversation, that the reply could not be written just now.
         text = _DISCUSS_FAILED_TEXT if state.recent_context else _unanchored_question(state)
         return {"agent_output": AgentOutcome(text=text, topic=None, solved=None)}
+    # A misconception the reply was read to show (closed catalog only) is
+    # recorded like one a detector found in code.
+    named = reply.misconception
+    shown = [named] if named is not None and is_catalog_id(named) else []
     update: AgentStateUpdate = {
-        "agent_output": AgentOutcome(text=reply.text, topic=topic, solved=None)
+        "agent_output": AgentOutcome(text=reply.text, topic=topic, solved=None, errors=shown)
     }
-    if recall.facts:
-        update["memory_facts"] = recall.facts
+    used = recall.facts if not state.recent_context else recall.used_in(reply.text)
+    if used:
+        update["memory_facts"] = used
     if (
         reply.learner_showed != "none"
         and state.decision is not None
@@ -4379,10 +4387,20 @@ def _with_tutoring(state: AgentState, generated: GeneratedResponse) -> AgentStat
     # When the solver wrote the step that follows a graded reply, it opens with
     # its own line about that reply; the grader's lead would say it twice.
     spoken_by_solver = grade is not None and state.grade_handoff and _guided_hint(state)
+    # Below `full`, a failing run of the learner's code is theirs to fix: the
+    # debugger gives the failing case and one question. The misconception's
+    # card states the right model, often as an expression, so it waits for
+    # the fix; it is still recorded on the turn and the profile.
+    learner_fixes = (
+        route == "debug"
+        and learner_verdict is not None
+        and learner_verdict.status == "fail"
+        and (plan is None or plan.assistance_level != "full")
+    )
     extra = tutoring_sections(
         grade=None if spoken_by_solver else grade,
         feedback=state.grade_feedback or "",
-        misconceptions=found,
+        misconceptions=[] if learner_fixes else found,
         surfaced=surfaced,
         execution_lines=exec_lines,
         question=question,

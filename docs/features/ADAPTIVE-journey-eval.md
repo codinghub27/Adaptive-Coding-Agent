@@ -215,7 +215,18 @@ Challenge, a revealed pattern, a correct but overlong review). Gate: within 1
 point on ≥80% of (turn, dimension) pairs and per-turn mean within 1 on ≥80% of
 turns.
 
-Result: _pending (run after the replays; see A5)._
+Result (2026-10-14, `eval/results/journey/judge_calibration.json`): judge
+`groq/openai/gpt-oss-120b` (the strongest model on the keys; cloud, used for
+JUDGING only). **Calibrated: 90.8% of (turn, dimension) pairs within 1 point,
+100% of turns within 1 on the mean** (gate 80% / 80%). Mean on the good items
+4.71, on the written failures 2.14.
+
+- First attempt: 19 of 20 items came back unparsed. `gpt-oss` is a reasoning
+  model and `max_tokens=400` was spent on reasoning, leaving no JSON. Raised
+  to 2000 in `judge.Judge.score`; the instrument is otherwise unchanged.
+- Known bias: the judge is lenient on a correct but long review (the
+  overlong-review item: labelled 2.7, judged 3.5, `concise_one_idea` 1 vs 2).
+  The L2 `length_budget` check covers length; L3 is not used to judge length.
 
 ## A4 — Held-out set (`heldout/`)
 
@@ -339,6 +350,49 @@ Held-out is replayed after packets 3, 6 and the last one.
    names for those two asks in `vocab_map.json`, or leave intent strict. No
    equivalence was added for them.
 
+**Owner (2026-10-14): "complete the remaining ... finish it and upgrade the
+agent"; "if the cloud keys is issue ... use the local and use cloud for fast
+response and complete it by today night ... after completion set to cloud key
+as default".** Taken as the go-ahead on the packet order, with these calls
+made on the open questions (each can be reversed):
+
+- **OD-2 Instrument:** cloud (`groq/openai/gpt-oss-120b`) while its daily
+  token cap allows; the local `qwen-direct` model (bridge, port 8010) when it
+  does not. Every number below names its model; numbers from different models
+  are never put in one mean.
+- **OD-3 Cause A:** the script is kept; nothing in the dataset was edited.
+- **OD-4 Cause J:** two intent equivalences, each under the one condition it
+  names (`vocab_map.json` -> `intents.equivalences`): `DSA_SOLVE` ~
+  `PRACTICE_REQUEST` when the learner asks for a problem (mirror of the
+  existing dsa<->practice route row) and `APPROACH_DISCUSSION` ~
+  `KNOWLEDGE_CHECK` when the learner asks to be drilled or quizzed. Both labels
+  are newer than the dataset. `intent_strict` is reported beside it and is not
+  scored. `GENERAL_GUIDANCE` vs `APPROACH_DISCUSSION` stays strict.
+
+## Phase B — packets (2026-10-14)
+
+Commits: `d3a6a2e` (packets below up to the catalog entry); the rest is in the
+final commit of this phase.
+
+| packet | what changed (file:symbol) | closes |
+|---|---|---|
+| I0 replies are replies | `nodes.tutor_asked_last`, `_answers_the_tutor`, `_is_talk`: a message after the tutor's own question that brings nothing and does not open as a request is talk; `dialogue.DISCUSS_SYSTEM` grades it against THAT question ("correct" = right on what was asked) and names the topic it tested from the closed list; `nodes._answer_topic`, `_reply_grade` put one `tutor_reply` event on that topic | H, I |
+| I4/I5 diagnose first, drill one at a time | `routing.asks_for_a_study_plan` (strict; the old regex matched "start" in "couldn't even start"); `_is_talk`: guidance with no plan ask is talk; dialogue rule 13 (acknowledge, evidence for self-doubt, offer the named problem, else three one-line recognition questions); `assess.names_a_count` ("2 out of 3" is not "2 questions"), `QuizState.one_at_a_time/current/verdicts`, `assess.mark_one`, recognition questions never name the technique | B, M |
+| E evidence recorded | `nodes._decide`: code with no words while a stated problem is open is the attempt at it (its suite comes from the statement, so the verdict counts); `nodes._conversation_topic`: a debug turn with no topic takes the conversation's | E |
+| I1 learner writes the fix | `debugger._GUIDE_SYSTEM` + `read_code(learner_fixes=)`, set in `subgraphs.debug._explain` below `full`: failing case, the faulty line traced, ONE question, never the fix; `nodes.final_response`: the misconception card waits until the fix | D |
+| I2 memory from the profile | `app/tutoring/recall.py` (recorded mistake + evidenced topics, facts named); `discuss_agent` gives it to every talk turn and reports `memory_used` (all facts on an opening, named ones later); dialogue rules 14 (warm-up on a new session) and 16 (honest review); catalog `sliding_window.left_pointer_moves_backward` (corpus sentence, bank question `sliding_window.stale_index`, ast detector); a talk reply may name one catalog misconception (`DialogueReply.misconception`) | C, G |
+| I3 scaffolding | `planner.build_plan`: first encounter with a topic (no key on the profile) starts at `concept` (`first_encounter`) | L (part) |
+| I7 interview | dialogue rule 15: hand over the floor, ask only interviewer questions, never hint | K (part) |
+| grader | `grader._contains_wrong_phrase`: a wrong phrase INSIDE a longer answer goes to the judge, not straight to "incorrect" | I |
+| I10 CI | `pyproject.toml` per-file ignores for the dataset generators only (their long lines are dataset text); `ruff check .` passes | |
+
+Not done, and why: no `resolved` state for a mistake (needs a profile schema
+change; additive, but not reached today); the floor-vs-ceil binary-search
+mistake stays `blocked_by: catalog` (the corpus does not name it, and a
+catalog entry must quote the corpus); difficulty two steps up on "something
+harder" (the reference jumps easy -> hard; the agent steps one level, a
+choice, not a defect).
+
 ## Commands Run
 - `docker run --rm --network none --read-only ... python /dataset/verify_examples.py` (dev: 12/12 match; held-out: ground truth generated)
 - `python -m eval.behavior.journey.checks` (dev 172/174, held-out 173/174)
@@ -346,6 +400,14 @@ Held-out is replayed after packets 3, 6 and the last one.
 - `pytest tests/graph/test_eval_mode.py tests/test_config.py -q` (38 passed)
 - `EVAL_MODE=true python -m uvicorn app.main:app --port 8000`
 - `python -m eval.behavior.journey.replay_journey --dataset dev --runs 3 --label baseline --no-judge --pace 2`
+- `python -m eval.behavior.journey.calibrate` (cloud judge; calibrated, see A3)
+- `python -m eval.behavior.journey.replay_journey --dataset dev --runs 1 --label p12 --no-judge --pace 1` (cloud, valid)
+- `... --label p3` (cloud; voided: 19 degraded turns, Groq daily cap)
+- `ollama` + `uvicorn eval.local_model_bridge:app --port 11500` + `EVAL_MODE=true GROQ_API_BASE=http://127.0.0.1:11500 LLM_PROVIDER=groq LLM_MODEL=qwen-direct LANGSMITH_TRACING=false uvicorn app.main:app --port 8010`
+- `... --dataset dev --label local4 --base-url http://127.0.0.1:8010` (local)
+- `python -m eval.behavior.journey.replay_journey --dataset dev --label p12 --rescore` (after the intent rows)
+- `python -m eval.behavior.journey.overfit_check` (0 new hits)
+- `ruff check .`, `ruff format --check app tests eval`, `pyright app tests` (0), `pytest tests -q -m "not sandbox"` (2177 passed, 2 skipped)
 
 ## Known Issues
 - Groq's tokens-per-minute limit stretches single turns to minutes; see A5.

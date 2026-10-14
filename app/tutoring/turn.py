@@ -413,8 +413,13 @@ def tutoring_sections(
         for misconception_id in surfaced:
             item = get_misconception(misconception_id)
             if item is not None:
+                # A reminder names the mistake; it does not state the right
+                # model. Measured on the journey replay: the watch-out said
+                # what the recursion must return, and the question right
+                # after it asked the learner exactly that.
                 lines.append(
-                    f"- **{item.name}** -- you ran into this earlier. {item.correct_model}"
+                    f"- **{item.name}** -- you ran into this earlier; check for it before "
+                    "you run anything."
                 )
         section = _section("watch_out", "\n".join(lines))
         if section is not None:

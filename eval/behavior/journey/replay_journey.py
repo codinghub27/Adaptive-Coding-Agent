@@ -161,16 +161,21 @@ class Api:
         self._client = httpx.Client(base_url=base_url, timeout=timeout)
         self._pace = pace
         self._headers: dict[str, str] = {}
+        self._account: dict[str, str] = {}
 
     def new_account(self) -> str:
-        account = {
+        self._account = {
             "username": "jrn_" + secrets.token_hex(5),
             "password": secrets.token_urlsafe(18) + "aA1!",
         }
-        self._client.post("/auth/register", json=account).raise_for_status()
-        token = self._client.post("/auth/login", json=account).json()["access_token"]
+        self._client.post("/auth/register", json=self._account).raise_for_status()
+        self._login()
+        return self._account["username"]
+
+    def _login(self) -> None:
+        # A local-model journey runs for hours; the access token does not.
+        token = self._client.post("/auth/login", json=self._account).json()["access_token"]
         self._headers = {"Authorization": f"Bearer {token}"}
-        return account["username"]
 
     def chat(self, text: str, mode: str, conversation_id: str | None, moment: datetime) -> Json:
         data = {"text": text, "teaching_mode": mode, "eval_now": moment.isoformat()}
@@ -182,6 +187,13 @@ class Api:
             try:
                 response = self._client.post("/chat", data=data, headers=self._headers)
                 response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last = exc
+                if exc.response.status_code == 401 and self._account:
+                    self._login()  # the token expired mid-journey: same account
+                    continue
+                time.sleep(15.0 * (attempt + 1))
+                continue
             except httpx.HTTPError as exc:
                 last = exc
                 time.sleep(15.0 * (attempt + 1))
@@ -194,9 +206,11 @@ class Api:
         raise RuntimeError(f"/chat failed three times: {last!r}")
 
     def profile(self, moment: datetime) -> Json:
-        response = self._client.get(
-            "/profile", params={"eval_now": moment.isoformat()}, headers=self._headers
-        )
+        params = {"eval_now": moment.isoformat()}
+        response = self._client.get("/profile", params=params, headers=self._headers)
+        if response.status_code == 401 and self._account:
+            self._login()
+            response = self._client.get("/profile", params=params, headers=self._headers)
         response.raise_for_status()
         return response.json()
 
@@ -460,7 +474,7 @@ def summarize(run: Json) -> Json:
                     blocked[check["blocked_by"]] += 1
                 if check["hard_gate"] and not check["ok"]:
                     gates.append(f"s{session['number']} t{turn['index']} {check['name']}")
-                if check["name"] in {"route_strict", "assistance_band"}:
+                if check["name"] in {"route_strict", "intent_strict", "assistance_band"}:
                     continue
                 layer[check["layer"]].append(check["ok"])
                 bucket[check["layer"]].append(check["ok"])
@@ -484,6 +498,7 @@ def summarize(run: Json) -> Json:
         "degraded_turns": degraded_turns,
         "L1": _rate(layer["L1"]),
         "L1_route_strict": _rate(by_check.get("route_strict", [])),
+        "L1_intent_strict": _rate(by_check.get("intent_strict", [])),
         "L2": _rate(layer["L2"]),
         "L3": round(statistics.fmean(all_l3), 2) if all_l3 else None,
         "L3_by_dimension": {k: round(statistics.fmean(v), 2) for k, v in judged.items()},
@@ -537,6 +552,7 @@ def aggregate(summaries: Sequence[Json]) -> Json:
     for key in (
         "L1",
         "L1_route_strict",
+        "L1_intent_strict",
         "L2",
         "L3",
         "divergence",

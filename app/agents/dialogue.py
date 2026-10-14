@@ -147,7 +147,16 @@ DISCUSS_SYSTEM: Final = (
     '("I\'m back", "what\'s next"), and <learner_record> has a recorded mistake from an '
     "earlier session: welcome them in a few words and open with a 10-second warm-up "
     "question on that mistake (a tiny input where it would show), saying it is from last "
-    "time. Use only what <learner_record> says; never invent a past session.\n\n"
+    "time. Use only what <learner_record> says; never invent a past session.\n"
+    "15. INTERVIEW. When they ask you to run this as an interview or a mock interview, or "
+    "say they will explain their approach first: you are the interviewer. Open with one "
+    "short line that hands them the floor. Afterwards ask only what an interviewer asks "
+    "(why this works, its cost, an edge case, what happens on a given input); never hint "
+    "at the approach, never name a technique or data structure they have not named, and "
+    "never correct them before they have finished explaining.\n"
+    "16. HOW THEY ARE DOING. When they reflect on their progress or ask how they are doing, "
+    "answer from <learner_record> only: name concretely what it shows improved and what is "
+    "still shaky. No flattery, no invented history, and no new problem unless they ask.\n\n"
     "Also report what the learner's message SHOWED, judged on their reasoning and not their "
     'vocabulary: "correct", "terminology_error" (right reasoning, a term misnamed), '
     '"partially_correct", "conceptual_misconception", "incomplete", "incorrect", "stuck" '
@@ -164,14 +173,18 @@ DISCUSS_SYSTEM: Final = (
     "use), not the one the learner named; otherwise the topic of the reasoning they gave. "
     'Use one slug from <topics>, or "none" when nothing fits or the message shows nothing.'
     "\n\n"
+    "Also report a MISCONCEPTION only when the message shows exactly one of those listed in "
+    '<misconceptions> (by its id); otherwise "none". A wrong answer is not by itself a '
+    "listed misconception.\n\n"
     'Reply with ONLY a JSON object: {"reply": "<your turn, as markdown>", '
-    '"learner_showed": "<one label>", "topic": "<one slug or none>"}'
+    '"learner_showed": "<one label>", "topic": "<one slug or none>", '
+    '"misconception": "<one id or none>"}'
 )
 
 _AGAIN: Final = (
     "Your reply broke a hard limit: it contained a block of code or a function definition "
     "(rule 6), or it was not one JSON object. Write the turn again, in words, as ONE JSON "
-    'object {"reply": "...", "learner_showed": "...", "topic": "..."}.'
+    'object {"reply": "...", "learner_showed": "...", "topic": "...", "misconception": "..."}.'
 )
 
 _FENCE_RE: Final = re.compile(r"```")
@@ -194,6 +207,9 @@ class DialogueReply:
     #: The topic the message is evidence about, from the closed list the call
     #: was given; `None` when the model named none or one outside the list.
     topic: str | None = None
+    #: A catalog misconception the message showed, from the list the call was
+    #: given; `None` otherwise.
+    misconception: str | None = None
 
 
 class _Output(BaseModel):
@@ -202,6 +218,7 @@ class _Output(BaseModel):
     reply: str
     learner_showed: str = "none"
     topic: str = "none"
+    misconception: str = "none"
 
 
 def _cut(text: str, limit: int) -> str:
@@ -259,7 +276,11 @@ _MIN_WORDS_LEFT: Final = 80
 
 
 def _parsed(
-    content: str, *, last_try: bool = False, topics: Sequence[str] = ()
+    content: str,
+    *,
+    last_try: bool = False,
+    topics: Sequence[str] = (),
+    misconceptions: Sequence[str] = (),
 ) -> DialogueReply | None:
     raw = extract_json_object(content)
     if raw is None:
@@ -282,7 +303,13 @@ def _parsed(
     # A topic becomes a key on the learner's profile: only a slug from the
     # closed list given to the call is kept.
     topic = out.topic.strip().lower()
-    return DialogueReply(text=text, learner_showed=showed, topic=topic if topic in topics else None)
+    named = out.misconception.strip()
+    return DialogueReply(
+        text=text,
+        learner_showed=showed,
+        topic=topic if topic in topics else None,
+        misconception=named if named in misconceptions else None,
+    )
 
 
 async def discuss(
@@ -294,6 +321,7 @@ async def discuss(
     conversation: Sequence[tuple[str, str]] = (),
     profile_note: str | None = None,
     topics: Sequence[str] = (),
+    misconceptions: Sequence[tuple[str, str]] = (),
 ) -> DialogueReply | None:
     """The tutor's reply to `message`, or `None` when the model gave nothing
     usable. Never raises.
@@ -303,7 +331,8 @@ async def discuss(
     content) pairs, oldest first; `subject` is the problem statement or code
     the conversation is about; `profile_note` is the tutor's own record of
     where the learner stands (topic slugs and levels only); `topics` is the
-    closed vocabulary the reply's `topic` must come from.
+    closed vocabulary the reply's `topic` must come from; `misconceptions` is
+    the closed catalog as (id, name) pairs.
     """
     if not message.strip():
         return None
@@ -314,6 +343,9 @@ async def discuss(
         parts.append(f"<learner_record>\n{profile_note}\n</learner_record>")
     if topics:
         parts.append(f"<topics>\n{', '.join(topics)}\n</topics>")
+    if misconceptions:
+        listed = "\n".join(f"{key}: {name}" for key, name in misconceptions)
+        parts.append(f"<misconceptions>\n{listed}\n</misconceptions>")
     if subject and subject.strip():
         parts.append(_fenced("subject", subject.strip(), _MAX_SUBJECT_CHARS))
     block = dialogue_block(conversation)
@@ -329,7 +361,12 @@ async def discuss(
             result = await llm.chat(messages, temperature=0.2, max_tokens=_TOKENS)
         except LLMError:
             return None
-        reply = _parsed(result.content, last_try=attempt + 1 == _ATTEMPTS, topics=topics)
+        reply = _parsed(
+            result.content,
+            last_try=attempt + 1 == _ATTEMPTS,
+            topics=topics,
+            misconceptions=[key for key, _ in misconceptions],
+        )
         if reply is not None:
             return reply
         messages = [*messages[:2], ChatMessage(role="user", content=_AGAIN)]
