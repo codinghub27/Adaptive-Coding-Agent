@@ -20,6 +20,7 @@ empty. When falling back, `sections` is empty and `reveals_code` is `False`.
 
 from typing import cast
 
+from app.execution.imports import missing_packages
 from app.response.consistency import consistent_time
 from app.response.format import (
     DSA_SECTIONS_BY_ASSISTANCE,
@@ -224,6 +225,15 @@ _PATCH_UNPROVEN_NOTE = (
 def _patch_not_verified(result: DebugResult) -> str:
     """The label over a fix the sandbox did not pass."""
     final = result.final_verdict
+    needed = missing_packages(result.patched_code)
+    if needed:
+        # It stopped at an import the sandbox cannot satisfy: that is not a
+        # failure of the fix, and it must not be called one.
+        names = ", ".join(f"`{name}`" for name in needed)
+        return (
+            f"**Not run.** This fix needs {names}, which the code sandbox does not have, so "
+            "it could not be checked here. Run it in your own environment."
+        )
     reason = final.summary if final is not None and final.summary else "it could not be run"
     return (
         "**Not verified in sandbox.** This is the best fix I have, and it did not pass: "
@@ -277,6 +287,13 @@ def _render_debug(
                 + "\n\n_Not executed -- this is part of a function (it uses variables set in"
                 + " lines you did not share), so it cannot be run on its own. This is a"
                 + " reading of your code, not a test of it._"
+            )
+        elif result.missing_packages:
+            needed = ", ".join(f"`{name}`" for name in result.missing_packages)
+            body = (
+                body
+                + f"\n\n_Not executed -- this code needs {needed}, which the code sandbox"
+                + " does not have, so this is a reading of your code, not a test of it._"
             )
         elif result.not_executed:
             body = (

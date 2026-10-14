@@ -36,6 +36,7 @@ free-text fields.
 
 import ast
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from typing import Final, Literal, TypedDict
@@ -57,6 +58,7 @@ from app.agents.debugger import (
     read_code,
     static_analysis,
 )
+from app.execution.imports import missing_packages
 from app.execution.verification import verify
 from app.graph.state import AgentState, GraphContext
 from app.input.snippet import is_partial_fragment
@@ -551,6 +553,7 @@ async def _static_review(
     wants_code: bool,
     offset: int,
     partial: bool = False,
+    missing: Sequence[str] = (),
 ) -> DebugRunResult:
     """No sandbox: the `ast` checks plus ONE model call reading the code
     (owner decision A-15). Nothing ran, so nothing is claimed: both verdicts
@@ -602,6 +605,7 @@ async def _static_review(
         fixed=False,
         not_executed=True,
         partial_code=partial,
+        missing_packages=list(missing),
         citations=reading.citations,
     )
     return DebugRunResult(result=result, execution_request=None)
@@ -767,6 +771,13 @@ async def run_debug(
     offset = blocks[0].line_offset if len(blocks) == 1 else 0
     if runtime.context.runner is None:
         return await _static_review(state, runtime, wants_code=wants_code, offset=offset)
+    missing = missing_packages(extract_learner_code(problem))
+    if missing and not wants_code:
+        # Written for a framework the sandbox does not have: run, it stops at
+        # its first import, and that is not the learner's bug. It is read.
+        return await _static_review(
+            state, runtime, wants_code=wants_code, offset=offset, missing=missing
+        )
     if is_partial_fragment(extract_learner_code(problem)):
         # Part of a function: run as it is, it fails on the lines that are
         # missing, and that failure is not the learner's bug. It is read.

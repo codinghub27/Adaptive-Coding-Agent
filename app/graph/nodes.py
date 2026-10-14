@@ -82,6 +82,7 @@ from app.agents.practice import (
 )
 from app.agents.reviewer import review_code
 from app.execution.base import CodeRunner, canonical
+from app.execution.imports import missing_packages
 from app.execution.synth import synthesize_test_suite, verified_reference
 from app.execution.testgen import extract_test_suite, select_entrypoint, top_level_functions
 from app.execution.verification import verify as verify_result
@@ -1661,7 +1662,11 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
                 "language": inp.language or active.problem.language,
             }
         )
-        if _code_first(intent) or intent.intent is Intent.CODE_REVIEW:
+        bare = not (inp.question or "").strip()
+        if bare or _code_first(intent) or intent.intent is Intent.CODE_REVIEW:
+            # Code with no words asks nothing but "check this": whatever label
+            # it got (a local model called one "explain this code"), it is run
+            # against the problem first.
             # An attempt at the open problem is CHECKED first, whatever the
             # learner called the favour ("can you review it?"). Read live: a
             # correct attempt, labelled a review, got a page of naming and
@@ -3777,6 +3782,16 @@ async def _run_examples(examples: Sequence[ConceptExample], runner: CodeRunner |
             blocks.append(
                 f"**{title}** (not executed: the code sandbox is not available)\n\n"
                 f"{render_code_block(code)}"
+            )
+            continue
+        needed = missing_packages(code)
+        if needed:
+            # A framework example (FastAPI, Django, ...) cannot run in the
+            # sandbox; it is shown, and says so, instead of being dropped.
+            names = ", ".join(f"`{name}`" for name in needed)
+            blocks.append(
+                f"**{title}** (not run: it needs {names}, which the code sandbox does not "
+                f"have)\n\n{render_code_block(code, language='python')}"
             )
             continue
         try:

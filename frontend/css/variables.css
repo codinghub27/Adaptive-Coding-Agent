@@ -1,45 +1,82 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
 
+/*
+ * Design tokens. Palette, fonts and sizes follow the owner's reference design
+ * ("UI Design for coding agent", 2026-10-14): Inter + JetBrains Mono, an
+ * indigo -> cyan accent, slate surfaces. Every TEXT colour clears 4.5:1 on
+ * its theme's surfaces; `--accent` is for fills, `--accent-text` for text.
+ */
 :root {
-  --font-ui: "Manrope", system-ui, sans-serif;
-  --font-code: "DM Mono", monospace;
-  --bg: #0b0e12;
-  --bg-subtle: #10141a;
-  --surface: #13181f;
-  --surface-2: #181e26;
-  --surface-3: #202832;
-  --text: #f4f6f3;
-  --text-2: #a2abb6;
-  --text-3: #6f7986;
-  --line: #252d37;
-  --line-strong: #34404d;
-  --accent: #b8f24b;
-  --accent-soft: rgba(184, 242, 75, 0.1);
-  --accent-ink: #172008;
-  --blue: #7db8ff;
-  --purple: #aa99ff;
-  --success: #62d6a5;
-  --warning: #f0bd64;
-  --danger: #ff7e86;
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
-  --radius-sm: 8px;
-  --radius: 12px;
-  --radius-lg: 18px;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --bg: #0b0f19;
+  --bg-subtle: #0f1522;
+  --surface: #111827;
+  --surface-2: #1e293b;
+  --surface-3: #2d3748;
+  --text: #f8fafc;
+  --text-body: #e2e8f0;
+  --text-2: #cbd5e1;
+  --text-3: #94a3b8;
+  --line: #273246;
+  --line-strong: #334155;
+  --accent: #6366f1;
+  --accent-2: #06b6d4;
+  --accent-gradient: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%);
+  --accent-soft: rgba(99, 102, 241, 0.15);
+  --accent-ink: #ffffff;
+  /* Accent as TEXT (labels, inline code); --accent stays for fills. */
+  --accent-text: #a5b4fc;
+  --accent-line: rgba(99, 102, 241, 0.35);
+  --brand-gradient: linear-gradient(135deg, #818cf8 0%, #c084fc 50%, #38bdf8 100%);
+  --link: #67e8f9;
+  --bubble: #1e293b;
+  --bubble-line: #334155;
+  --code-bg: #0d1117;
+  --code-head: #161b22;
+  --code-line: #21262d;
+  --code-text: #e6edf3;
+  --blue: #60a5fa;
+  --purple: #a78bfa;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #fb7185;
+  --shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.25);
+  --shadow-glow: 0 0 20px rgba(99, 102, 241, 0.25);
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --sidebar-width: 280px;
+  --profile-width: 310px;
+  --topbar-height: 60px;
 }
 
 [data-theme="light"] {
-  --bg: #f4f5f1;
-  --bg-subtle: #eaede7;
+  --bg: #f8fafc;
+  --bg-subtle: #f1f5f9;
   --surface: #ffffff;
-  --surface-2: #f2f4f0;
-  --surface-3: #e6eae3;
-  --text: #182019;
-  --text-2: #5f685f;
-  --text-3: #8a938a;
-  --line: #dce1da;
-  --line-strong: #c5cec2;
-  --accent: #79ac16;
-  --accent-soft: rgba(99, 149, 16, 0.1);
-  --accent-ink: #f7ffe8;
-  --shadow: 0 24px 60px rgba(27, 40, 28, 0.12);
+  --surface-2: #f1f5f9;
+  --surface-3: #e2e8f0;
+  --text: #0f172a;
+  --text-body: #1e293b;
+  --text-2: #334155;
+  --text-3: #526077;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --accent-soft: rgba(99, 102, 241, 0.1);
+  --accent-text: #4338ca;
+  --accent-line: rgba(79, 70, 229, 0.3);
+  --brand-gradient: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #0891b2 100%);
+  --link: #0e7490;
+  --bubble: #eef2ff;
+  --bubble-line: #c7d2fe;
+  /* Code blocks stay dark in both themes, as in the reference. */
+  --blue: #1d4ed8;
+  --purple: #6d28d9;
+  --success: #047857;
+  --warning: #b45309;
+  --danger: #be123c;
+  --shadow: 0 12px 24px rgba(15, 23, 42, 0.1);
+  --shadow-glow: 0 0 20px rgba(99, 102, 241, 0.15);
 }

@@ -217,11 +217,21 @@ def curriculum_references() -> tuple[Reference, ...]:
 #: and neighbouring techniques still stay out unless asked (target behaviour
 #: section 25).
 _DEPTH_RULE: Final = (
-    "Explain it in enough detail that the learner really understands it, in this order: "
+    "Explain it in enough detail that the learner really understands it. For an ALGORITHM, a "
+    "DATA STRUCTURE or a problem-solving technique, in this order: "
     "(1) what it is, in one or two plain sentences; (2) the intuition -- why it works; "
     "(3) a step-by-step walk through ONE small concrete input, showing the state after each "
     "step; (4) when to use it and when not to; (5) its time and space cost, with the reason; "
-    "(6) one common mistake. Use short paragraphs and short lists with a bold lead-in for each "
+    "(6) one common mistake. For ANY OTHER topic (a language feature, object-oriented "
+    "programming, a framework or library, a tool, a design idea) there is no time and space "
+    "cost section; instead, for each concept asked about: (1) what it is, in one sentence; "
+    "(2) the problem it solves -- why it exists; (3) how it works, with an everyday analogy "
+    "for a beginner; (4) a small concrete example; (5) a line in bold, "
+    '"In an interview, say:", followed by two or three sentences the learner could say '
+    "aloud, precise and in their own register; (6) one common mistake or confusion (for "
+    "related concepts, how they differ from each other). When the learner says an "
+    "interview or exam is close, keep every part short and make the interview lines the "
+    "centre of the answer. Use short paragraphs and short lists with a bold lead-in for each "
     "part. Stay on the topic that was asked: leave advanced variants and neighbouring "
     "techniques out unless the learner asked for them. Pitch it to the stated learner level: "
     "for a beginner use plain words and an everyday analogy and define every term; for an "
@@ -306,7 +316,10 @@ _EXAMPLES_RULE: Final = (
     "imports) "
     "of at most 30 lines that uses only the standard library, reads no input, and prints its "
     "result with print(), with a comment on the lines that carry the idea. They are run "
-    'before the learner sees them, so they must run as written. Leave "examples" empty only '
+    "before the learner sees them, so they must run as written: no `...` placeholders for a "
+    "body. When the topic IS a library or framework (FastAPI, Django, pandas), the example "
+    "may import it; it is shown but cannot be run, so keep it short and correct. Leave "
+    '"examples" empty only '
     "when code would add nothing (a question about a definition or a history)."
 )
 MAX_EXAMPLES: Final = 2

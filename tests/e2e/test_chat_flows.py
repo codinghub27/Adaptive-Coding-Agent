@@ -200,6 +200,9 @@ async def test_debug_turn_reaches_real_sandbox_and_never_overclaims_correctness(
             ("intent classifier", _DEBUG_INTENT_JSON),
             ("infer, in one or two sentences", _INFER_APPROACH_JSON),
             ("why the bug happens", _EXPLAIN_BUG_JSON),
+            # Journey packet I1: below `full` the established failure is read
+            # with the guide prompt (the learner writes the fix). Same reply.
+            ("The learner will write the fix themselves", _EXPLAIN_BUG_JSON),
             ("Produce a corrected", _PATCHED_CODE_JSON),
         ]
     )

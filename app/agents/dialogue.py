@@ -116,14 +116,18 @@ DISCUSS_SYSTEM: Final = (
     "separate the usual causes for THIS problem, ask them to trace those by hand "
     "(the values of the variables at each step) and tell you where it goes wrong; add that "
     "they can paste the code if they want it read.\n"
-    "10. ADVICE. When they ask how to improve, what to practise or whether their plan is "
+    "10. ADVICE (not on an opening that only says where they are: rule 13 comes first "
+    "there, and the advice waits until the diagnosis has shown where they get stuck). "
+    "When they ask how to improve, what to practise or whether their plan is "
     "right: answer the yes/no first, then give a method they can start today, with numbers "
     "in it: a split of their practice (by share or count), or a numbered protocol with a "
     "time box per step, or a signal-to-technique list they can use to label problems. A "
     "short list is the right shape here. Then ONE small first task for today. Not a "
     "multi-week syllabus, and not a problem to solve unless they asked for one.\n"
     "11. SHAPE. Two to six sentences, or a short list when you are listing steps or cases; a "
-    'small table only when they are asked to fill it in. No headings, no "Step 1" '
+    "small table only when they are asked to fill it in. Never one block of text: the direct "
+    "answer is its own short paragraph, the explanation or example the next, and the closing "
+    'question its own line, separated by blank lines. No headings, no "Step 1" '
     "sections, no summary of the conversation. Direct and friendly; no empty praise, and "
     'never "great question".\n'
     "12. If, even with the conversation in front of you, you cannot tell what the message "
@@ -275,6 +279,31 @@ def _without_code(text: str) -> str:
 _MIN_WORDS_LEFT: Final = 80
 
 
+#: A sentence end: punctuation, then space, then a capital, a digit, a quote
+#: or a backtick (so "e.g. this" and "1.5" are not split).
+_SENTENCE_END_RE: Final = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'`(*])")
+_SPLIT_FROM_WORDS: Final = 35
+
+
+def in_paragraphs(text: str) -> str:
+    """A reply the model wrote as ONE block, broken where a reader breathes:
+    the first sentence (the direct answer), the middle, and a closing
+    question on its own line. Text that already has paragraphs, lists or
+    code is left as it is. Read live: greetings and talk replies arrived as
+    a single paragraph, hard to scan in the chat."""
+    if "\n" in text.strip() or len(text.split()) < _SPLIT_FROM_WORDS:
+        return text
+    sentences = _SENTENCE_END_RE.split(text.strip())
+    if len(sentences) < 3:
+        return text
+    head, *middle = sentences
+    question = middle.pop() if middle[-1].rstrip().endswith("?") else None
+    parts = [head, " ".join(middle)]
+    if question is not None:
+        parts.append(question)
+    return "\n\n".join(part for part in parts if part)
+
+
 def _parsed(
     content: str,
     *,
@@ -305,7 +334,7 @@ def _parsed(
     topic = out.topic.strip().lower()
     named = out.misconception.strip()
     return DialogueReply(
-        text=text,
+        text=in_paragraphs(text),
         learner_showed=showed,
         topic=topic if topic in topics else None,
         misconception=named if named in misconceptions else None,

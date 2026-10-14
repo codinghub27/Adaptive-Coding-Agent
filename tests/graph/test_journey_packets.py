@@ -220,3 +220,41 @@ def test_code_with_no_words_is_the_attempt_at_the_open_problem() -> None:
     assert update.get("problem_relation") == "same"
     inherited = update.get("structured_input")
     assert inherited is not None and inherited.problem  # the statement came with it
+
+
+def test_bare_code_on_an_open_problem_is_checked_whatever_its_label() -> None:
+    from tests.graph.test_turn_decision import _active  # pyright: ignore[reportPrivateUsage]
+
+    code = "def f(s):\n    best = 0\n    for ch in s:\n        best += 1\n    return best\n"
+    explain = _sure(Intent.CODE_EXPLAIN, refers_to_previous=True)
+    update = _decide(_state("", intent=explain, active=_active(), code=code))
+    assert update.get("route") == "debug"
+
+
+# --- non-DSA turns and reply shape (owner's live test, 2026-10-14) -------------
+
+
+def test_code_for_a_framework_is_read_not_failed() -> None:
+    from app.execution.imports import missing_packages
+
+    framework = "from fastapi import FastAPI\nimport os\napp = FastAPI()\n"
+    assert missing_packages(framework) == ["fastapi"]
+    assert missing_packages("import collections, math\nfrom heapq import heappush\n") == []
+    assert missing_packages("def broken(:\n") == []  # the run reports a syntax error
+
+
+def test_a_one_block_reply_is_broken_into_paragraphs() -> None:
+    from app.agents.dialogue import in_paragraphs
+
+    block = (
+        "Yes, I can help with topics beyond algorithms. We can look at language features, "
+        "testing, clean code, performance and how frameworks such as web servers are put "
+        "together, e.g. routing. Which one would you like to start with today, the language "
+        "or a framework?"
+    )
+    parts = in_paragraphs(block).split("\n\n")
+    assert len(parts) == 3 and parts[-1].endswith("?")
+    short = "Yes. That is right."
+    assert in_paragraphs(short) == short
+    listed = "Two things:\n- one\n- two"
+    assert in_paragraphs(listed) == listed

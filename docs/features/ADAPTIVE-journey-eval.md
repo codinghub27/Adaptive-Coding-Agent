@@ -1,9 +1,11 @@
 # FEATURE — Journey evaluation and agent upgrade (10-session learner journey)
 
 ## Status
-Phase A (EVALUATE) in progress: A0–A4 done, A5 baseline running, A6 gap report
-pending. Phase B (IMPROVE) has not started and waits for the owner's go-ahead
-on the packet order.
+Phase A done except the three-run spread (A5: one valid cloud run; the local
+runs did not fit, see A5). Phase B (2026-10-14): packets I0, I4/I5, E, I1, I2
+(part), I3 (part), I7 (part), I10 landed (`d3a6a2e`, `fd0044f` and the final
+commit); hard gates clean on the cloud model; L2 95.3% once on the cloud; L1
+and the profile targets NOT met. Branch `feat/journey-eval`, not pushed.
 
 Single session, single agent, no subagents. This file is the source of truth
 between packets.
@@ -286,7 +288,12 @@ Local turn time: 50–70 s (RTX 3050 Ti, 4 GB), about 50 minutes per run.
 | hard gates | 2 failures: `hint_safety` s4 t4, s10 t4 | 0 |
 | latency p50 / max | 5.3 s / 349 s | |
 
-Local (dev ×3, held-out ×3): _running._
+Local (dev ×3, held-out ×3): **not obtained.** The first local chain was
+killed by Claude Code for low memory (2026-10-14, before any run finished);
+the second died at session 6 on an expired access token (the harness now logs
+in again). A local journey takes 75–100 minutes (debug turns up to 7
+minutes), so three of each did not fit the day; see the results table in
+Phase B for the single runs that did.
 
 ## A6 — Gap report (from the valid cloud run, dev, n = 1)
 
@@ -385,6 +392,53 @@ final commit of this phase.
 | I7 interview | dialogue rule 15: hand over the floor, ask only interviewer questions, never hint | K (part) |
 | grader | `grader._contains_wrong_phrase`: a wrong phrase INSIDE a longer answer goes to the judge, not straight to "incorrect" | I |
 | I10 CI | `pyproject.toml` per-file ignores for the dataset generators only (their long lines are dataset text); `ruff check .` passes | |
+
+### Results (n = 1 each; every row names its model; rows on different models are not compared)
+
+Instrument: `replay_journey.py` + `checks.py` as of the final commit (all runs
+rescored with it, `--rescore`). L1 includes the two intent rows of OD-4;
+`intent_strict` and `route_strict` are reported, not scored.
+
+| run | model | code | L1 | L1 intent strict | L2 | divergence | profile labels / MAE | degraded | hard gates |
+|---|---|---|---|---|---|---|---|---|---|
+| `dev_cloud_1` (baseline) | cloud gpt-oss-120b | `eeff39c` | 51.4% | 35.7% | 90.9% | 15.8% | 76.9% / 0.0835 | 2 | **2 fail**: `hint_safety` s4 t4, s10 t4 |
+| `dev_p12_1` | cloud gpt-oss-120b | packets I0 + I4/I5 | 49.6% | 28.6% | **95.3%** | **7.9%** | 76.9% / 0.0803 | 0 | **0** |
+| `dev_local6_1` | local qwen-direct | `fd0044f` | 42.7% | 21.4% | 93.6% | 10.5% | 76.9% / 0.096 | 0 | 1: `revealed_code_verified` s8 t0 (see below) |
+| `heldout_local6_1` | local qwen-direct | `fd0044f` | 38.9% | | 94.1% | 13.2% | 73.1% / 0.103 | 0 | 1: `revealed_code_verified` s8 t0 |
+
+Voided (more than 10% of turns degraded, Groq daily token cap; kept in
+`results/journey/invalid/`): `dev_p3_1`, `heldout_cloud5_1`.
+
+Per check, cloud baseline -> cloud after packets I0 + I4/I5 (same model):
+`hint_safety` 37/39 -> 39/39, `no_code_below_full` 43/47 -> 47/47,
+`length_budget` 36/46 -> 40/46, `one_question` 13/17 -> 15/17, divergence
+halved. `grade` 10/25 -> 8/25 (the talk grader was strict: "partial" for a
+right short answer; fixed after this run, local `grade` 13/25).
+
+On the local model, `sandbox_direction` is 0/12 and `evidence_sandbox` 0/12:
+the 9B model does not write usable test cases (suites came back empty, or
+with wrong expected values), and it labels bare code "explain this" (fixed
+after the run: bare code on an open problem is always checked). Those two
+checks therefore cannot be read from the local runs. The same cause is behind
+both local hard-gate failures: the revealed solutions (coin change, house
+robber) are the standard correct algorithms, failed only on model-written
+cases with wrong expected values, and were shown labelled **"Not verified in
+sandbox"** (owner decision A-10), never claimed verified. On the cloud model
+the gate passed in both valid runs. It stays a hard-gate failure on the local
+instrument and is reported as one.
+
+Held-out vs dev on the same (local) model: L1 38.9 vs 42.7 (3.8 points), L2
+94.1 vs 93.6 (0.5): within the 5-point target.
+
+**Against the definition of done:** L2 >= 95% was reached once on the cloud
+(95.3%), not on the local model (93.6%). L1 is far from 90% on every
+instrument (38.9–51.4%), profile label agreement stayed at 73–77%, and L3 was
+not judged on any after-run (the judge needs the cloud quota the replays
+used). The owner's "95% and above" was not reached. What still costs L1, by
+measured count on the last cloud run: grade/evidence topic and severity
+(~25), sandbox evidence when the agent set its own problem or got no suite
+(~8), intent and route labels (~12, strict), plan level and difficulty (~10),
+recorded memory facts (~5).
 
 Not done, and why: no `resolved` state for a mistake (needs a profile schema
 change; additive, but not reached today); the floor-vs-ceil binary-search

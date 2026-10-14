@@ -258,6 +258,9 @@ class DebugResult(APIModel):
     #: Not executed because the code is only part of a function (it reads
     #: variables set in lines that were not shared), not for want of a sandbox.
     partial_code: bool = False
+    #: Packages the learner's code imports that the sandbox does not have
+    #: (`app.execution.imports`): the code was read, not run.
+    missing_packages: list[str] = Field(default_factory=list[str])
     attempts: int = Field(default=0, ge=0)
     initial_verdict: Verdict | None = None
     final_verdict: Verdict | None = None
