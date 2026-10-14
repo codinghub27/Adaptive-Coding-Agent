@@ -277,9 +277,67 @@ Local turn time: 50–70 s (RTX 3050 Ti, 4 GB), about 50 minutes per run.
 
 Local (dev ×3, held-out ×3): _running._
 
-## A6 — Gap report
+## A6 — Gap report (from the valid cloud run, dev, n = 1)
 
-_pending._
+104 failed checks in 48 turns, grouped by the cause that produced them (a
+check is counted once, under the first cause that explains it). Read from the
+replies in `eval/results/journey/dev_cloud_1.md`, not from the labels alone.
+The local runs will add spread; they cannot change which code is responsible.
+
+| # | root cause | failed checks | where (file:symbol) | brief item |
+|---|---|---|---|---|
+| H | A reply to the tutor's own question is answered as a NEW concept question: a 300-580 word lecture, often with code, no grade. "two pointers, one at the start one at the end" got a 534-word two-pointers lesson; "dfs?" got a DFS lesson. Both `hint_safety` gate failures are here (s4 t4, s10 t4). | 20 | `app/graph/nodes.py:_turn_decision`, `_is_talk`, `explain_agent`; `app/agents/concept.py` | (new) I0 |
+| I | A reply IS read, but the reading is not a grade on the topic: no `concept_check` event, the grade disagrees, or the event lands on another topic. Only replies to a CURATED question (`grade_answer`) produce evidence; a question the model wrote leaves no pending record. | 15 | `app/graph/nodes.py:discuss_agent`, `grade_answer`, `final_response` (`next_pending`); `app/tutoring/turn.py:question_for_turn` | (new) I0, I3 |
+| B | An open or upset first message ("I freeze on mediums", "bad day ... maybe I'm not good enough") is `GENERAL_GUIDANCE` -> `move="plan"`: a multi-week study plan. No diagnosis, no question, no acknowledgement, nothing from the profile. | 12 | `app/graph/nodes.py:_turn_decision` (`GENERAL_GUIDANCE` -> `plan`), `explain_agent` plan branch | I4, I5 |
+| A | The agent sets its OWN practice problem ("give me the sliding window problem" -> Longest Repeating Character Replacement), the script goes on to solve another one, and every later turn of that session talks past the reply (11 turns off script in sessions 2 and 3). **Instrument limit, not an agent defect**: a teacher-forced script cannot follow an agent-chosen problem. | 12 | `app/agents/practice.py:select_practice_problem` (behaving as designed) | none |
+| E | A sandbox verdict on the learner's code, or a revealed solution, leaves no learning event: the turn has no topic, or the suite was synthesised and the statement lives in an EARLIER message. The profile therefore hardly moves: `sliding_window` is 0.50 after two solved problems (dataset 0.73), `topological_sort` 0.50 (0.68). This one cause is most of the profile-trajectory miss. | 7 | `app/graph/nodes.py:_build_learning_event` (synthesised-suite gate), `update_learner_model`, `_described_problem` | I3, I6 |
+| L | Plan level and difficulty do not follow the evidence (`hint` where the session calls for `concept`, `medium` for a learner-led hard problem). | 7 | `app/agents/planner.py:build_plan`, `difficulty_for` | I3 |
+| J | Intent label differs (`PRACTICE_REQUEST` for the dataset's `DSA_SOLVE`, `KNOWLEDGE_CHECK` for `APPROACH_DISCUSSION`): vocabulary added after the dataset was written. Six more are `route_strict`, which is reported and not scored. | 6 (+6) | `app/input/intent.py` | none (see decisions) |
+| C | A new session opens cold: "Welcome back! Could you remind me which problem ...". No recall of a recorded mistake, no follow-up on the last session, no evidence in a reassurance, no profile in the closing review. | 4 | `app/graph/nodes.py:load_learner_profile`, `discuss_agent`; `app/tutoring/adaptation.py:adapt` | I2, I6 |
+| D | After a failing run the debugger states the fix in words or code and prints a line-by-line report (301 words) where the target is the failing case plus one trace question. | 3 | `app/agents/debug.py` prompts, `app/response/generate.py` | I1 |
+| M | Two questions or none where one was due (the drill is asked as a 2-question quiz in one message). | 3 | `app/agents/assess.py`, `app/response/voice.py` | I5, I8 |
+| G | The closed catalog has no entry for two of the four misconceptions. | 2 | `app/knowledge/tutoring/misconceptions.json` | Q5 follow-up |
+| K | Sent to another specialist (interview opening -> talk; a problem handed out mid-talk). | 2 | `app/graph/nodes.py:_decide` | I7 |
+| F, N, Z | code in a "why does this work" question was not run (1); one reply over 180 words (1); one rate-limited turn (1) | 3 | | |
+
+Not visible in the counts: the session-10 progress review does not exist (the
+turn extends the problem and prints code instead), `mark resolved` has no
+state to write to, and five turns took 105-349 s waiting on rate limits.
+
+On-script turns only (37 of 48): L1 46.7%, L2 89.8%. Removing the instrument
+limit (A) does not move the picture.
+
+Behaviour tags are attached to a SESSION, so tags of the same session share
+one number. Sessions 1 and 9 (diagnosis, drill) score 52% on L1+L2 checks,
+session 4 (bad day) 72%, sessions 6 and 8 about 90%.
+
+### Proposed packet order (needs the owner's go-ahead)
+
+| order | packet | closes | target on the dev replay |
+|---|---|---|---|
+| 1 | **I0 Replies are replies.** A message after a question the tutor asked (curated OR model-written) is read as its answer: graded, one event on the question's topic, answered in <= 180 words without code. The question the reply ends on is recorded as the pending one. | H, I (35) | `grade` and `evidence_concept_check` >= 85%; `hint_safety` 100%; `length_budget` >= 95% |
+| 2 | **I4 + I5 Diagnose before a plan.** An open or upset opening gets one acknowledging sentence and ONE diagnostic question; a plan only on an explicit ask. Affect is classified per turn, never stored. The drill asks one statement at a time and teaches only the missed pattern. | B, M (15) | sessions 1, 4 (first turn), 9: L1 >= 80%, `one_question` 100% |
+| 3 | **E Evidence is recorded.** A sandbox verdict on the learner's own code is an event on the conversation's subject and topic, whichever message stated the problem; a revealed solution is an exposure event. | E (7) + profile | label agreement >= 90%, MAE <= 0.08 |
+| 4 | **I1 Learner writes the fix.** Below `full`: the real failing case and one trace question at the faulty line; the patch still runs, unseen. | D | `no_corrected_code` 100% |
+| 5 | **I2 Memory from the profile** (OD-1): due-mistake recall on the first turn of a session, a `resolved` state, catalog entries for the mistakes the corpus already names, `memory_used` from real facts. | C, G | `memory_used` >= 85%; recorded mistakes >= 85% |
+| 6 | **I3 Evidence-driven scaffolding.** | L | `assistance_level`, `difficulty` >= 85% |
+| 7 | **I6 + I7 Interview mode and the honest review.** | K, session 10 | session 10 L1 >= 85% |
+| 8 | **I8 Style layer**, then I9 (model limits), I10 (CI). | N, L3 | L2 >= 95%, L3 >= 4.0 |
+
+Held-out is replayed after packets 3, 6 and the last one.
+
+### Decisions the owner has to make
+
+1. **Which model is the fixed instrument for Phase B.** One cloud journey uses
+   about a day of quota on all five keys; a packet needs at least one full
+   replay. Recommendation: local `qwen-direct` for every packet (repeatable,
+   no quota), one cloud run at each held-out checkpoint.
+2. **Cause A.** Keep the script as it is and report on-script and all-turn
+   scores side by side (recommended), or let a scripted "give me the X
+   problem" turn name the problem. The second edits the dataset.
+3. **Cause J.** Accept `PRACTICE_REQUEST` and `KNOWLEDGE_CHECK` as the agent's
+   names for those two asks in `vocab_map.json`, or leave intent strict. No
+   equivalence was added for them.
 
 ## Commands Run
 - `docker run --rm --network none --read-only ... python /dataset/verify_examples.py` (dev: 12/12 match; held-out: ground truth generated)
