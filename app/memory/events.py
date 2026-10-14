@@ -10,7 +10,6 @@ transaction and must `await session.commit()` (or roll back) themselves.
 
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Final, cast
 
@@ -18,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import clock
 from app.db.models import LearningEvent
 from app.memory.conversation import get_owned_conversation
 from app.memory.profile import ensure_profile, fold_event, to_view
@@ -150,7 +150,7 @@ async def record_event(
         view = LearningEventView.model_validate(existing)
         return RecordEventResult(event=view, applied=False)
 
-    now = datetime.now(UTC)
+    now = clock.now()
     skills, errors, evidence_keys = fold_event(
         profile.skill_levels, profile.skill_seen or {}, profile.common_errors, event, now
     )

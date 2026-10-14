@@ -164,6 +164,13 @@ class Settings(BaseSettings):
     #: region that rejects the key and nothing appears in the UI.
     langsmith_endpoint: str | None = None
 
+    #: Evaluation instrumentation (`docs/features/ADAPTIVE-journey-eval.md`).
+    #: When on, `/chat` returns the turn's `decision` record (ids, labels and
+    #: counts; never learner text) and accepts `eval_now`, a clock override
+    #: for that request, so a replay can place a session on a given day. Off
+    #: by default and refused outright when `APP_ENV=prod`.
+    eval_mode: bool = False
+
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"]
     )
@@ -262,6 +269,12 @@ class Settings(BaseSettings):
             )
         if self.llm_provider == "openrouter" and self.openrouter_api_key is None:
             raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_eval_mode_in_production(self) -> "Settings":
+        if self.eval_mode and self.app_env == "prod":
+            raise ValueError("EVAL_MODE must be off when APP_ENV=prod")
         return self
 
     @property

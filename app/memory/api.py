@@ -5,14 +5,17 @@ The acting user always comes from `get_current_user` (bearer token); there is
 never a caller-supplied `user_id`, mirroring `app.graph.api`'s convention.
 """
 
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import clock
 from app.auth.deps import get_current_user
 from app.db.session import get_session
+from app.evalmode import eval_clock
 from app.input.vision import ALLOWED_IMAGE_TYPES
 from app.memory.conversation import (
     ConversationNotFoundError,
@@ -67,9 +70,16 @@ async def create_conversation(
 async def read_profile(
     session: Annotated[AsyncSession, Depends(get_session)],
     current_user: Annotated[AuthUser, Depends(get_current_user)],
+    request: Request,
+    eval_now: Annotated[datetime | None, Query()] = None,
 ) -> LearnerProfileView:
-    """Return the authenticated user's learner profile."""
-    return await get_profile(session, current_user.id)
+    """Return the authenticated user's learner profile.
+
+    `eval_now` (EVAL_MODE only) reads it as of that moment: skill decay is
+    applied at read time, so a replay on a simulated date must read there too.
+    """
+    with clock.override(eval_clock(request, eval_now)):
+        return await get_profile(session, current_user.id)
 
 
 @router.get("/profile/activity", response_model=LearningActivity)

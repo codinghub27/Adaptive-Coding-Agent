@@ -20,6 +20,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated, Final, cast, get_args
 from uuid import UUID
 
@@ -28,11 +29,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import clock
 from app.auth.deps import get_current_user
 from app.config import Settings
 from app.db.session import get_session
+from app.evalmode import eval_clock, eval_mode
 from app.execution.base import CodeRunner
 from app.graph.build import GraphRunResult, GraphStageEvent, run_graph, stream_graph
+from app.graph.eval_view import build_eval_decision
 from app.graph.nodes import SAFE_FALLBACK_RESPONSE
 from app.graph.state import NodeError, RawInput, RouteKey
 from app.input.api import (
@@ -54,6 +58,7 @@ from app.memory.conversation import (
 )
 from app.schemas.auth import AuthUser
 from app.schemas.base import APIModel
+from app.schemas.eval import EvalDecision
 from app.schemas.event import LearningEventCreate
 from app.schemas.execution import Verdict
 from app.schemas.intent import IntentResult
@@ -104,6 +109,9 @@ class ChatResponse(APIModel):
     #: The tutoring loop's outcome this turn (ADAPTIVE-tutoring): grade,
     #: reaction, the pending question, misconceptions, progression. Additive.
     tutoring: TutoringView | None = None
+    #: The turn's decision record, present only under `EVAL_MODE`
+    #: (`app.schemas.eval`): labels, ids and counts, never learner text.
+    decision: EvalDecision | None = None
 
 
 def _get_runner(request: Request) -> CodeRunner | None:
@@ -226,7 +234,9 @@ async def _ensure_conversation(
     return conversation_id
 
 
-def _to_chat_response(result: GraphRunResult, conversation_id: UUID | None) -> ChatResponse:
+def _to_chat_response(
+    result: GraphRunResult, conversation_id: UUID | None, *, with_decision: bool = False
+) -> ChatResponse:
     """Assemble the `ChatResponse` body shared verbatim by `/chat` and the
     `done` frame of `/chat/stream`."""
     state = result.state
@@ -246,6 +256,7 @@ def _to_chat_response(result: GraphRunResult, conversation_id: UUID | None) -> C
         adapted=state.adaptation is not None and state.adaptation.adapted,
         adaptations=list(state.adaptation.notes) if state.adaptation is not None else [],
         tutoring=state.tutoring,
+        decision=build_eval_decision(state) if with_decision else None,
     )
 
 
@@ -262,6 +273,7 @@ async def chat(
     topic: Annotated[str | None, Form(max_length=64)] = None,
     assistance_cap: Annotated[str | None, Form(max_length=16)] = None,
     teaching_mode: Annotated[str | None, Form(max_length=16)] = None,
+    eval_now: Annotated[datetime | None, Form()] = None,
 ) -> ChatResponse:
     """Run one turn of the teaching graph over `text`/`image` and return its outcome.
 
@@ -270,25 +282,27 @@ async def chat(
     `user_id` field. `assistance_cap`, if given, is a client-requested
     ceiling on `TeachingPlan.assistance_level` (see
     `app.agents.planner.clamp_assistance`) -- it can only lower the help
-    given, never raise it.
+    given, never raise it. `eval_now` (EVAL_MODE only) is the moment this turn
+    is taken to happen at.
     """
+    moment = eval_clock(request, eval_now)
     raw = await _build_raw_input(text, language, image, topic, assistance_cap, teaching_mode)
     conversation_id = await _ensure_conversation(session, current_user.id, conversation_id)
 
-    result = await run_graph(
-        raw,
-        llm=llm,
-        session=session,
-        user_id=current_user.id,
-        conversation_id=conversation_id,
-        retriever=_get_retriever(request),
-        knowledge_top_k=_get_knowledge_top_k(request),
-        runner=_get_runner(request),
-        tracer=_get_tracer(request),
-    )
-    await session.commit()
-
-    return _to_chat_response(result, conversation_id)
+    with clock.override(moment):
+        result = await run_graph(
+            raw,
+            llm=llm,
+            session=session,
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            retriever=_get_retriever(request),
+            knowledge_top_k=_get_knowledge_top_k(request),
+            runner=_get_runner(request),
+            tracer=_get_tracer(request),
+        )
+        await session.commit()
+        return _to_chat_response(result, conversation_id, with_decision=eval_mode(request))
 
 
 def _get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
@@ -372,7 +386,9 @@ async def _chat_stream_events(
             except Exception:
                 await session.rollback()
                 raise
-            body = _to_chat_response(final_result, conversation_id)
+            body = _to_chat_response(
+                final_result, conversation_id, with_decision=eval_mode(request)
+            )
             yield _sse_frame("done", body.model_dump_json())
     except Exception as exc:
         # Exception *type* only, never the traceback or message: this codebase

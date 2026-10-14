@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from typing import Final, Literal
 
 from pydantic import Field
 
+from app import clock
 from app.knowledge.ingest import load_corpus
 from app.schemas.base import APIModel
 from app.schemas.event import Difficulty
@@ -286,7 +286,7 @@ def pending_for(
         misconception_ids=list(spec.misconception_ids),
         problem_key=problem_key,
         assistance_at_ask=assistance,
-        created_at=datetime.now(UTC),
+        created_at=clock.now(),
     )
 
 
@@ -308,7 +308,7 @@ def code_submission_check(
         problem_key=problem_key,
         assistance_at_ask=assistance,
         lesson=lesson,
-        created_at=datetime.now(UTC),
+        created_at=clock.now(),
     )
 
 

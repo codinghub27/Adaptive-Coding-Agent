@@ -35,7 +35,7 @@ transaction and must `await session.commit()` (or roll back) themselves.
 
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import cache
 from types import MappingProxyType
 from typing import Final
@@ -44,6 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import clock
 from app.db.models import LearnerProfile
 from app.schemas.event import LearningEventCreate
 from app.schemas.profile import LearnerProfileView
@@ -395,7 +396,7 @@ def to_view(profile: LearnerProfile, now: datetime | None = None) -> LearnerProf
     real evidence (moved off PRIOR); `current_focus` is the topic most recently
     backed by an outcome -- never merely the weakest key (F10).
     """
-    moment = now or datetime.now(UTC)
+    moment = now or clock.now()
     seen = profile.skill_seen or {}
     topics: dict[str, float] = {}
     families: dict[str, float] = {}
