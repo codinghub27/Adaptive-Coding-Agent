@@ -751,9 +751,18 @@ _ANSWER_SYSTEM: Final = _UNTRUSTED_PREAMBLE + (
     "If they ask for another way to solve it, name ONE concrete alternative, say in a "
     "sentence how it works, and compare its time and space cost with theirs; do not write "
     "its code unless they asked for code. If they ask why it works, about its cost or about "
-    "an edge case, answer that. If the message asks nothing beyond checking the code, say "
-    "in one sentence what makes it correct. Reply with ONLY a single JSON object and nothing "
-    'else: {"bug_explanation": "<your answer>", "used": []}'
+    "an edge case, answer that. If the message asks to check or review the code (is it "
+    "correct, is it right or wrong, review it), give a structured review instead of a "
+    "paragraph, each part on its own line after a bold lead-in: **Verdict** (correct, and "
+    "that it passed the sandbox's cases); **Why it works** (the one property the code "
+    "relies on, in one or two sentences); **Walkthrough** (a short trace on the smallest "
+    "interesting input, a few steps with real values); **Complexity** (time and space, with "
+    "the reason); **Edge cases** (two or three inputs worth knowing about and what the code "
+    "does on them); **Could be better** (one concrete readability or style point, or that "
+    "nothing needs changing). Separate the parts with blank lines. Judge only what the "
+    "learner wrote: a module-level function or call that only invokes their method was "
+    "added to run it, so never comment on it. Reply with ONLY a single "
+    'JSON object and nothing else: {"bug_explanation": "<your answer>", "used": []}'
 )
 
 #: The learner is replying about code the tutor has already looked at.

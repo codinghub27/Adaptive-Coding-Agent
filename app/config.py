@@ -158,7 +158,10 @@ class Settings(BaseSettings):
     #: learner's and LangSmith is a third party. Turn it on for your own
     #: development workspace to read whole conversations there. Image bytes
     #: are never sent either way.
-    langsmith_trace_content: bool = False
+    #: Unset, it follows `app_env`: ON in `dev` (the owner reads full runs in
+    #: their own workspace, 2026-10-15), OFF in `test` and `prod`. An explicit
+    #: `LANGSMITH_TRACE_CONTENT=false` always wins.
+    langsmith_trace_content: bool | None = None
     #: LangSmith API base URL. `None` uses the SDK default (US cloud); an EU
     #: or self-hosted workspace MUST set this, or every run is posted to a
     #: region that rejects the key and nothing appears in the UI.
@@ -269,6 +272,12 @@ class Settings(BaseSettings):
             )
         if self.llm_provider == "openrouter" and self.openrouter_api_key is None:
             raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
+        return self
+
+    @model_validator(mode="after")
+    def _trace_content_follows_env(self) -> "Settings":
+        if self.langsmith_trace_content is None:
+            self.langsmith_trace_content = self.app_env == "dev"
         return self
 
     @model_validator(mode="after")

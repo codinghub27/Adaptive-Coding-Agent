@@ -48,6 +48,12 @@ _LABELS: dict[str, dict[str, object]] = {
 }
 
 
+#: The study-plan prompts. The plan prompt itself opens "You are a mentor"
+#: since 2026-10-15 (plans are also written for Git, frameworks and interview
+#: skills, not only DSA); its follow-up still opens "You are a DSA mentor".
+_PLAN_PROMPTS = ("You are a DSA mentor", "You are a mentor writing a study plan")
+
+
 class _LLM(reg._ScriptedLLM):  # pyright: ignore[reportPrivateUsage]
     def __init__(self) -> None:
         super().__init__()
@@ -70,7 +76,7 @@ class _LLM(reg._ScriptedLLM):  # pyright: ignore[reportPrivateUsage]
             for phrase, label in _LABELS.items():
                 if phrase in question:
                     content = json.dumps({"confidence": 0.9, **label})
-        elif system.startswith("You are a DSA mentor"):
+        elif system.startswith(_PLAN_PROMPTS):
             self.mentor_users.append(user)
             followup = "<conversation_so_far>" in user
             content = json.dumps(

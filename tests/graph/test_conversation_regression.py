@@ -76,6 +76,12 @@ _TALK_REPLY = (
 )
 
 
+#: The study-plan prompts. The plan prompt itself opens "You are a mentor"
+#: since 2026-10-15 (plans are also written for Git, frameworks and interview
+#: skills, not only DSA); its follow-up still opens "You are a DSA mentor".
+_PLAN_PROMPTS = ("You are a DSA mentor", "You are a mentor writing a study plan")
+
+
 class _ScriptedLLM:
     """Answers by which prompt is calling; records which prompts were used."""
 
@@ -114,9 +120,11 @@ class _ScriptedLLM:
                     "guided_step": step,
                 }
             )
-        elif system.startswith("You are a DSA mentor"):
+        elif system.startswith(_PLAN_PROMPTS):
             content = json.dumps({"answer": "## 6-Week DSA Study Plan", "used": [1]})
-        elif system.startswith("You are a coding tutor in the middle of a conversation"):
+        # The talk prompt opens with its scope since 2026-10-15; matched on the
+        # sentence that has always named it.
+        elif "in the middle of a conversation with ONE learner" in system:
             self.talk_users.append(user)
             content = json.dumps({"reply": _TALK_REPLY, "learner_showed": "terminology_error"})
         else:
@@ -134,7 +142,7 @@ class _ScriptedLLM:
         return ChatResult(content=content, provider="fake", model="fake-vision")
 
     def asked_for_a_study_plan(self) -> bool:
-        return any(system.startswith("You are a DSA mentor") for system in self.systems)
+        return any(system.startswith(_PLAN_PROMPTS) for system in self.systems)
 
 
 class _Savepoint:

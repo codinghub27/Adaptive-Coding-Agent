@@ -1046,6 +1046,30 @@ _OPENS_AS_A_REQUEST_RE: Final = re.compile(
     r"solve|write|send|make|provide|continue|next|another|can you|could you|would you|"
     r"let'?s|i want|i need|i'?d like)\b"
 )
+#: An ask to have the APPROACH to the open problem explained ("explain clearly
+#: how to solve this", "walk me through the solution idea"), not for its code.
+_EXPLAIN_APPROACH_RE: Final = re.compile(
+    r"(?i)\b(?:explain|walk me through|teach me|break down|tell me)\b[^.?!\n]{0,40}"
+    r"\b(?:how to solve|solve|approach|solution|idea|logic|algorithm|intuition)\b"
+)
+#: "Check if my code is correct", "is this right or wrong", "does it work":
+#: an attempt to be CHECKED (run against the problem), not a style review.
+_ASKS_IF_CORRECT_RE: Final = re.compile(
+    r"(?i)\b(?:correct|right or wrong|wrong or right|is (?:it|this) right|does (?:it|this) work|"
+    r"will (?:it|this) (?:work|pass)|check (?:my|this|the) (?:code|solution|answer))\b"
+)
+#: A first request this long, opening as a request, says what it wants.
+_COMPLETE_ASK_WORDS: Final = 5
+#: Words that point at something the learner has not shared yet.
+_POINTS_AT_MISSING_RE: Final = re.compile(
+    r"(?i)\b(?:this|that|it|these|those|thing|my code|the code|the problem|the error)\b"
+)
+#: A message that continues the tutor's last reply ("start with the basics",
+#: "go deeper", "next part", "explain the first one").
+_CONTINUES_RE: Final = re.compile(
+    r"(?i)\b(?:start|begin|basics|first|next|continue|go on|go deeper|deeper|more|"
+    r"that|this|it|those|them|part|step|section|topic)\b"
+)
 #: A reply that opens by answering a yes/no question.
 _OPENS_YES_NO_RE: Final = re.compile(r"(?i)^\s*(?:yes|yeah|yep|yup|no|nope|nah)\b")
 
@@ -1180,7 +1204,16 @@ def _is_talk(
         described = len(question.split()) >= _SELF_CONTAINED_WORDS and not (
             opens_as_a_lesson_ask(question)
         )
-        return in_conversation or not read.low_confidence or described
+        # A first message that is a whole request ("can you help me improve my
+        # communication skills?") is answered even unread; one that points at
+        # something not shared ("can you look at this thing") is asked about.
+        # Read live: the first was answered "I can't tell what that refers to".
+        complete_ask = (
+            _OPENS_AS_A_REQUEST_RE.match(question) is not None
+            and len(question.split()) >= _COMPLETE_ASK_WORDS
+            and _POINTS_AT_MISSING_RE.search(question) is None
+        )
+        return in_conversation or not read.low_confidence or described or complete_ask
     sure = not read.low_confidence
     showed = read.learner_showed in EVIDENCE_LABELS and read.learner_showed != "stuck"
     asks_a_question = sure and read.intent in _QUESTION_INTENTS and not showed
@@ -1201,6 +1234,12 @@ def _is_talk(
     if chosen == "dsa":
         if wants_next_step or read.learner_showed == "stuck":
             return False
+        if settled.problem_relation == "followup" and _EXPLAIN_APPROACH_RE.search(question):
+            # "Explain clearly how to solve this problem": an ask to be TAUGHT
+            # the approach, answered in full (idea, steps, a trace, edge cases)
+            # by the agent that holds the conversation, still without solution
+            # code. The ladder answered it with one more Socratic question.
+            return True
         if settled.problem_relation != "followup" and not after_talk:
             # The opening message on a problem. One specific question about it
             # is answered; "help me solve X" gets the solver's first step.
@@ -1216,6 +1255,12 @@ def _is_talk(
         return not (sure and read.intent in _DEBUG_ASK_INTENTS)
     if chosen == "explain":
         intent = settled.intent.intent if settled.intent is not None else read.intent
+        if intent is Intent.OPTIMIZATION:
+            # "Any other techniques to optimize this?" brings no code: it is a
+            # question about code already on the table, answered as one. Read
+            # live: sent to the reviewer, it got a lint report on LeetCode's
+            # own method name.
+            return True
         if intent in _REVIEW_MOVE_INTENTS:
             return not has_code  # "can you review it when I've written it?"
         if intent is Intent.GENERAL_GUIDANCE:
@@ -1231,6 +1276,12 @@ def _is_talk(
             # A question about their code is answered with the code run first
             # (`code_answer`); their own restatement of what was said is talk.
             return showed
+        if after_talk and _CONTINUES_RE.search(question) and len(question.split()) <= 8:
+            # "Start with the basics" after a roadmap the tutor gave in talk:
+            # the next part of THAT reply, taught by the agent that holds it.
+            # Read live: the explainer, without the conversation, asked which
+            # subject they meant.
+            return True
         if settled.thread_followup:
             return False
         if settled.problem_relation == "followup" or after_talk:
@@ -1647,7 +1698,11 @@ def _problem_update(state: AgentState) -> AgentStateUpdate:
         # only be the attempt at it. Measured on the journey replay: such a
         # paste was taken as anonymous code, its suite was written from the
         # code itself, and four real passes and fails recorded nothing.
-        and (intent.refers_to_previous or not (inp.question or "").strip())
+        and (
+            intent.refers_to_previous
+            or not (inp.question or "").strip()
+            or _ASKS_IF_CORRECT_RE.search(inp.question or "") is not None
+        )
     ):
         # Code with no statement, which the classifier read as being ABOUT the
         # active problem ("here is my attempt"): it is judged against that

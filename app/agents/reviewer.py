@@ -181,6 +181,20 @@ _SNAKE_CASE_RE: Final = re.compile(r"^_*[a-z][a-z0-9_]*$")
 _MAX_LINE_LENGTH: Final = 100
 
 
+def _judge_interface_names(tree: ast.Module) -> frozenset[str]:
+    """Method names of a LeetCode-style `class Solution`: the judge fixes them
+    (`romanToInt`), so flagging them as "not snake_case" was noise (read live)."""
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "Solution":
+            names.update(
+                item.name
+                for item in node.body
+                if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
+            )
+    return frozenset(names)
+
+
 class _PracticeVisitor(ast.NodeVisitor):
     """Single-pass `ast` visitor collecting a small, defensible set of
     readability/python_practices findings: non-snake_case function naming,
@@ -196,10 +210,14 @@ class _PracticeVisitor(ast.NodeVisitor):
     string-literal re-exports or `TYPE_CHECKING`-guarded imports.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, given_names: frozenset[str] = frozenset()) -> None:
         self.findings: list[ReviewFinding] = []
         self._imported_names: dict[str, int] = {}
         self._used_names: set[str] = set()
+        #: Names the problem dictates (LeetCode's `class Solution` methods,
+        #: and the entry point added with the same name to run them): not the
+        #: learner's style choice, so never a naming finding.
+        self._given_names = given_names
 
     def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
         for alias in node.names:
@@ -249,6 +267,8 @@ class _PracticeVisitor(ast.NodeVisitor):
 
     def _check_naming(self, name: str, lineno: int) -> None:
         if name.startswith("__") and name.endswith("__"):
+            return
+        if name in self._given_names:
             return
         if not _SNAKE_CASE_RE.match(name):
             self.findings.append(
@@ -319,7 +339,7 @@ def static_practice_findings(code: str | None) -> list[ReviewFinding]:
         tree = ast.parse(code)
     except SyntaxError:
         return []
-    visitor = _PracticeVisitor()
+    visitor = _PracticeVisitor(_judge_interface_names(tree))
     visitor.visit(tree)
     return [*visitor.findings, *visitor.unused_import_findings()]
 

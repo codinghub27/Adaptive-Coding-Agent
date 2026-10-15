@@ -746,12 +746,31 @@ async def test_a_limited_last_fallback_retries_earlier_keys_once() -> None:
 
 
 def test_content_is_not_sent_unless_asked_for(make_settings: MakeSettings) -> None:
-    tracer = Tracer.from_settings(make_settings(langsmith_tracing=True, langsmith_api_key="a-key"))
+    # Outside `dev` content tracing stays off unless asked for. In `dev` it is
+    # on by default since 2026-10-15 (owner reads full runs in their own
+    # workspace); see the test below.
+    tracer = Tracer.from_settings(
+        make_settings(langsmith_tracing=True, langsmith_api_key="a-key", app_env="prod")
+    )
     assert tracer.records_content is False
     inputs = _trace_inputs(
         RawInput(text="SECRET"), user_id=None, conversation_id=None, max_llm_calls=5
     )
     assert "SECRET" not in str(inputs)
+
+
+def test_content_tracing_is_on_by_default_in_dev_and_can_be_turned_off(
+    make_settings: MakeSettings,
+) -> None:
+    on = make_settings(langsmith_tracing=True, langsmith_api_key="a-key", app_env="dev")
+    assert Tracer.from_settings(on).records_content is True
+    off = make_settings(
+        langsmith_tracing=True,
+        langsmith_api_key="a-key",
+        app_env="dev",
+        langsmith_trace_content=False,
+    )
+    assert Tracer.from_settings(off).records_content is False
 
 
 def test_content_tracing_sends_the_message_and_the_reply_unredacted(

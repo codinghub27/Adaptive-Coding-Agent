@@ -291,7 +291,7 @@ class Tracer:
         the bytes of an uploaded image and anything held as a secret).
         """
         if settings.langsmith_tracing and settings.langsmith_api_key is not None:
-            content = settings.langsmith_trace_content
+            content = bool(settings.langsmith_trace_content)
             client = LangSmithClient(
                 api_key=settings.langsmith_api_key.get_secret_value(),
                 api_url=settings.langsmith_endpoint,

@@ -258,3 +258,48 @@ def test_a_one_block_reply_is_broken_into_paragraphs() -> None:
     assert in_paragraphs(short) == short
     listed = "Two things:\n- one\n- two"
     assert in_paragraphs(listed) == listed
+
+
+def test_explain_the_approach_on_the_open_problem_is_taught_in_full() -> None:
+    from tests.graph.test_turn_decision import _active  # pyright: ignore[reportPrivateUsage]
+
+    ask = _sure(Intent.DSA_HINT, refers_to_previous=True)
+    update = _decide(
+        _state("Explain clearly how to solve this problem.", intent=ask, active=_active())
+    )
+    assert update.get("route") == "discuss"
+    # A hint is still the ladder's.
+    assert _decide(_state("give me a hint", intent=ask, active=_active())).get("route") == "dsa"
+
+
+async def test_a_reply_loses_markdown_hard_break_backslashes() -> None:
+    body = {"reply": "**Idea**: scan once.\\\n\\\n**Example**: IV is 4.", "learner_showed": "none"}
+    got = await discuss("explain it", FakeLLMClient(chat_content=json.dumps(body)))
+    assert got is not None and "\\" not in got.text
+    assert "**Idea**: scan once.\n\n**Example**" in got.text
+
+
+def test_owner_live_turns_reach_the_agent_that_can_answer_them() -> None:
+    from tests.graph.test_turn_decision import (
+        _active,  # pyright: ignore[reportPrivateUsage]
+        _unsure,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # A whole first request is answered even when nobody could read it.
+    assert (
+        _decide(
+            _state("Can you help me to improve my communication skills?", intent=_unsure())
+        ).get("route")
+        == "discuss"
+    )
+    assert _decide(_state("hmm can you look at this thing", intent=_unsure())).get("route") == (
+        "clarify"
+    )
+    # An optimisation question with no new code is answered, not linted.
+    optimise = _sure(Intent.OPTIMIZATION, refers_to_previous=True)
+    assert (
+        _decide(
+            _state("Any other techniques to optimize this?", intent=optimise, active=_active())
+        ).get("route")
+        == "discuss"
+    )
