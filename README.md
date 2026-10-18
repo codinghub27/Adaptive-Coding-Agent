@@ -210,4 +210,4 @@ running tests — never by trusting the model. See `CLAUDE.md` for the full rule
 
 ## License
 
-TBD.
+Released under the [MIT License](LICENSE).
